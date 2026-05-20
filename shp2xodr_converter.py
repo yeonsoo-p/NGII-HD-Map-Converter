@@ -1,76 +1,14 @@
-"""
-NGII 정밀도로지도 SHP → OpenDRIVE(.xodr) 변환기
-
-[입력 파일]
-  A1_NODE.shp            : 노드 정보 (교차로 판별, 유턴 시점/종점, 차로수변화 판별용)
-  A2_LINK.shp            : 링크 정보 (체인 구성 및 일반/포켓 차선 정보용)
-  B2_SURFACELINEMARK.shp : 차선 정보 (planView 좌표 추출 및 차선폭 계산용)
-
-[처리 흐름]
-  1. A1_NODE에서 NodeType=99(유턴 시점/종점) 노드 추출
-
-  2. A2_LINK 필터링
-       - LinkType=1(교차로내주행경로) 제외
-       - LaneNo=1(1차로 기준선)만 사용
-       - FromNode AND ToNode 둘 다 NodeType=99이고 R/L_LinkID 둘 다 None → 유턴 제거
-
-  3. 교차로 경계 노드(stop_nodes) 추출
-       - LinkType=1 링크의 FromNodeID ∩ 일반 링크의 ToNodeID
-       → 일반 도로가 교차로 직전에 끝나는 노드 = 체이닝 종료 기준
-
-  4. 체이닝
-       - 필터링된 A2 링크를 FromNode→ToNode 방향으로 이어붙여 road 단위 구성
-       - stop_nodes에서 끊김 → 교차로 간 구간 = road 하나
-       - 분기(다음 링크 2개 이상) 또는 막힘(다음 링크 없음)에서도 끊김
-       - 위 조건으로 방문되지 않은 고립 링크는 별도 road로 처리
-
-  5. B2 매핑 및 planView 생성
-       - B2의 R/L_LinkID로 A2 링크 ID와 매핑, (x,y) 좌표 추출
-       - A2 geometry 위에 B2 midpoint를 투영(project)한 거리 기준으로 B2 조각 정렬
-       - planView geometry 생성:
-           xy 기준 직진 판별 → 직선이면 <line>, 곡선이면 RDP 알고리즘 적용 후
-           Catmull-Rom Spline 기반 <paramPoly3> 생성
-
-  6. B2 겹침 감지 (반대 방향 차선 처리)
-       - Buffer 기반 겹침 판정, 겹치는 쌍 중 하나를 양방향(Bilateral) road로 통합 처리
-
-  7. 차선 폭 계산 및 포켓(Pocket) 차로 탐지
-       - 각 A2 링크마다 우측 B2의 각 버텍스에서 좌측 B2 선분까지의 수직 거리 평균으로 차선 폭 계산
-         (chain 내 동일 폭 유지)
-       - 왼쪽 포켓: LaneNo≥91 속성으로 직접 탐지
-       - 오른쪽 포켓: 메인 체인의 R_LinkID를 순회하며 L_LinkID 역참조로 공간적 위치 기반 탐지
-       - 포켓 차로의 시작/종료 s-좌표, 안정화된 폭(stable_w), 테이퍼(개구/폐구) 길이 추정
-
-  8. laneSection 및 laneOffset 생성
-       - 차선 수 변화, NodeType=7(도로차로수변화) 도달, 또는 포켓 차로 경계 진입 시 laneSection 분할
-       - n_left 변화에 따른 laneOffset: 3차 다항식(Cubic Polynomial)으로 부드러운 테이퍼링 적용
-       - 차선 폭 변화(생성/소멸): width의 a,b,c,d 파라미터로 개구부/폐구부 구간 스무딩 처리
-       - predecessor/successor 위상 관계 자동 계산
-
-  9. road 간 위상 연결
-       - node_to_road 매핑을 통해 연속된 road 간 predecessor/successor 연결
-
-[현재 미구현]
-  - elevationProfile
-  - Junction element
-  - 램프(차선합류) 필터링
-  - 중앙선 단일/이중 실선 구분
-
-[알려진 문제]
-  - 원형교차로 연결 도로 누락 (노드/ID 구조 문제로 추정)
-  - PARALLEL_DIST 임계값 미조정 상태
-"""
-
 import geopandas as gpd
 import math, os
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from collections import defaultdict
 
-SHP_DIR  = r"C:\jylee\2. 과제\1. 국책2 AV_VIL\HDMap2OpenDRIVE\/Daegu"
-# SHP_DIR  = r"C:\jylee\2. 과제\1. 국책2 AV_VIL\HDMap2OpenDRIVE\Pangyo_Zerocity"
-# SHP_DIR  = r"C:\jylee\2. 과제\1. 국책2 AV_VIL\HDMap2OpenDRIVE\SangAm"
-OUT_PATH = r"C:\CM_Projects\3. AV_VIL\Data\Road\output_A1A2B2.xodr"
+BASE     = os.path.dirname(os.path.abspath(__file__))
+SHP_DIR  = os.path.join(BASE, "shp_road", "Daegu")
+# SHP_DIR  = os.path.join(BASE, "shp_road", "Pangyo_Zerocity")
+# SHP_DIR  = os.path.join(BASE, "shp_road", "SangAm")
+OUT_PATH = os.path.join(BASE, "output_A1A2B2.xodr")
 
 EXCLUDE_LINK   = {'1'}
 LANE_WIDTH     = 3.5
@@ -815,7 +753,9 @@ def convert():
 
         out_count += 1
 
-    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+    out_dir = os.path.dirname(OUT_PATH)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     pretty = minidom.parseString(ET.tostring(od, 'utf-8')).toprettyxml(indent="  ")
     with open(OUT_PATH, 'w', encoding='utf-8') as f:
         f.write(pretty)
