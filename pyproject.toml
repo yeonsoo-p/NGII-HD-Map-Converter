@@ -71,7 +71,14 @@ warn_unreachable = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["geopandas.*", "shapely.*", "pyvista.*", "hydra.*", "omegaconf.*"]
+module = ["geopandas.*", "shapely.*", "hydra.*", "omegaconf.*"]
+ignore_missing_imports = true
+
+# pyvista ships its own type info but wraps many methods in decorators that
+# break mypy strict — treat the whole package as untyped.
+[[tool.mypy.overrides]]
+module = ["pyvista.*"]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 # ----------------------------------------------------------------------------

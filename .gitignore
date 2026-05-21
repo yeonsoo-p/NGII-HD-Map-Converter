@@ -55,3 +55,6 @@ Thumbs.db
 __pycache__/
 uv.lock
 .python-version
+
+# Hydra writes per-run output directories with logs and resolved configs
+outputs/
