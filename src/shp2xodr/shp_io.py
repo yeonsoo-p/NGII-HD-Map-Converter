@@ -19,7 +19,13 @@ _COLUMN_ALIASES: dict[str, str] = {
 def _load(shp_path: Path) -> gpd.GeoDataFrame:
     if not shp_path.is_file():
         raise FileNotFoundError(shp_path)
-    gdf = gpd.read_file(shp_path)
+    try:
+        gdf = gpd.read_file(shp_path)
+    except UnicodeDecodeError:
+        # NGII sample data ships CPG files that claim UTF-8 but the DBF is
+        # actually CP949 — retry with the legacy encoding before giving up.
+        log.debug("retrying %s with cp949 after UTF-8 decode failure", shp_path.name)
+        gdf = gpd.read_file(shp_path, encoding="cp949")
     rename = {src: dst for src, dst in _COLUMN_ALIASES.items() if src in gdf.columns}
     if rename:
         log.debug("normalized columns in %s: %s", shp_path.name, rename)

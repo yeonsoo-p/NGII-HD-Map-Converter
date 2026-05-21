@@ -1,9 +1,17 @@
-"""Group A2_LINK records into road bundles per the NGII → OpenDRIVE rules.
+"""Group A2_LINK records into road bundles and junction components.
 
-A bundle is a maximal set of A2_LINK lanes that should become one OpenDRIVE
-``<road>`` element. Same-direction lanes are joined laterally via
-``R_LinkID``/``L_LinkID``; longitudinal continuations are joined through any
-A1_NODE that is *not* a segmentation cut.
+A *bundle* is a maximal set of A2_LINK lanes that should become one OpenDRIVE
+``<road>``. Same-direction lanes are joined laterally via ``R_LinkID`` /
+``L_LinkID``; longitudinal continuations are joined through any A1_NODE that
+is *not* a segmentation cut.
+
+A *junction component* is a maximal connected set of JUNCTION-role A1
+nodes reachable through ``LinkType=1`` interior links — including via
+lateral adjacency, so two interior links that are R/L_LinkID neighbours
+belong to one component even when no single link joins their endpoints.
+Each component becomes one OpenDRIVE ``<junction>``; each bundle whose
+rows are interior to it becomes a connecting road with
+``road@junction = <jid>``.
 
 Bidirectional merging (opposite-direction pairs into one ``<road>``) is
 intentionally deferred — each direction stays its own bundle here.
@@ -13,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -43,6 +52,35 @@ _ROAD_BREAK_NODE_TYPES = frozenset({"3", "4", "5", "6"})
 _LANE_SECTION_NODE_TYPES = frozenset({"7"})
 # 99 기타 — resolved by node degree (fan-out > 1 ⇒ JUNCTION, else LANE_SECTION)
 _AMBIGUOUS_NODE_TYPE = "99"
+
+# NGII A2_LINK LinkType: 1 = 교차로내주행경로 (intersection interior path).
+# Any other value is a mainline lane — even if it happens to span two junction
+# nodes, it's a road between junctions, not interior to one.
+_INTERIOR_LINK_TYPE = "1"
+
+
+@dataclass(slots=True, frozen=True)
+class Segmentation:
+    """Bundles + junction topology produced from one A1/A2 pair.
+
+    Per-link arrays are parallel to the A2 input row order; per-bundle fields
+    are indexed by bundle id ``0..n_bundles-1``; ``node_junction_id`` is
+    parallel to the A1 input row order.
+
+    A *mainline* bundle has ``bundle_junction[b] == -1`` and connects on each
+    side to the set of junctions reachable through its boundary nodes (empty
+    set = dangling). NGII data does allow laterally-merged lanes whose
+    pred/succ endpoints sit in different junctions, so each side is modeled
+    as a set rather than a single id. Interior bundles have empty pred/succ
+    sets (their connectivity is implied by ``bundle_junction``).
+    """
+
+    bundle_id: NDArray[np.int32]
+    junction_id: NDArray[np.int32]
+    node_junction_id: NDArray[np.int32]
+    bundle_junction: NDArray[np.int32]
+    bundle_pred_junctions: tuple[frozenset[int], ...]
+    bundle_succ_junctions: tuple[frozenset[int], ...]
 
 
 def classify_nodes(a1: gpd.GeoDataFrame, a2: gpd.GeoDataFrame) -> dict[str, NodeRole]:
@@ -77,25 +115,12 @@ def _is_cut(role: NodeRole) -> bool:
     return role in (NodeRole.JUNCTION, NodeRole.ROAD_BREAK)
 
 
-def bundle_links(shp_dir: Path) -> NDArray[np.int32]:
-    """Load A1/A2 and assign a bundle id to each A2_LINK row, in input order.
-
-    Two A2_LINKs share a bundle iff they are reachable via:
-        * lateral edges  — ``a.R_LinkID == b.ID`` or ``a.L_LinkID == b.ID``,
-        * longitudinal edges — ``a.ToNodeID == b.FromNodeID`` and that shared
-          node is not a JUNCTION / ROAD_BREAK cut.
-
-    Bundle ids are dense (``0..k-1``) in first-occurrence order.
-    """
-    a1 = load_a1_nodes(shp_dir)
-    a2 = load_a2_links(shp_dir)
-    node_role = classify_nodes(a1, a2)
-
+def _bundle_links_array(a2: gpd.GeoDataFrame, node_role: dict[str, NodeRole]) -> NDArray[np.int32]:
+    """Assign a dense bundle id to each A2_LINK row."""
     n = len(a2)
     parent = np.arange(n, dtype=np.int32)
 
     def find(x: int) -> int:
-        # Iterative with path compression.
         root = x
         while parent[root] != root:
             root = int(parent[root])
@@ -111,7 +136,6 @@ def bundle_links(shp_dir: Path) -> NDArray[np.int32]:
     link_ids = a2["ID"].astype(str).tolist()
     id_to_idx = {lid: i for i, lid in enumerate(link_ids)}
 
-    # Lateral merges via R/L_LinkID.
     r_ids = a2["R_LinkID"].fillna("").astype(str).tolist()
     l_ids = a2["L_LinkID"].fillna("").astype(str).tolist()
     for i in range(n):
@@ -120,7 +144,6 @@ def bundle_links(shp_dir: Path) -> NDArray[np.int32]:
             if j is not None:
                 union(i, j)
 
-    # Longitudinal merges through non-cut nodes.
     from_nodes = a2["FromNodeID"].astype(str).tolist()
     to_nodes = a2["ToNodeID"].astype(str).tolist()
     by_from: dict[str, list[int]] = {}
@@ -129,13 +152,11 @@ def bundle_links(shp_dir: Path) -> NDArray[np.int32]:
 
     for i in range(n):
         tn = to_nodes[i]
-        role = node_role.get(tn, NodeRole.IGNORE)
-        if _is_cut(role):
+        if _is_cut(node_role.get(tn, NodeRole.IGNORE)):
             continue
         for j in by_from.get(tn, ()):
             union(i, j)
 
-    # Densify roots into 0..k-1 in first-occurrence order.
     bundle_ids = np.empty(n, dtype=np.int32)
     root_to_bid: dict[int, int] = {}
     for i in range(n):
@@ -145,14 +166,182 @@ def bundle_links(shp_dir: Path) -> NDArray[np.int32]:
             bid = len(root_to_bid)
             root_to_bid[root] = bid
         bundle_ids[i] = bid
+    return bundle_ids
 
-    n_bundles = len(root_to_bid)
+
+def cluster_junctions(
+    a1: gpd.GeoDataFrame,
+    a2: gpd.GeoDataFrame,
+    node_role: dict[str, NodeRole],
+    bundle_id: NDArray[np.int32],
+) -> tuple[NDArray[np.int32], dict[str, int]]:
+    """Cluster JUNCTION-role A1 nodes into junction components.
+
+    An interior link is one with ``LinkType=1`` (intersection interior path)
+    and both endpoints junction-role. Junction nodes are unioned if they
+    share an interior link, *or* if their interior links sit in the same
+    bundle — laterally adjacent connecting lanes belong to one physical
+    intersection even when no single link directly joins their endpoints.
+
+    Mainline links that happen to span two adjacent junction nodes are
+    *not* interior — they're a road between junctions. Returns
+    ``(junction_id_per_link, nid_to_jid)``:
+
+      * ``junction_id_per_link`` — shape ``(n_links,)``, parallel to A2 input;
+        ``-1`` for non-interior rows.
+      * ``nid_to_jid`` — A1 node id → junction id, only for JUNCTION-role
+        nodes.
+
+    Junction ids are dense ``0..k-1`` in first-occurrence order.
+    """
+    junction_nids = [
+        nid for nid in a1["ID"].astype(str).tolist() if node_role.get(nid) == NodeRole.JUNCTION
+    ]
+    nid_to_idx = {nid: i for i, nid in enumerate(junction_nids)}
+    m = len(nid_to_idx)
+    parent = np.arange(m, dtype=np.int32)
+
+    def find(x: int) -> int:
+        root = x
+        while parent[root] != root:
+            root = int(parent[root])
+        while parent[x] != root:
+            parent[x], x = np.int32(root), int(parent[x])
+        return root
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = np.int32(ra)
+
+    from_ids = a2["FromNodeID"].astype(str).tolist()
+    to_ids = a2["ToNodeID"].astype(str).tolist()
+    link_types = a2["LinkType"].astype(str).tolist()
+    n_links = len(a2)
+    interior = np.zeros(n_links, dtype=bool)
+    bundle_junction_idxs: dict[int, list[int]] = {}
+    for i in range(n_links):
+        if link_types[i] != _INTERIOR_LINK_TYPE:
+            continue
+        fi = nid_to_idx.get(from_ids[i])
+        ti = nid_to_idx.get(to_ids[i])
+        if fi is None or ti is None:
+            continue
+        union(fi, ti)
+        interior[i] = True
+        bundle_junction_idxs.setdefault(int(bundle_id[i]), []).extend((fi, ti))
+    for idxs in bundle_junction_idxs.values():
+        first = idxs[0]
+        for j in idxs[1:]:
+            union(first, j)
+
+    root_to_jid: dict[int, int] = {}
+    idx_to_jid = np.empty(m, dtype=np.int32)
+    for nid in junction_nids:
+        idx = nid_to_idx[nid]
+        root = find(idx)
+        jid = root_to_jid.get(root)
+        if jid is None:
+            jid = len(root_to_jid)
+            root_to_jid[root] = jid
+        idx_to_jid[idx] = jid
+
+    nid_to_jid = {nid: int(idx_to_jid[nid_to_idx[nid]]) for nid in junction_nids}
+    junction_id_per_link = np.full(n_links, -1, dtype=np.int32)
+    for i in range(n_links):
+        if interior[i]:
+            junction_id_per_link[i] = nid_to_jid[from_ids[i]]
+    return junction_id_per_link, nid_to_jid
+
+
+def _resolve_bundle_endpoints(
+    a2: gpd.GeoDataFrame,
+    bundle_id: NDArray[np.int32],
+    junction_id: NDArray[np.int32],
+    nid_to_jid: dict[str, int],
+) -> tuple[
+    NDArray[np.int32],
+    tuple[frozenset[int], ...],
+    tuple[frozenset[int], ...],
+]:
+    """Per-bundle: which junction it is interior to (or ``-1`` for mainline),
+    plus the set of junctions on its predecessor and successor sides.
+
+    A bundle must be fully interior or fully mainline — this is asserted.
+    Mainline bundles whose pred/succ endpoints span multiple junction
+    components are accepted; that's a real NGII pattern (e.g. two lanes
+    laterally merged but entering from different intersection nodes), and we
+    record the multi-junction set rather than collapsing it.
+    """
+    n_bundles = int(bundle_id.max()) + 1 if len(bundle_id) else 0
+    bundle_junction = np.full(n_bundles, -1, dtype=np.int32)
+    pred_sets: list[frozenset[int]] = [frozenset()] * n_bundles
+    succ_sets: list[frozenset[int]] = [frozenset()] * n_bundles
+
+    rows_by_bundle: dict[int, list[int]] = {}
+    for i, b in enumerate(bundle_id):
+        rows_by_bundle.setdefault(int(b), []).append(i)
+
+    from_ids = a2["FromNodeID"].astype(str).tolist()
+    to_ids = a2["ToNodeID"].astype(str).tolist()
+
+    for b, rows in rows_by_bundle.items():
+        row_jids = {int(junction_id[i]) for i in rows}
+        if -1 not in row_jids:
+            assert len(row_jids) == 1, f"bundle {b} is interior but spans junction ids {row_jids}"
+            bundle_junction[b] = row_jids.pop()
+            continue
+        assert row_jids == {-1}, f"bundle {b} mixes mainline and interior rows: {row_jids}"
+        froms = {from_ids[i] for i in rows}
+        tos = {to_ids[i] for i in rows}
+        pred_sets[b] = _side_junctions(froms - tos, nid_to_jid)
+        succ_sets[b] = _side_junctions(tos - froms, nid_to_jid)
+    return bundle_junction, tuple(pred_sets), tuple(succ_sets)
+
+
+def _side_junctions(endpoints: set[str], nid_to_jid: dict[str, int]) -> frozenset[int]:
+    return frozenset(nid_to_jid[nid] for nid in endpoints if nid in nid_to_jid)
+
+
+def segment_links(shp_dir: Path) -> Segmentation:
+    """Segment A2_LINKs into bundles and junction components.
+
+    Returns a :class:`Segmentation` with per-link, per-bundle, and per-node
+    arrays. Bundle ids and junction ids are dense.
+    """
+    a1 = load_a1_nodes(shp_dir)
+    a2 = load_a2_links(shp_dir)
+    node_role = classify_nodes(a1, a2)
+
+    bundle_id = _bundle_links_array(a2, node_role)
+    junction_id, nid_to_jid = cluster_junctions(a1, a2, node_role, bundle_id)
+    bundle_junction, bundle_pred, bundle_succ = _resolve_bundle_endpoints(
+        a2, bundle_id, junction_id, nid_to_jid
+    )
+    assert len(bundle_pred) == len(bundle_succ) == len(bundle_junction)
+
+    node_junction_id = np.full(len(a1), -1, dtype=np.int32)
+    for i, nid in enumerate(a1["ID"].astype(str).tolist()):
+        jid = nid_to_jid.get(nid)
+        if jid is not None:
+            node_junction_id[i] = jid
+
+    n_bundles = int(bundle_id.max()) + 1 if len(bundle_id) else 0
+    n_junctions = int(node_junction_id.max()) + 1 if len(node_junction_id) else 0
     n_cuts = sum(1 for r in node_role.values() if _is_cut(r))
     log.info(
-        "segmentation: %d links → %d bundles (cut at %d / %d nodes)",
-        n,
+        "segmentation: %d links → %d bundles, %d junctions (cut at %d / %d nodes)",
+        len(a2),
         n_bundles,
+        n_junctions,
         n_cuts,
         len(node_role),
     )
-    return bundle_ids
+    return Segmentation(
+        bundle_id=bundle_id,
+        junction_id=junction_id,
+        node_junction_id=node_junction_id,
+        bundle_junction=bundle_junction,
+        bundle_pred_junctions=bundle_pred,
+        bundle_succ_junctions=bundle_succ,
+    )
