@@ -1,7 +1,7 @@
 [project]
 name = "shp2xodr"
 version = "0.1.0"
-description = "NGII precise road map (SHP) to OpenDRIVE 1.7 converter."
+description = "NGII precise road map (SHP) to OpenDRIVE converter."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

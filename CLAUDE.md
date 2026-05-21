@@ -1,6 +1,6 @@
 # Project rules — shp2xodr-converter
 
-NGII (Korean precise road map) SHP → OpenDRIVE 1.7 converter.
+NGII (Korean precise road map) SHP → OpenDRIVE converter.
 
 ## Toolchain
 
