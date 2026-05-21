@@ -22,8 +22,8 @@ import vtk
 from numpy.typing import NDArray
 from shapely.geometry import Polygon as ShapelyPolygon
 
-from shp2xodr.shp.segmentation import Segmentation, segment_links
 from shp2xodr.shp.io import a1_data, a2_data, a3_data, a4_data
+from shp2xodr.shp.segmentation import Segmentation, segment_links
 
 _NODE_POINT_SIZE = 3.0
 _POLY_OPACITY = 0.85
