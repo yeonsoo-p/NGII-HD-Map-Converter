@@ -1,7 +1,9 @@
 defaults:
-  - dataset: daegu
+  - dataset: jeju
   - _self_
 
 paths:
-  shp_root: ${oc.env:PWD}/shp_road
+  repo_root: ${oc.env:PWD}
   output_dir: ${oc.env:PWD}/output
+
+viz: segments  # one of: raw, segments

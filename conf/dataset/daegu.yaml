@@ -1,3 +1,0 @@
-name: Daegu
-shp_dir: ${paths.shp_root}/Daegu
-output_file: ${paths.output_dir}/Daegu.xodr

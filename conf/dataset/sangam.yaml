@@ -1,3 +1,0 @@
-name: SangAm
-shp_dir: ${paths.shp_root}/SangAm
-output_file: ${paths.output_dir}/SangAm.xodr
