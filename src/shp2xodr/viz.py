@@ -1,14 +1,10 @@
 """3D visualization of NGII A1 nodes and A2 links.
 
-Two viz subclasses share one ``show()`` implementation and override hooks for
-colors, overlay extras, and pick info:
-
-    :class:`RawViz` — every A2_LINK in black, A1 nodes as small black dots.
-    :class:`SegmentsViz` — mainline A2_LINKs colored by bundle id (one color
-        per future OpenDRIVE ``<road>``), interior A2_LINKs colored by
-        junction id (shared across all connecting lanes of one future
-        ``<junction>``). A1 nodes are drawn as small black dots for spatial
-        reference only.
+:class:`A2Viz` is the default mode: every A2_LINK drawn in black with A1 nodes
+as small black dots. :class:`SegmentsViz` subclasses it and overrides hooks
+for colors and pick info — mainline A2_LINKs colored by bundle id (one color
+per future OpenDRIVE ``<road>``) and interior A2_LINKs colored by junction id
+(shared across all connecting lanes of one future ``<junction>``).
 
 Either way, shift + left-click a link to log + display its id (and bundle id
 where available) and highlight it in yellow.
@@ -62,7 +58,11 @@ def _a2_polydata(shp_dir: Path) -> pv.PolyData:
 
 
 class A2Viz:
-    """Base 3D viz of A2_LINK polylines; subclasses customize colors and pick info.
+    """3D viz of A2_LINK polylines with A1 nodes as small black dots.
+
+    Default coloring is uniform black; subclasses customize colors and pick
+    info by overriding the ``_cell_colors`` / ``_pick_text`` / ``_add_extras``
+    hooks.
 
     Keys (any subclass):
         2 — top-down orthographic
@@ -85,7 +85,8 @@ class A2Viz:
         return np.zeros((self.a2_poly.n_cells, 3), dtype=np.uint8)
 
     def _add_extras(self) -> None:
-        """Add overlays beyond the A2 mesh (e.g. A1 dots). Default: nothing."""
+        """Add overlays beyond the A2 mesh. Default: A1 nodes as black dots."""
+        _add_a1_dots(self.plotter, self.shp_dir)
 
     def _pick_text(self, cell_id: int) -> str:
         """Single-line info string used for both the on-screen overlay and the log."""
@@ -161,13 +162,6 @@ def _add_a1_dots(plotter: pv.Plotter, shp_dir: Path) -> None:
     )
 
 
-class RawViz(A2Viz):
-    """A2 lines in black, A1 nodes as small black dots."""
-
-    def _add_extras(self) -> None:
-        _add_a1_dots(self.plotter, self.shp_dir)
-
-
 class SegmentsViz(A2Viz):
     """A2 lines colored by junction (interior) or bundle (mainline).
 
@@ -177,9 +171,11 @@ class SegmentsViz(A2Viz):
     as small black dots for spatial reference only.
     """
 
-    def __init__(self, shp_dir: Path) -> None:
+    def __init__(self, shp_dir: Path, junction_merge_dist_m: float = 0.0) -> None:
         super().__init__(shp_dir)
-        self.segmentation: Segmentation = segment_links(shp_dir)
+        self.segmentation: Segmentation = segment_links(
+            shp_dir, junction_merge_dist_m=junction_merge_dist_m
+        )
         self.bundle_palette = _random_palette(int(self.segmentation.bundle_id.max()) + 1, seed=42)
         n_junctions = int(self.segmentation.node_junction_id.max()) + 1
         self.junction_palette = _random_palette(n_junctions, seed=137)
@@ -193,9 +189,6 @@ class SegmentsViz(A2Viz):
         if is_interior.any():
             rgb[is_interior] = self.junction_palette[self.segmentation.junction_id[is_interior]]
         return rgb
-
-    def _add_extras(self) -> None:
-        _add_a1_dots(self.plotter, self.shp_dir)
 
     def _pick_text(self, cell_id: int) -> str:
         link_id = self.a2_poly.cell_data["link_id"][cell_id]

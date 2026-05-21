@@ -82,6 +82,29 @@ def test_interior_links_at_junction_node_share_junction(sample_dir: Path) -> Non
     assert checked > 0, "no 평면교차로 nodes had touching LinkType=1 links"
 
 
+def test_proximity_merge_fuses_split_intersection(sample_dir: Path) -> None:
+    """Two junction-role A1 nodes that the graph-only pass left in disjoint
+    components — but that sit ~4 m apart inside one physical intersection
+    — must end up in one junction once proximity merging is enabled.
+    """
+    a1 = load_a1_nodes(sample_dir)
+    a1_nids = a1["ID"].astype(str).to_numpy()
+    # See the bundle 306 / junction 46-vs-83 case from interactive picks: the
+    # 4-node group around A123AI014562 was split off from the 6-node group
+    # around A123AI014208, with ~3.8 m between their nearest nodes.
+    left_idx = int(np.where(a1_nids == "A123AI014208")[0][0])
+    right_idx = int(np.where(a1_nids == "A123AI014562")[0][0])
+
+    graph_only = segment_links(sample_dir)
+    assert graph_only.node_junction_id[left_idx] != graph_only.node_junction_id[right_idx]
+
+    merged = segment_links(sample_dir, junction_merge_dist_m=5.0)
+    left_jid = int(merged.node_junction_id[left_idx])
+    right_jid = int(merged.node_junction_id[right_idx])
+    assert left_jid >= 0
+    assert left_jid == right_jid
+
+
 def test_bundle_side_junctions_well_formed(sample_dir: Path) -> None:
     """Interior bundles carry empty pred/succ sets; mainline bundles whose
     pred/succ side is non-empty must reference valid junction ids.

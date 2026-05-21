@@ -174,6 +174,7 @@ def cluster_junctions(
     a2: gpd.GeoDataFrame,
     node_role: dict[str, NodeRole],
     bundle_id: NDArray[np.int32],
+    junction_merge_dist_m: float = 0.0,
 ) -> tuple[NDArray[np.int32], dict[str, int]]:
     """Cluster JUNCTION-role A1 nodes into junction components.
 
@@ -182,6 +183,11 @@ def cluster_junctions(
     share an interior link, *or* if their interior links sit in the same
     bundle — laterally adjacent connecting lanes belong to one physical
     intersection even when no single link directly joins their endpoints.
+    When ``junction_merge_dist_m > 0``, a final pass also unions any two
+    components whose closest junction nodes lie within that planimetric
+    distance — this catches channelized turns and free-flow paths that
+    are physically inside one intersection but topologically disjoint
+    from the rest of its connecting lanes.
 
     Mainline links that happen to span two adjacent junction nodes are
     *not* interior — they're a road between junctions. Returns
@@ -246,12 +252,79 @@ def cluster_junctions(
             root_to_jid[root] = jid
         idx_to_jid[idx] = jid
 
+    if junction_merge_dist_m > 0:
+        idx_to_jid = _merge_junctions_by_proximity(
+            a1, junction_nids, nid_to_idx, idx_to_jid, junction_merge_dist_m
+        )
+
     nid_to_jid = {nid: int(idx_to_jid[nid_to_idx[nid]]) for nid in junction_nids}
     junction_id_per_link = np.full(n_links, -1, dtype=np.int32)
     for i in range(n_links):
         if interior[i]:
             junction_id_per_link[i] = nid_to_jid[from_ids[i]]
     return junction_id_per_link, nid_to_jid
+
+
+def _merge_junctions_by_proximity(
+    a1: gpd.GeoDataFrame,
+    junction_nids: list[str],
+    nid_to_idx: dict[str, int],
+    idx_to_jid: NDArray[np.int32],
+    max_distance_m: float,
+) -> NDArray[np.int32]:
+    """Re-densify ``idx_to_jid`` after fusing any two junction components
+    whose closest nodes lie within ``max_distance_m`` (planimetric, XY only).
+
+    Z is ignored — NGII puts bridges/underpasses under NodeType 3-6
+    (ROAD_BREAK), so two distinct JUNCTION-role components stacked
+    vertically would be unusual.
+    """
+    m = len(junction_nids)
+    if m < 2:
+        return idx_to_jid
+
+    coords = np.empty((m, 2), dtype=np.float64)
+    geom_by_nid = dict(zip(a1["ID"].astype(str), a1.geometry, strict=True))
+    for nid in junction_nids:
+        g = geom_by_nid[nid]
+        coords[nid_to_idx[nid]] = (g.x, g.y)
+
+    n_jids = int(idx_to_jid.max()) + 1
+    jparent = np.arange(n_jids, dtype=np.int32)
+
+    def jfind(x: int) -> int:
+        root = x
+        while jparent[root] != root:
+            root = int(jparent[root])
+        while jparent[x] != root:
+            jparent[x], x = np.int32(root), int(jparent[x])
+        return root
+
+    def junion(a: int, b: int) -> None:
+        ra, rb = jfind(a), jfind(b)
+        if ra != rb:
+            jparent[rb] = np.int32(ra)
+
+    threshold_sq = max_distance_m * max_distance_m
+    for i in range(m - 1):
+        diff = coords[i + 1 :] - coords[i]
+        d2 = np.einsum("ij,ij->i", diff, diff)
+        ji = int(idx_to_jid[i])
+        for off in np.flatnonzero(d2 <= threshold_sq):
+            jj = int(idx_to_jid[i + 1 + int(off)])
+            if ji != jj:
+                junion(ji, jj)
+
+    old_to_new: dict[int, int] = {}
+    merged = np.empty(m, dtype=np.int32)
+    for i in range(m):
+        root = jfind(int(idx_to_jid[i]))
+        new = old_to_new.get(root)
+        if new is None:
+            new = len(old_to_new)
+            old_to_new[root] = new
+        merged[i] = new
+    return merged
 
 
 def _resolve_bundle_endpoints(
@@ -303,18 +376,23 @@ def _side_junctions(endpoints: set[str], nid_to_jid: dict[str, int]) -> frozense
     return frozenset(nid_to_jid[nid] for nid in endpoints if nid in nid_to_jid)
 
 
-def segment_links(shp_dir: Path) -> Segmentation:
+def segment_links(shp_dir: Path, junction_merge_dist_m: float = 0.0) -> Segmentation:
     """Segment A2_LINKs into bundles and junction components.
 
-    Returns a :class:`Segmentation` with per-link, per-bundle, and per-node
-    arrays. Bundle ids and junction ids are dense.
+    ``junction_merge_dist_m`` controls a final spatial pass that fuses
+    graph-disjoint junction components whose nodes are closer than the
+    threshold; set to ``0`` to disable. Returns a :class:`Segmentation`
+    with per-link, per-bundle, and per-node arrays. Bundle ids and
+    junction ids are dense.
     """
     a1 = load_a1_nodes(shp_dir)
     a2 = load_a2_links(shp_dir)
     node_role = classify_nodes(a1, a2)
 
     bundle_id = _bundle_links_array(a2, node_role)
-    junction_id, nid_to_jid = cluster_junctions(a1, a2, node_role, bundle_id)
+    junction_id, nid_to_jid = cluster_junctions(
+        a1, a2, node_role, bundle_id, junction_merge_dist_m=junction_merge_dist_m
+    )
     bundle_junction, bundle_pred, bundle_succ = _resolve_bundle_endpoints(
         a2, bundle_id, junction_id, nid_to_jid
     )

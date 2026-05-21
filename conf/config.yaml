@@ -7,3 +7,11 @@ paths:
   output_dir: ${oc.env:PWD}/output
 
 viz: segments  # one of: raw, segments
+
+segmentation:
+  # Planimetric distance (meters) under which graph-disjoint junction
+  # components are fused into one. NGII sometimes leaves channelized turns
+  # and free-flow paths topologically separate from the rest of an
+  # intersection's connecting lanes; this merges them back. Set to 0 to
+  # disable.
+  junction_merge_dist_m: 5.0
