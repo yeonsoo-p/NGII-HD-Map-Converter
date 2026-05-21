@@ -8,7 +8,7 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
-from shp2xodr.viz import HdMapViz
+from shp2xodr.shp.viz import HdMapViz
 
 log = logging.getLogger(__name__)
 

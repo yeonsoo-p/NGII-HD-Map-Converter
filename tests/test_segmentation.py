@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from shp2xodr.segmentation import segment_links
-from shp2xodr.shp_io import load_a1_nodes, load_a2_links
+from shp2xodr.shp.io import load_a1_nodes, load_a2_links
+from shp2xodr.shp.segmentation import segment_links
 
 _SAMPLE_SHP_DIR = (
     Path(__file__).resolve().parent.parent

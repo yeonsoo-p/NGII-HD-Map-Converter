@@ -4,7 +4,7 @@ defaults:
 
 paths:
   repo_root: ${oc.env:PWD}
-  output_dir: ${oc.env:PWD}/output
+  output_dir: ${oc.env:PWD}/outputs
 
 segmentation:
   # Planimetric distance (meters) under which graph-disjoint junction

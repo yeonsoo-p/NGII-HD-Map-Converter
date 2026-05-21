@@ -29,7 +29,7 @@ import geopandas as gpd
 import numpy as np
 from numpy.typing import NDArray
 
-from shp2xodr.shp_io import load_a1_nodes, load_a2_links
+from shp2xodr.shp.io import load_a1_nodes, load_a2_links
 
 log = logging.getLogger(__name__)
 
