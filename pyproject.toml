@@ -77,7 +77,7 @@ ignore_missing_imports = true
 # pyvista ships its own type info but wraps many methods in decorators that
 # break mypy strict — treat the whole package as untyped.
 [[tool.mypy.overrides]]
-module = ["pyvista.*"]
+module = ["pyvista.*", "vtk.*"]
 follow_imports = "skip"
 ignore_missing_imports = true
 
