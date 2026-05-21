@@ -35,9 +35,7 @@ def load_a2_links(shp_dir: Path) -> gpd.GeoDataFrame:
     return _load(shp_dir / "A2_LINK.shp")
 
 
-def a1_data(
-    a1: gpd.GeoDataFrame,
-) -> tuple[NDArray[np.str_], NDArray[np.float64]]:
+def a1_data(a1: gpd.GeoDataFrame) -> tuple[NDArray[np.str_], NDArray[np.float64]]:
     """Flatten A1_NODE into ``(ids, points)`` arrays.
 
     ``ids`` has shape ``(N,)``; ``points`` has shape ``(N, 3)`` with XYZ in
@@ -48,9 +46,7 @@ def a1_data(
     return ids, pts
 
 
-def a2_data(
-    a2: gpd.GeoDataFrame,
-) -> tuple[NDArray[np.str_], list[NDArray[np.float64]]]:
+def a2_data(a2: gpd.GeoDataFrame) -> tuple[NDArray[np.str_], list[NDArray[np.float64]]]:
     """Return ``(ids, polylines)`` for A2_LINK.
 
     ``ids`` has shape ``(M,)``; ``polylines`` is a list of ``(N_i, 3)`` arrays,
