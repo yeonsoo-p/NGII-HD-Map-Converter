@@ -35,23 +35,25 @@ def load_a2_links(shp_dir: Path) -> gpd.GeoDataFrame:
     return _load(shp_dir / "A2_LINK.shp")
 
 
-def a1_data(a1: gpd.GeoDataFrame) -> tuple[NDArray[np.str_], NDArray[np.float64]]:
-    """Flatten A1_NODE into ``(ids, points)`` arrays.
+def a1_data(shp_dir: Path) -> tuple[NDArray[np.str_], NDArray[np.float64]]:
+    """Load A1_NODE and flatten into ``(ids, points)`` arrays.
 
     ``ids`` has shape ``(N,)``; ``points`` has shape ``(N, 3)`` with XYZ in
     source CRS units.
     """
+    a1 = load_a1_nodes(shp_dir)
     ids = a1["ID"].astype(str).to_numpy()
     pts = np.array([(g.x, g.y, g.z) for g in a1.geometry], dtype=np.float64)
     return ids, pts
 
 
-def a2_data(a2: gpd.GeoDataFrame) -> tuple[NDArray[np.str_], list[NDArray[np.float64]]]:
-    """Return ``(ids, polylines)`` for A2_LINK.
+def a2_data(shp_dir: Path) -> tuple[NDArray[np.str_], list[NDArray[np.float64]]]:
+    """Load A2_LINK and return ``(ids, polylines)``.
 
     ``ids`` has shape ``(M,)``; ``polylines`` is a list of ``(N_i, 3)`` arrays,
     one per link, with XYZ vertices in source CRS units.
     """
+    a2 = load_a2_links(shp_dir)
     ids = a2["ID"].astype(str).to_numpy()
     polylines = [np.asarray(g.coords, dtype=np.float64) for g in a2.geometry]
     return ids, polylines

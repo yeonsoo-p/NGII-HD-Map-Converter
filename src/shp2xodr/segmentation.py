@@ -14,10 +14,13 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from enum import Enum
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 from numpy.typing import NDArray
+
+from shp2xodr.shp_io import load_a1_nodes, load_a2_links
 
 log = logging.getLogger(__name__)
 
@@ -74,8 +77,8 @@ def _is_cut(role: NodeRole) -> bool:
     return role in (NodeRole.JUNCTION, NodeRole.ROAD_BREAK)
 
 
-def bundle_links(a1: gpd.GeoDataFrame, a2: gpd.GeoDataFrame) -> NDArray[np.int32]:
-    """Assign a bundle id to each A2_LINK row, aligned with the input order.
+def bundle_links(shp_dir: Path) -> NDArray[np.int32]:
+    """Load A1/A2 and assign a bundle id to each A2_LINK row, in input order.
 
     Two A2_LINKs share a bundle iff they are reachable via:
         * lateral edges  — ``a.R_LinkID == b.ID`` or ``a.L_LinkID == b.ID``,
@@ -84,6 +87,8 @@ def bundle_links(a1: gpd.GeoDataFrame, a2: gpd.GeoDataFrame) -> NDArray[np.int32
 
     Bundle ids are dense (``0..k-1``) in first-occurrence order.
     """
+    a1 = load_a1_nodes(shp_dir)
+    a2 = load_a2_links(shp_dir)
     node_role = classify_nodes(a1, a2)
 
     n = len(a2)

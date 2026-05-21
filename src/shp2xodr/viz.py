@@ -17,25 +17,24 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import geopandas as gpd
 import numpy as np
 import pyvista as pv
 import vtk
 from numpy.typing import NDArray
 
 from shp2xodr.segmentation import bundle_links
-from shp2xodr.shp_io import a1_data, a2_data, load_a1_nodes, load_a2_links
+from shp2xodr.shp_io import a1_data, a2_data
 
 log = logging.getLogger(__name__)
 
 
-def _a1_polydata(a1: gpd.GeoDataFrame) -> pv.PolyData:
-    _ids, pts = a1_data(a1)
+def _a1_polydata(shp_dir: Path) -> pv.PolyData:
+    _ids, pts = a1_data(shp_dir)
     return pv.PolyData(pts)
 
 
-def _a2_polydata(a2: gpd.GeoDataFrame) -> pv.PolyData:
-    ids, polylines = a2_data(a2)
+def _a2_polydata(shp_dir: Path) -> pv.PolyData:
+    ids, polylines = a2_data(shp_dir)
     line_cells: list[int] = []
     offset = 0
     for pts in polylines:
@@ -58,10 +57,8 @@ class A2Viz:
     """
 
     def __init__(self, shp_dir: Path) -> None:
-        self.a1 = load_a1_nodes(shp_dir)
-        self.a2 = load_a2_links(shp_dir)
-        log.info("loaded %d A1 nodes, %d A2 links", len(self.a1), len(self.a2))
-        self.a2_poly = _a2_polydata(self.a2)
+        self.shp_dir = shp_dir
+        self.a2_poly = _a2_polydata(shp_dir)
         self.plotter = pv.Plotter()
         self.picker = vtk.vtkCellPicker()
         self.picker.SetTolerance(0.005)
@@ -146,7 +143,7 @@ class RawViz(A2Viz):
 
     def _add_extras(self) -> None:
         self.plotter.add_mesh(
-            _a1_polydata(self.a1),
+            _a1_polydata(self.shp_dir),
             color="crimson",
             point_size=8.0,
             render_points_as_spheres=True,
@@ -158,7 +155,7 @@ class SegmentsViz(A2Viz):
 
     def __init__(self, shp_dir: Path) -> None:
         super().__init__(shp_dir)
-        self.bundle_ids = bundle_links(self.a1, self.a2)
+        self.bundle_ids = bundle_links(shp_dir)
         self.palette = self._bundle_colors(int(self.bundle_ids.max()) + 1)
         self.a2_poly.cell_data["bundle_id"] = self.bundle_ids
 
