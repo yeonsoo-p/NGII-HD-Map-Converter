@@ -1,0 +1,7 @@
+defaults:
+  - dataset: daegu
+  - _self_
+
+paths:
+  shp_root: ${oc.env:PWD}/shp_road
+  output_dir: ${oc.env:PWD}/output

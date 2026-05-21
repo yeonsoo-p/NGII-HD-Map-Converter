@@ -48,3 +48,10 @@ Thumbs.db
 *.mov
 *.wmv
 
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+uv.lock
+.python-version

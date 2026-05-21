@@ -1,0 +1,3 @@
+name: Pangyo_Zerocity
+shp_dir: ${paths.shp_root}/Pangyo_Zerocity
+output_file: ${paths.output_dir}/Pangyo_Zerocity.xodr

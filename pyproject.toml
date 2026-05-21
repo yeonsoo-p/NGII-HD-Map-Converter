@@ -1,0 +1,82 @@
+[project]
+name = "shp2xodr"
+version = "0.1.0"
+description = "NGII precise road map (SHP) to OpenDRIVE 1.7 converter."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "geopandas",
+    "shapely",
+    "numpy",
+    "hydra-core",
+    "pyvista",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shp2xodr"]
+
+# ----------------------------------------------------------------------------
+# ruff
+# ----------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "PL",   # pylint subset
+    "TRY",  # tryceratops (catches try/except misuse, matches our no-try rule)
+    "PTH",  # flake8-use-pathlib (enforces pathlib over os.path)
+]
+ignore = [
+    "PLR0913",  # too many arguments — common in geometry/conversion code
+    "PLR2004",  # magic values — domain constants live in hydra config anyway
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "TRY"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ----------------------------------------------------------------------------
+# mypy
+# ----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_configs = true
+warn_unreachable = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["geopandas.*", "shapely.*", "pyvista.*", "hydra.*", "omegaconf.*"]
+ignore_missing_imports = true
+
+# ----------------------------------------------------------------------------
+# pytest
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
