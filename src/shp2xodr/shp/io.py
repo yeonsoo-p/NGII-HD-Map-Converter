@@ -125,3 +125,37 @@ def a4_data(
     subtypes = a4["SubType"].astype(str).to_numpy()
     names = a4["Name"].astype(str).to_numpy()
     return ids, rings, subtypes, names
+
+
+def load_b2_lines(shp_dir: Path) -> gpd.GeoDataFrame:
+    return _load(shp_dir / "B2_SURFACELINEMARK.shp")
+
+
+def b2_data(
+    shp_dir: Path,
+) -> tuple[
+    NDArray[np.str_],
+    list[NDArray[np.float64]],
+    NDArray[np.str_],
+    NDArray[np.str_],
+    NDArray[np.str_],
+    NDArray[np.str_],
+]:
+    """Load B2_SURFACELINEMARK and return ``(ids, polylines, types, kinds, r_ids, l_ids)``.
+
+    ``polylines`` is a list of ``(N_i, 3)`` XYZ arrays in source CRS units.
+    ``Type`` is the line-style varchar code (solid/broken/double); ``Kind`` is
+    the semantic class (중앙선, 차선, 정지선, 유턴선, …). ``r_ids`` and
+    ``l_ids`` are A2_LINK IDs of the lanes on the right / left of the line in
+    that lane's driving direction; either side may be the empty string when
+    the line bounds the road on only one side (e.g. shoulder edge) or when
+    its A2 reference falls outside the loaded section.
+    """
+    b2 = load_b2_lines(shp_dir)
+    ids = b2["ID"].astype(str).to_numpy()
+    polylines = [np.asarray(g.coords, dtype=np.float64) for g in b2.geometry]
+    types = b2["Type"].astype(str).to_numpy()
+    kinds = b2["Kind"].astype(str).to_numpy()
+    r_ids = b2["R_LinkID"].fillna("").astype(str).to_numpy()
+    l_ids = b2["L_LinkID"].fillna("").astype(str).to_numpy()
+    return ids, polylines, types, kinds, r_ids, l_ids
