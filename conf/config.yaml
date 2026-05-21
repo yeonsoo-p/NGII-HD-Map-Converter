@@ -6,8 +6,6 @@ paths:
   repo_root: ${oc.env:PWD}
   output_dir: ${oc.env:PWD}/output
 
-viz: segments  # one of: raw, segments
-
 segmentation:
   # Planimetric distance (meters) under which graph-disjoint junction
   # components are fused into one. NGII sometimes leaves channelized turns

@@ -82,6 +82,21 @@ def test_interior_links_at_junction_node_share_junction(sample_dir: Path) -> Non
     assert checked > 0, "no 평면교차로 nodes had touching LinkType=1 links"
 
 
+def test_road_break_does_not_cut_bundle(sample_dir: Path) -> None:
+    """Mainline links sharing a ROAD_BREAK node (tunnel/bridge/under- or
+    overpass start-end point) belong to the same bundle — in OpenDRIVE the
+    road runs continuously and the structure is a ``<bridge>``/``<tunnel>``
+    span on it.
+    """
+    a2 = load_a2_links(sample_dir)
+    seg = segment_links(sample_dir)
+    ids = a2["ID"].astype(str).to_numpy()
+    # 014391 and 014392 share node A123AI014623 (NodeType=4, 교량).
+    left = int(np.where(ids == "A223AI014391")[0][0])
+    right = int(np.where(ids == "A223AI014392")[0][0])
+    assert seg.bundle_id[left] == seg.bundle_id[right]
+
+
 def test_proximity_merge_fuses_split_intersection(sample_dir: Path) -> None:
     """Two junction-role A1 nodes that the graph-only pass left in disjoint
     components — but that sit ~4 m apart inside one physical intersection

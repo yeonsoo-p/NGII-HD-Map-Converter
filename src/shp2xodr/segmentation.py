@@ -112,7 +112,13 @@ def classify_nodes(a1: gpd.GeoDataFrame, a2: gpd.GeoDataFrame) -> dict[str, Node
 
 
 def _is_cut(role: NodeRole) -> bool:
-    return role in (NodeRole.JUNCTION, NodeRole.ROAD_BREAK)
+    """A bundling cut is *only* a JUNCTION. ROAD_BREAK (tunnel/bridge/under-
+    or overpass start-end points) doesn't end the road — in OpenDRIVE the
+    road passes straight through and the structure is emitted as a
+    ``<bridge>`` or ``<tunnel>`` span on it. LANE_SECTION becomes a
+    ``<laneSection>`` break within the same road.
+    """
+    return role is NodeRole.JUNCTION
 
 
 def _bundle_links_array(a2: gpd.GeoDataFrame, node_role: dict[str, NodeRole]) -> NDArray[np.int32]:
