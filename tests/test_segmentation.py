@@ -10,7 +10,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import shapely
 
 from shp2xodr.shp.data import A1Data, A2Data, B2Data
 from shp2xodr.shp.segmentation import Segmentation, SegmentationConfig
@@ -255,23 +254,24 @@ def test_bidirectional_merge_engages_via_passb_in_sample(segmentation: Segmentat
     assert multi_group_roads, "no merged roads — bidirectional merge did not engage"
 
 
-# ---- Pass-B C3 barrier gating (synthetic) --------------------------------------
-# These exercise _merge_groups_bidirectional directly with hand-built B2 / C3
-# inputs, so the assertion does not depend on whatever C3 geometry the Jeju
-# fixture happens to carry.
+# ---- Pass-B cross-row geometric pairing (synthetic) ---------------------------
+# Exercise _merge_groups_bidirectional directly with hand-built B2 inputs, so
+# assertions don't depend on whatever geometry the Jeju fixture carries.
 
 
-def _b2_with_two_centerlines(line_a: np.ndarray, line_b: np.ndarray) -> B2Data:
-    """Build a B2Data with exactly two Kind=501 rows, A bound to group 0 only,
-    B bound to group 1 only (the digitizing convention the sample uses). The
-    merge function reads only ``kinds`` and ``polylines``; the rest of the
+def _b2_with_two_centerlines(
+    line_a: np.ndarray, line_b: np.ndarray, kinds: tuple[str, str] = ("501", "501")
+) -> B2Data:
+    """Build a B2Data with exactly two centerline-like rows, A bound to group 0
+    only, B bound to group 1 only (the digitizing convention the sample uses).
+    The merge function reads only ``kinds`` and ``polylines``; the rest of the
     slots are populated to satisfy the frozen dataclass.
     """
     b2 = object.__new__(B2Data)
     object.__setattr__(b2, "ids", np.array(["b2a", "b2b"], dtype=np.str_))
     object.__setattr__(b2, "polylines", [line_a, line_b])
     object.__setattr__(b2, "types", np.array(["111", "111"], dtype=np.str_))
-    object.__setattr__(b2, "kinds", np.array(["501", "501"], dtype=np.str_))
+    object.__setattr__(b2, "kinds", np.array(kinds, dtype=np.str_))
     object.__setattr__(b2, "r_link_ids", np.array(["", ""], dtype=np.str_))
     object.__setattr__(b2, "l_link_ids", np.array(["", ""], dtype=np.str_))
     return b2
@@ -292,37 +292,38 @@ def _passb_inputs() -> tuple[B2Data, np.ndarray, np.ndarray, np.ndarray]:
     return b2, b2_r_group, b2_l_group, group_junction
 
 
-def test_passb_merges_without_c3() -> None:
+def test_passb_merges_parallel_centerlines() -> None:
     b2, rg, lg, gj = _passb_inputs()
     group_road = Segmentation._merge_groups_bidirectional(
-        b2, rg, lg, gj, max_separation_m=15.0, c3_separators=()
+        b2,
+        rg,
+        lg,
+        gj,
+        max_separation_m=15.0,
     )
-    assert int(group_road[0]) == int(group_road[1]), "no C3 in the corridor — merge should fire"
+    assert int(group_road[0]) == int(group_road[1])
 
 
-def test_passb_blocked_by_c3_barrier_in_corridor() -> None:
-    b2, rg, lg, gj = _passb_inputs()
-    # A C3 polyline sitting between the two B2 centerlines, spanning their
-    # overlap in y and parallel to them in x. Crosses every corridor rung.
-    barrier = shapely.LineString([(5.0, 2.0), (15.0, 2.0)])
+def test_passb_merges_via_503_lane_lines() -> None:
+    """Pinned by SEC02_테크노폴리스: a divided road with no painted 501
+    중앙선 but with parallel 503 주행선 stripes on each carriageway. Pass B
+    must treat 503 as a centerline-equivalent and merge the groups.
+    """
+    line_a = np.array([[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]], dtype=np.float64)
+    line_b = np.array([[0.0, 4.0, 0.0], [20.0, 4.0, 0.0]], dtype=np.float64)
+    b2 = _b2_with_two_centerlines(line_a, line_b, kinds=("503", "503"))
+    b2_r_group = np.array([0, 1], dtype=np.int32)
+    b2_l_group = np.array([-1, -1], dtype=np.int32)
+    group_junction = np.array([-1, -1], dtype=np.int32)
     group_road = Segmentation._merge_groups_bidirectional(
-        b2, rg, lg, gj, max_separation_m=15.0, c3_separators=(barrier,)
-    )
-    assert int(group_road[0]) != int(group_road[1]), (
-        "C3 barrier sits between the carriageways — merge must not fire"
-    )
-
-
-def test_passb_unblocked_by_c3_outside_corridor() -> None:
-    b2, rg, lg, gj = _passb_inputs()
-    # A C3 polyline running parallel but well outside the y ∈ [0, 4] corridor
-    # — it should never cross a corridor rung.
-    elsewhere = shapely.LineString([(0.0, 30.0), (20.0, 30.0)])
-    group_road = Segmentation._merge_groups_bidirectional(
-        b2, rg, lg, gj, max_separation_m=15.0, c3_separators=(elsewhere,)
+        b2,
+        b2_r_group,
+        b2_l_group,
+        group_junction,
+        max_separation_m=15.0,
     )
     assert int(group_road[0]) == int(group_road[1]), (
-        "C3 is outside the corridor — merge should still fire"
+        "503 lane lines must act as centerline-proxies in Pass B"
     )
 
 

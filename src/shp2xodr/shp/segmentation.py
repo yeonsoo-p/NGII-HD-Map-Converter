@@ -22,12 +22,15 @@ Each component becomes one OpenDRIVE :class:`Junction`; each mainline
 :class:`Road`. The two are stored both as object tuples with mutual refs
 and as flat per-link arrays for fast viz coloring.
 
-Bidirectional merging runs after the junction pass: for every B2 중앙선
-(``Kind=501``) row whose R and L sides both bind mainline groups, the two
-groups are unioned (same-row pass); a second pass unions mainline groups
-that face each other across a median via paired centerlines within
-``bidirectional_merge_max_separation_m``. Junction-interior groups are
-always skipped.
+Bidirectional merging runs after the junction pass: for every B2
+centerline-like (``Kind=501`` 중앙선 or ``Kind=503`` 주행선) row whose R
+and L sides both bind mainline groups, the two groups are unioned
+(same-row pass); a second pass unions mainline groups that face each
+other across a median via paired centerlines within
+``bidirectional_merge_max_separation_m``. 503 lane-stripes are included
+because a divided road that lacks a painted 501 still has two parallel
+503 stripes on the opposing carriageways' inner edges, close enough for
+Pass B to pair. Junction-interior groups are always skipped.
 
 Each B2_SURFACELINEMARK row resolves its R/L_LinkID references to four
 ids: the A2 group, the road (mainline), and the junction (interior) on
@@ -48,7 +51,7 @@ import numpy as np
 import shapely
 from numpy.typing import NDArray
 
-from shp2xodr.shp.data import A1Data, A2Data, B2Data, C3Data
+from shp2xodr.shp.data import A1Data, A2Data, B2Data
 
 log = logging.getLogger(__name__)
 
@@ -77,16 +80,17 @@ _AMBIGUOUS_NODE_TYPE = "99"
 # nodes, it's a road between junctions, not interior to one.
 _INTERIOR_LINK_TYPE = "1"
 
-# NGII B2_SURFACELINEMARK.Kind: 501 = 중앙선 (centerline) — the painted line
-# separating opposing traffic directions. This is the only kind that triggers
-# bidirectional group merging. 5011 (가변차선) is a variable-direction lane,
-# 502 (유턴구역선) is a local U-turn pocket — neither is a sustained divider.
-_CENTERLINE_B2_KIND = "501"
-
-# Step (m) along the longer B2 centerline when probing for a C3 barrier in the
-# corridor between two pass-B candidate centerlines. Smaller = finer detection
-# at quadratic cost; NGII C3 polylines are continuous, so 2 m can't miss one.
-_PASSB_BARRIER_SAMPLE_STEP_M = 2.0
+# NGII B2_SURFACELINEMARK.Kind values that drive the bidirectional group
+# merge:
+#   501 = 중앙선 (yellow centerline between opposing directions) — the
+#         explicit divider.
+#   503 = 주행선 (white lane line within a direction) — included as a
+#         centerline proxy. On a divided road with no painted 501, the
+#         outermost 503 stripes of each carriageway sit close enough to
+#         each other to be paired by Pass B's proximity rule.
+# 5011 (가변차선) is a variable-direction lane and 502 (유턴구역선) is a
+# local U-turn pocket — neither is a sustained divider.
+_CENTERLINE_B2_KINDS: frozenset[str] = frozenset({"501", "503"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -125,8 +129,9 @@ class Road:
     """One OpenDRIVE-level mainline road.
 
     Spans one or more A2 groups. Multi-group roads arise from bidirectional
-    merging when two opposite-direction groups share a B2 중앙선 (Kind=501)
-    or sit between paired centerlines across a median. ``junctions`` is the
+    merging when two opposite-direction groups share a B2 centerline-like
+    row (Kind=501 중앙선 or Kind=503 주행선) or sit between paired centerlines
+    across a median. ``junctions`` is the
     unordered tuple of intersections this road touches (typically 0-2);
     "predecessor vs successor" per direction is resolved at OpenDRIVE emit
     time, where direction is meaningful.
@@ -161,10 +166,10 @@ class Segmentation:
     The ``b2_*`` arrays carry ``-1`` on a side when that B2 row has no A2
     reference in the loaded section. For non-centerline B2 lines, the two
     sides resolve to the same group; outer edge lines have one side ``-1``.
-    Centerlines (중앙선, Kind 501) bound two opposite-direction groups whose
-    ``b2_r_group != b2_l_group``, and those two groups are subsequently
-    merged into one ``Road`` — so ``b2_r_road == b2_l_road`` for the same
-    rows.
+    Centerline-like rows (중앙선 Kind=501 or 주행선 Kind=503) bind two
+    opposite-direction groups whose ``b2_r_group != b2_l_group``, and
+    those two groups are subsequently merged into one ``Road`` — so
+    ``b2_r_road == b2_l_road`` for the same rows.
 
     OpenDRIVE-level entities — ``Road`` and ``Junction`` — are exposed both
     as object tuples (``roads`` / ``junctions``, navigable via direct refs)
@@ -225,10 +230,11 @@ class Segmentation:
         than the threshold; set to ``0`` to disable.
 
         ``cfg.bidirectional_merge_max_separation_m`` controls the
-        divided-road pairing step: two B2 중앙선 (Kind=501) rows whose
-        ``LineString``s come within this planimetric distance are treated
-        as the two centerlines of one divided road, and the mainline groups
-        they each bind are merged into one :class:`Road`.
+        divided-road pairing step: two B2 centerline-like (Kind=501
+        중앙선 or Kind=503 주행선) rows whose ``LineString``s come within
+        this planimetric distance are treated as the two centerlines of
+        one divided road, and the mainline groups they each bind are
+        merged into one :class:`Road`.
 
         NGII makes B2_SURFACELINEMARK a mandatory layer for every section,
         so the B2 resolution always runs alongside the A2 pass; there is no
@@ -237,10 +243,7 @@ class Segmentation:
         a1 = A1Data(shp_dir)
         a2 = A2Data(shp_dir)
         b2 = B2Data(shp_dir)
-        c3 = C3Data(shp_dir)
         node_role = cls._classify_nodes(a1, a2)
-
-        c3_separators = cls._c3_separator_lines(c3)
 
         group_id = cls._group_links(a2, node_role)
         junction_id, nid_to_jid = cls._cluster_junctions(
@@ -259,7 +262,6 @@ class Segmentation:
             b2_l_group,
             group_junction,
             max_separation_m=cfg.bidirectional_merge_max_separation_m,
-            c3_separators=c3_separators,
         )
         b2_r_road, b2_l_road, b2_r_junction, b2_l_junction = cls._resolve_b2_to_roads(
             b2_r_group, b2_l_group, b2_r_link, b2_l_link, group_road, junction_id
@@ -741,77 +743,33 @@ class Segmentation:
         return r_link, l_link, r_group, l_group
 
     @staticmethod
-    def _barrier_between(
-        line_a: shapely.LineString,
-        line_b: shapely.LineString,
-        sep_tree: shapely.STRtree,
-        max_separation_m: float,
-    ) -> bool:
-        """True if any C3 separator in ``sep_tree`` crosses the corridor between A and B.
-
-        The corridor is sampled by walking ``line_a`` in
-        ``_PASSB_BARRIER_SAMPLE_STEP_M`` steps, projecting each sample to its
-        nearest point on ``line_b``, and keeping the rung where the gap is
-        within ``max_separation_m`` (samples beyond the threshold lie outside
-        the candidate overlap). The merge is blocked when any rung intersects
-        a C3 separator polyline.
-        """
-        length = float(line_a.length)
-        if length <= 0.0:
-            return False
-        step = _PASSB_BARRIER_SAMPLE_STEP_M
-        n_steps = max(int(np.ceil(length / step)), 1)
-        rungs: list[shapely.LineString] = []
-        for k in range(n_steps + 1):
-            s = min(k * step, length)
-            p_a = line_a.interpolate(s)
-            p_b = line_b.interpolate(line_b.project(p_a))
-            if p_a.distance(p_b) > max_separation_m:
-                continue
-            rungs.append(shapely.LineString([(p_a.x, p_a.y), (p_b.x, p_b.y)]))
-        if not rungs:
-            return False
-        corridor = shapely.MultiLineString(rungs)
-        return bool(len(sep_tree.query(corridor, predicate="intersects")))
-
-    @staticmethod
-    def _c3_separator_lines(c3: C3Data) -> tuple[shapely.LineString, ...]:
-        """Every C3 polyline as a 2-D ``LineString`` — used as Pass-B barriers.
-
-        All C3 facility classes count as separators (guardrail, concrete wall,
-        kerb, jaywalk barrier, median opening, wall, …). The merge corridor is
-        planimetric, so Z is dropped.
-        """
-        return tuple(shapely.LineString(poly[:, :2]) for poly in c3.polylines)
-
-    @staticmethod
     def _merge_groups_bidirectional(
         b2: B2Data,
         b2_r_group: NDArray[np.int32],
         b2_l_group: NDArray[np.int32],
         group_junction: NDArray[np.int32],
         max_separation_m: float,
-        c3_separators: tuple[shapely.LineString, ...],
     ) -> NDArray[np.int32]:
-        """Bidirectional merge of mainline groups across B2 중앙선 rows.
+        """Bidirectional merge of mainline groups across B2 centerline-like rows.
+
+        "Centerline-like" = ``Kind=501`` 중앙선 (the canonical opposing-
+        traffic divider) *or* ``Kind=503`` 주행선 (a within-direction lane
+        line, used as a centerline proxy when no painted 501 exists between
+        the two carriageways).
 
         Two passes, both gated to mainline groups (``group_junction[b] == -1``):
 
-        * **Pass A** — same-row pairing. For every B2 ``Kind=501`` row whose
-          R and L sides both bind to mainline groups, union those two groups.
-          This covers the typical undivided road: one painted centerline,
-          two adjacent opposing lanes. Not C3-gated: an undivided road has
-          no median, the painted centerline is the only separator.
+        * **Pass A** — same-row pairing. For every centerline-like B2 row
+          whose R and L sides both bind to mainline groups, union those two
+          groups. This covers the typical undivided road: one painted
+          centerline, two adjacent opposing lanes.
 
-        * **Pass B** — cross-row pairing. For every pair of distinct B2
-          ``Kind=501`` rows that each bind one mainline group and lie within
-          ``max_separation_m`` planimetric distance, union the two bound
-          groups — *unless* a ``c3_separators`` polyline crosses any rung of
-          the corridor between them. This covers divided roads where each
+        * **Pass B** — cross-row geometric pairing. For every pair of
+          distinct centerline-like B2 rows that each bind one mainline
+          group and lie within ``max_separation_m`` planimetric distance,
+          union the two bound groups. This covers divided roads where each
           direction carries its own centerline along the inner edge of its
-          leftmost lane, separated by a median (no single B2 row spans both
-          directions), while preventing carriageways that NGII intentionally
-          split with a barrier from being merged back together.
+          leftmost lane (no single B2 row spans both directions).
 
         Returns ``group_road``: dense road id per mainline group; ``-1`` for
         junction-interior groups.
@@ -822,7 +780,9 @@ class Segmentation:
         def is_main(g: int) -> bool:
             return g >= 0 and int(group_junction[g]) == -1
 
-        centerline_idxs: NDArray[np.intp] = np.flatnonzero(b2.kinds == _CENTERLINE_B2_KIND)
+        centerline_idxs: NDArray[np.intp] = np.flatnonzero(
+            np.isin(b2.kinds, list(_CENTERLINE_B2_KINDS))
+        )
 
         # Pass A: same-row pairing
         for i in centerline_idxs:
@@ -844,7 +804,6 @@ class Segmentation:
                     return lg
                 return -1
 
-            sep_tree = shapely.STRtree(c3_separators) if c3_separators else None
             bound_groups = [bound_main_group(int(i)) for i in centerline_idxs]
             for a in range(len(centerline_idxs)):
                 ga = bound_groups[a]
@@ -858,10 +817,6 @@ class Segmentation:
                     if gb < 0:
                         continue
                     if Segmentation._uf_find(parent, ga) == Segmentation._uf_find(parent, gb):
-                        continue
-                    if sep_tree is not None and Segmentation._barrier_between(
-                        geoms[a], geoms[int(b)], sep_tree, max_separation_m
-                    ):
                         continue
                     Segmentation._uf_union(parent, ga, gb)
 
