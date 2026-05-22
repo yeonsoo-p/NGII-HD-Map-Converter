@@ -10,6 +10,8 @@ dependencies = [
     "numpy",
     "hydra-core",
     "pyvista",
+    "pyvistaqt",
+    "pyside6",
 ]
 
 [dependency-groups]
@@ -71,7 +73,7 @@ warn_unreachable = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["geopandas.*", "shapely.*", "hydra.*", "omegaconf.*", "pandas.*"]
+module = ["geopandas.*", "shapely.*", "hydra.*", "omegaconf.*", "pandas.*", "pyvistaqt.*"]
 ignore_missing_imports = true
 
 # pyvista ships its own type info but wraps many methods in decorators that

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import hydra
 from omegaconf import DictConfig
+from PySide6.QtWidgets import QApplication
 
-from shp2xodr.shp.viz import HdMapViz
+from shp2xodr.shp.gui import HdMapWindow
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +19,10 @@ log = logging.getLogger(__name__)
 def main(cfg: DictConfig) -> None:
     shp_dir = Path(cfg.dataset.shp_dir)
     log.info("dataset=%s  shp_dir=%s", cfg.dataset.name, shp_dir)
-    HdMapViz(shp_dir, junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m).show()
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = HdMapWindow(shp_dir, junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m)
+    window.show()
+    app.exec()
 
 
 if __name__ == "__main__":
