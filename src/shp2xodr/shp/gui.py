@@ -10,8 +10,9 @@ The right-side dock has three sections:
 
 * **Data layers** — one checkbox per NGII layer (A1 / A2 / A3 / A4 / B2 /
   C3), toggling base-actor visibility.
-* **Abstractions** — toggles for segmentation-derived overlays: the A2
-  bundle palette, and the junction-hulls overlay.
+* **Abstraction** — three radio buttons selecting the A2 / B2 coloring
+  level: ``1`` None, ``2`` Group, ``3`` Road & Junction. C3 / A3 / A4 /
+  A1 colors stay on their natural NGII codes at every level.
 * **Picked** — a header line naming the picked layer + ID, and a key/value
   table populated from the data class and segmentation results. Only one
   feature can be picked at a time, so one panel is sufficient.
@@ -28,6 +29,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QDockWidget,
     QFileDialog,
@@ -36,6 +38,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QRadioButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -90,12 +93,17 @@ def _opt(value: str) -> str:
 class HdMapWindow(QMainWindow):
     """Main window hosting the 3D scene and the inspector dock."""
 
-    def __init__(self, junction_merge_dist_m: float = 0.0) -> None:
+    def __init__(
+        self,
+        junction_merge_dist_m: float = 0.0,
+        bidirectional_merge_max_separation_m: float = 15.0,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("shp2xodr — (no folder)")
         self.resize(1500, 950)
 
         self._junction_merge_dist_m = junction_merge_dist_m
+        self._bidirectional_merge_max_separation_m = bidirectional_merge_max_separation_m
         self.viz: HdMapViz | None = None
 
         self.qt_plotter = QtInteractor(self)
@@ -103,11 +111,11 @@ class HdMapWindow(QMainWindow):
         self.qt_plotter.enable_parallel_projection()
         self.qt_plotter.view_xy()
 
-        # Checkbox handles — populated in _build_dock(); read in load_folder()
+        # Widget handles — populated in _build_dock(); read in load_folder()
         # to carry user preferences forward into a freshly-attached viz.
         self._layer_cbs: dict[str, QCheckBox] = {}
-        self._bundle_cb: QCheckBox
-        self._junction_hulls_cb: QCheckBox
+        self._level_buttons: dict[int, QRadioButton] = {}
+        self._abstraction_level: int = 3
         self._data_group: QGroupBox
         self._abstraction_group: QGroupBox
 
@@ -161,16 +169,22 @@ class HdMapWindow(QMainWindow):
         return gb
 
     def _build_abstraction_group(self) -> QGroupBox:
-        gb = QGroupBox("Abstractions")
+        gb = QGroupBox("Abstraction")
         v = QVBoxLayout(gb)
-        self._bundle_cb = QCheckBox("Bundle palette  (A2 colored by segmentation)")
-        self._bundle_cb.setChecked(True)
-        self._bundle_cb.toggled.connect(self._on_bundle_toggle)
-        self._junction_hulls_cb = QCheckBox("Junction hulls  (convex hull per junction)")
-        self._junction_hulls_cb.setChecked(False)
-        self._junction_hulls_cb.toggled.connect(self._on_junction_hulls_toggle)
-        v.addWidget(self._bundle_cb)
-        v.addWidget(self._junction_hulls_cb)
+        # QButtonGroup is mutually-exclusive by default and owns the buttons'
+        # ID assignment; we use level ints 1-3 directly as the button IDs.
+        self._level_button_group = QButtonGroup(gb)
+        for level, label in (
+            (1, "1  None\t(raw layer colors)"),
+            (2, "2  Group\t(A2 / B2 colored by SHP group)"),
+            (3, "3  Road & Junction\t(A2 / B2 by OpenDRIVE entity)"),
+        ):
+            rb = QRadioButton(label)
+            rb.setChecked(level == self._abstraction_level)
+            self._level_button_group.addButton(rb, level)
+            v.addWidget(rb)
+            self._level_buttons[level] = rb
+        self._level_button_group.idToggled.connect(self._on_abstraction_changed)
         return gb
 
     def _build_pick_panel(self) -> QGroupBox:
@@ -205,13 +219,15 @@ class HdMapWindow(QMainWindow):
         if self.viz is not None:
             self.viz.set_layer_visible(name, on)
 
-    def _on_bundle_toggle(self, on: bool) -> None:
+    def _on_abstraction_changed(self, level: int, checked: bool) -> None:
+        # idToggled fires twice per click — once for the deselected button
+        # (checked=False) and once for the newly selected one (checked=True).
+        # We only care about the selection edge.
+        if not checked:
+            return
+        self._abstraction_level = level
         if self.viz is not None:
-            self.viz.set_bundle_palette_on(on)
-
-    def _on_junction_hulls_toggle(self, on: bool) -> None:
-        if self.viz is not None:
-            self.viz.set_junction_hulls_visible(on)
+            self.viz.set_abstraction_level(level)
 
     # ---- Open-folder flow ----------------------------------------------------
 
@@ -237,6 +253,7 @@ class HdMapWindow(QMainWindow):
             viz = HdMapViz(
                 shp_dir,
                 junction_merge_dist_m=self._junction_merge_dist_m,
+                bidirectional_merge_max_separation_m=self._bidirectional_merge_max_separation_m,
                 plotter=self.qt_plotter,
                 on_pick=self._on_pick,
             )
@@ -255,12 +272,11 @@ class HdMapWindow(QMainWindow):
             return
 
         self.viz = viz
-        # Carry dock-toggle state forward (the new viz defaults are all-on /
-        # bundle-on / hulls-off; the user may have changed any of these).
+        # Carry dock state forward (the new viz defaults are all layers on
+        # and level 3; the user may have changed either).
         for name, cb in self._layer_cbs.items():
             viz.set_layer_visible(name, cb.isChecked())
-        viz.set_bundle_palette_on(self._bundle_cb.isChecked())
-        viz.set_junction_hulls_visible(self._junction_hulls_cb.isChecked())
+        viz.set_abstraction_level(self._abstraction_level)
 
         self.qt_plotter.view_xy()
         self.qt_plotter.reset_camera()
@@ -338,7 +354,7 @@ class HdMapWindow(QMainWindow):
             ("SectionID", _opt(d.section_ids[idx])),
             ("Length (m)", f"{float(d.lengths_m[idx]):.2f}"),
             ("ITS_LinkID", _opt(d.its_link_ids[idx])),
-            ("Bundle", str(int(seg.bundle_id[idx]))),
+            ("Group", str(int(seg.group_id[idx]))),
             ("Junction", str(jid) if jid >= 0 else "-"),
         ]
 
@@ -373,16 +389,16 @@ class HdMapWindow(QMainWindow):
         type_code = str(d.types[idx])
         color_label = B2Data.TYPE_COLOR_LABEL.get(type_code[:1], "")
         type_text = f"{type_code} ({color_label})" if color_label else type_code
-        r_b = int(seg.b2_r_bundle[idx])
-        l_b = int(seg.b2_l_bundle[idx])
+        r_b = int(seg.b2_r_group[idx])
+        l_b = int(seg.b2_l_group[idx])
         return [
             ("ID", str(d.ids[idx])),
             ("Type", type_text),
             ("Kind", _coded(d.kinds[idx], B2Data.KIND_LABEL)),
             ("R_LinkID", _opt(d.r_link_ids[idx])),
             ("L_LinkID", _opt(d.l_link_ids[idx])),
-            ("R Bundle", str(r_b) if r_b >= 0 else "-"),
-            ("L Bundle", str(l_b) if l_b >= 0 else "-"),
+            ("R Group", str(r_b) if r_b >= 0 else "-"),
+            ("L Group", str(l_b) if l_b >= 0 else "-"),
         ]
 
     def _fields_c3(self, idx: int) -> list[tuple[str, str]]:

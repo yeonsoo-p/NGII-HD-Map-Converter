@@ -1,19 +1,27 @@
 """3D scene builder for NGII HD-map (정밀도로지도) layers.
 
 :class:`HdMapViz` builds the VTK actors for every layer (A1 / A2 / A3 / A4
-/ B2 / C3) plus segmentation-derived overlays, and binds shift-click
-pickers. The class is plotter-agnostic: pass any ``pyvista.BasePlotter``
-subclass — a vanilla ``pv.Plotter`` for standalone use or a
-``pyvistaqt.QtInteractor`` for the Qt inspector window.
+/ B2 / C3) and binds shift-click pickers. The class is plotter-agnostic:
+pass any ``pyvista.BasePlotter`` subclass — a vanilla ``pv.Plotter`` for
+standalone use or a ``pyvistaqt.QtInteractor`` for the Qt inspector window.
 
 Pick events are delivered through ``on_pick(kind, idx)`` — the scene does
 not render pick info on-screen. The Qt window translates picks into
 structured tab fields; standalone mode just logs them.
 
-Layer visibility, the bundle palette swap, and the junction-hulls overlay
-are exposed as plain methods so the GUI can wire them to dock widgets:
-:meth:`set_layer_visible`, :meth:`set_bundle_palette_on`,
-:meth:`set_junction_hulls_visible`.
+Layer visibility and the 3-level abstraction selector are exposed as plain
+methods so the GUI can wire them to dock widgets:
+:meth:`set_layer_visible`, :meth:`set_abstraction_level`.
+
+Abstraction levels (passed to :meth:`set_abstraction_level`):
+
+* ``1`` — None. A2 uniform neutral; B2 by paint color; everything else
+  by natural NGII codes.
+* ``2`` — Group. A2 colored per SHP group (lateral lane cluster within a
+  road segment); B2 inherits its bound group's color (paint code ignored).
+* ``3`` — Road & Junction. A2 mainline rows colored per OpenDRIVE road;
+  A2 junction-interior rows colored per junction; B2 inherits the
+  road/junction color of its bound side.
 """
 
 from __future__ import annotations
@@ -56,7 +64,7 @@ _POLY_OPACITY = 0.85
 # beat translucent-pass draw order, small enough to avoid visible gaps.
 _POLY_DEPTH_OFFSET: tuple[float, float] = (2.0, 2.0)
 
-# Line widths per layer (A2 thickest so the bundle/junction coloring stays
+# Line widths per layer (A2 thickest so the group/junction coloring stays
 # visually dominant over markings + barriers).
 _LW_A2 = 2.5
 _LW_B2 = 1.4
@@ -89,23 +97,24 @@ _BG_COLOR: tuple[float, float, float] = (0.86, 0.88, 0.90)
 # cool fills, A2 random saturated range).
 _HIGHLIGHT_RGB: tuple[int, int, int] = (255, 30, 200)
 
-# Junction-hulls overlay: filled convex hull around each junction's interior
-# A2 polyline points, drawn semi-transparent. Color chosen to read on any
-# A3 / A4 fill while staying distinct from the magenta highlight.
-_JUNCTION_HULL_RGB: tuple[int, int, int] = (255, 200, 0)
-_JUNCTION_HULL_OPACITY = 0.22
-
-# Uniform color used for A2 when the bundle palette is toggled off.
+# Uniform color used for A2 (and B2 fallback) at abstraction level 1 — the
+# "no segmentation overlay" view that lets the user read raw geometry.
 _A2_UNIFORM_RGB: tuple[int, int, int] = (110, 110, 120)
+
+# Abstraction levels — keep symbolic; the GUI radio buttons map to these
+# integers, and viz.set_abstraction_level asserts 1 <= level <= 3.
+_LEVEL_RAW = 1
+_LEVEL_GROUP = 2
+_LEVEL_ROAD_JUNCTION = 3
+_DEFAULT_LEVEL = _LEVEL_ROAD_JUNCTION
 
 # Enable VTK's coincident-topology resolution mode globally; per-mapper
 # relative offsets above only take effect once this is on.
 vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 
-# Both the highlight overlay and the junction-hulls overlay may start empty
-# (no picks yet / no junctions in the section). PyVista 0.43+ refuses empty
-# meshes by default; flipping this global theme bit lets us attach them
-# up-front and swap geometry in later.
+# The highlight overlay starts empty (no picks yet). PyVista 0.43+ refuses
+# empty meshes by default; flipping this global theme bit lets us attach the
+# actor up-front and swap geometry in on the first pick.
 pv.global_theme.allow_empty_mesh = True
 
 
@@ -377,6 +386,7 @@ class HdMapViz:
         self,
         shp_dir: Path,
         junction_merge_dist_m: float = 0.0,
+        bidirectional_merge_max_separation_m: float = 15.0,
         plotter: pv.Plotter | None = None,
         on_pick: PickCallback | None = None,
     ) -> None:
@@ -392,14 +402,17 @@ class HdMapViz:
         self.b2 = B2Data(shp_dir)
         self.c3 = C3Data(shp_dir)
 
-        # Segmentation + per-bundle / per-junction palettes.
+        # Segmentation + per-group / per-junction / per-road palettes.
         self.segmentation = Segmentation.from_shp_dir(
-            shp_dir, junction_merge_dist_m=junction_merge_dist_m
+            shp_dir,
+            junction_merge_dist_m=junction_merge_dist_m,
+            bidirectional_merge_max_separation_m=bidirectional_merge_max_separation_m,
         )
-        self.bundle_palette = _random_palette(int(self.segmentation.bundle_id.max()) + 1, seed=42)
+        self.group_palette = _random_palette(int(self.segmentation.group_id.max()) + 1, seed=42)
         self.junction_palette = _random_palette(
             int(self.segmentation.node_junction_id.max()) + 1, seed=137
         )
+        self.road_palette = _random_palette(len(self.segmentation.roads), seed=1729)
 
         # Pickable layer wrappers. Order in the line-layer tuple is also the
         # shift-click priority order (first match wins).
@@ -442,14 +455,14 @@ class HdMapViz:
             _PolygonLayer("A4", self.a4, self._a4_face_rgb),
         )
 
-        # Overlays. Both start empty so PyVista's allow_empty_mesh covers
-        # them; the actors are populated in attach() and toggled by setter
-        # methods at runtime.
+        # Highlight overlay — starts empty so PyVista's allow_empty_mesh
+        # covers it; geometry is swapped in on the first pick.
         self.highlight_poly = pv.PolyData()
         self.highlight_actor: vtk.vtkActor | None = None
-        self.junction_hull_poly: pv.PolyData = pv.PolyData()
-        self.junction_hull_actor: vtk.vtkActor | None = None
-        self._bundle_palette_on: bool = True
+
+        # Current abstraction level — default to level 3 so the user lands
+        # on the OpenDRIVE-aligned road/junction view.
+        self._abstraction_level: int = _DEFAULT_LEVEL
 
         # Teardown handles - populated in attach(), consumed by detach().
         self._left_press_tag: int | None = None
@@ -457,30 +470,79 @@ class HdMapViz:
 
     # ---- Per-layer color compute ---------------------------------------------
 
-    def _a2_cell_colors(self) -> NDArray[np.uint8]:
-        """RGB per A2_LINK: bundle color on mainline, junction color on interior."""
-        bundle_rgb = self.bundle_palette[self.segmentation.bundle_id]
-        is_interior = self.segmentation.junction_id >= 0
-        rgb = np.asarray(bundle_rgb).copy()
-        if is_interior.any():
-            rgb[is_interior] = self.junction_palette[self.segmentation.junction_id[is_interior]]
-        return rgb
+    def _a2_cell_colors_at(self, level: int) -> NDArray[np.uint8]:
+        """RGB per A2_LINK at the requested abstraction level.
 
-    def _a2_uniform_colors(self) -> NDArray[np.uint8]:
-        """Single neutral color for all A2 rows — used when the bundle palette
-        toggle is off, so the user can see raw A2 geometry without the
-        segmentation overlay.
+        * Level 1 — uniform neutral.
+        * Level 2 — group palette across every row (mainline + interior
+          alike), so the user reads the SHP-level group structure.
+        * Level 3 — road palette on mainline rows, junction palette on
+          interior rows; mirrors the OpenDRIVE entity each link belongs to.
         """
-        n = len(self.a2.ids)
-        return np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (n, 1))
+        seg = self.segmentation
+        if level == _LEVEL_RAW:
+            return np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (len(self.a2.ids), 1))
+        if level == _LEVEL_GROUP:
+            return np.asarray(self.group_palette[seg.group_id], dtype=np.uint8).copy()
+        if level == _LEVEL_ROAD_JUNCTION:
+            n = len(self.a2.ids)
+            rgb = np.zeros((n, 3), dtype=np.uint8)
+            mainline = seg.road_id_per_link >= 0
+            if mainline.any():
+                rgb[mainline] = self.road_palette[seg.road_id_per_link[mainline]]
+            interior = seg.junction_id >= 0
+            if interior.any():
+                rgb[interior] = self.junction_palette[seg.junction_id[interior]]
+            return rgb
+        raise ValueError(level)
+
+    def _b2_cell_colors_at(self, level: int) -> NDArray[np.uint8]:
+        """RGB per B2 row at the requested abstraction level.
+
+        * Level 1 — paint code (current B2 palette).
+        * Level 2 — bound group's color; R side wins, falls back to L; both
+          unbound rows fall back to ``_A2_UNIFORM_RGB``.
+        * Level 3 — bound road's color (mainline), else bound junction's
+          color (interior), else fallback. A centerline between two
+          bidirectionally-merged groups paints the same color as the road,
+          which is by design: the visual merge signals one OpenDRIVE road.
+        """
+        seg = self.segmentation
+        n = len(self.b2.types)
+        if level == _LEVEL_RAW:
+            rgb = np.zeros((n, 3), dtype=np.uint8)
+            for i, t in enumerate(self.b2.types):
+                rgb[i] = _B2_PAINT_RGB.get(t[:1], _B2_PAINT_FALLBACK_RGB)
+            return rgb
+        if level == _LEVEL_GROUP:
+            rgb = np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (n, 1))
+            r_bound = seg.b2_r_group >= 0
+            rgb[r_bound] = self.group_palette[seg.b2_r_group[r_bound]]
+            # L-side as fallback for rows where R is unbound but L is bound.
+            l_only = (seg.b2_r_group < 0) & (seg.b2_l_group >= 0)
+            rgb[l_only] = self.group_palette[seg.b2_l_group[l_only]]
+            return rgb
+        if level == _LEVEL_ROAD_JUNCTION:
+            rgb = np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (n, 1))
+            r_road = seg.b2_r_road >= 0
+            rgb[r_road] = self.road_palette[seg.b2_r_road[r_road]]
+            r_junction = (~r_road) & (seg.b2_r_junction >= 0)
+            rgb[r_junction] = self.junction_palette[seg.b2_r_junction[r_junction]]
+            covered = r_road | r_junction
+            l_road = (~covered) & (seg.b2_l_road >= 0)
+            rgb[l_road] = self.road_palette[seg.b2_l_road[l_road]]
+            l_junction = (~covered) & (~l_road) & (seg.b2_l_junction >= 0)
+            rgb[l_junction] = self.junction_palette[seg.b2_l_junction[l_junction]]
+            return rgb
+        raise ValueError(level)
+
+    def _a2_cell_colors(self) -> NDArray[np.uint8]:
+        """Initial-attach hook: A2 colors at the current abstraction level."""
+        return self._a2_cell_colors_at(self._abstraction_level)
 
     def _b2_cell_colors(self) -> NDArray[np.uint8]:
-        """RGB per B2 row keyed off the first digit of ``Type`` (paint color)."""
-        n = len(self.b2.types)
-        rgb = np.zeros((n, 3), dtype=np.uint8)
-        for i, t in enumerate(self.b2.types):
-            rgb[i] = _B2_PAINT_RGB.get(t[:1], _B2_PAINT_FALLBACK_RGB)
-        return rgb
+        """Initial-attach hook: B2 colors at the current abstraction level."""
+        return self._b2_cell_colors_at(self._abstraction_level)
 
     def _c3_cell_colors(self) -> NDArray[np.uint8]:
         """RGB per C3 row keyed off Type (facility class)."""
@@ -504,52 +566,6 @@ class HdMapViz:
         for i, st in enumerate(self.a4.subtypes):
             rgb[i] = _A4_SUBTYPE_RGB.get(st, _A4_FALLBACK_RGB)
         return rgb
-
-    # ---- Junction hulls ------------------------------------------------------
-
-    def _build_junction_hulls(self) -> pv.PolyData:
-        """Convex hull (XY) around each junction's interior A2 polyline
-        points, lifted to the hull's mean Z. One polygon per junction;
-        ``cell_data['junction_id']`` carries the source jid for future picks.
-        """
-        seg = self.segmentation
-        n_junctions = int(seg.junction_id.max()) + 1 if len(seg.junction_id) else 0
-        if n_junctions <= 0:
-            return pv.PolyData()
-
-        rings_xyz: list[NDArray[np.float64]] = []
-        cell_offsets: list[int] = []
-        jid_per_face: list[int] = []
-        offset = 0
-        for jid in range(n_junctions):
-            rows = np.flatnonzero(seg.junction_id == jid)
-            if len(rows) == 0:
-                continue
-            xys = np.vstack([self.a2.polylines[r][:, :2] for r in rows])
-            if len(xys) < 3:
-                continue
-            hull = shapely.MultiPoint(xys).convex_hull
-            if not isinstance(hull, ShapelyPolygon):
-                continue
-            ring_xy = np.asarray(hull.exterior.coords[:-1], dtype=np.float64)
-            zs = [self.a2.polylines[r][:, 2].mean() for r in rows if len(self.a2.polylines[r])]
-            mean_z = float(np.mean(zs))
-            ring_xyz = np.column_stack([ring_xy, np.full(len(ring_xy), mean_z)])
-            n = len(ring_xyz)
-            cell_offsets.append(n)
-            cell_offsets.extend(range(offset, offset + n))
-            rings_xyz.append(ring_xyz)
-            jid_per_face.append(jid)
-            offset += n
-
-        if not rings_xyz:
-            return pv.PolyData()
-        poly = pv.PolyData(
-            np.vstack(rings_xyz),
-            faces=np.asarray(cell_offsets, dtype=np.int64),
-        )
-        poly.cell_data["junction_id"] = np.asarray(jid_per_face, dtype=np.int32)
-        return poly
 
     # ---- View keys -----------------------------------------------------------
 
@@ -581,25 +597,13 @@ class HdMapViz:
             line_layer.attach(self.plotter)
         self.a1_layer.attach(self.plotter)
 
-        # A2 cell_data extras let pick consumers read bundle/junction off the
-        # PolyData if they prefer that over the segmentation arrays.
+        # A2 cell_data extras let pick consumers read group/junction/road off
+        # the PolyData if they prefer that over the segmentation arrays.
         a2_poly = self.line_layers[0].poly
         a2_poly.cell_data["link_id"] = self.a2.ids
-        a2_poly.cell_data["bundle_id"] = self.segmentation.bundle_id
+        a2_poly.cell_data["group_id"] = self.segmentation.group_id
         a2_poly.cell_data["junction_id"] = self.segmentation.junction_id
-
-        # Junction hulls overlay — built once, hidden by default; the GUI
-        # toggles it via set_junction_hulls_visible.
-        self.junction_hull_poly = self._build_junction_hulls()
-        self.junction_hull_actor = self.plotter.add_mesh(
-            self.junction_hull_poly,
-            color=_JUNCTION_HULL_RGB,
-            opacity=_JUNCTION_HULL_OPACITY,
-            show_scalar_bar=False,
-            pickable=False,
-            lighting=False,
-        )
-        self.junction_hull_actor.SetVisibility(0)
+        a2_poly.cell_data["road_id"] = self.segmentation.road_id_per_link
 
         # Highlight overlay — added last so it draws on top of every base
         # mesh. Initial PolyData is empty, so nothing renders until a pick
@@ -634,7 +638,6 @@ class HdMapViz:
             self.a1_layer.actor,
             *(line.actor for line in self.line_layers),
             *(poly.actor for poly in self.polygon_layers),
-            self.junction_hull_actor,
             self.highlight_actor,
         ):
             if actor is not None:
@@ -667,24 +670,25 @@ class HdMapViz:
                         break
         self.plotter.render()
 
-    def set_bundle_palette_on(self, on: bool) -> None:
-        """Toggle the A2 segmentation coloring. ``True`` = per-bundle
-        rainbow (default); ``False`` = uniform neutral so the user sees raw
-        A2 geometry without segmentation information.
-        """
-        if on == self._bundle_palette_on:
-            return
-        self._bundle_palette_on = on
-        a2_poly = self.line_layers[0].poly
-        a2_poly.cell_data["rgb"] = self._a2_cell_colors() if on else self._a2_uniform_colors()
-        a2_poly.Modified()
-        self.plotter.render()
+    def set_abstraction_level(self, level: int) -> None:
+        """Switch the A2 + B2 cell coloring to one of the three abstraction
+        levels (1 None / 2 Group / 3 Road & Junction).
 
-    def set_junction_hulls_visible(self, on: bool) -> None:
-        """Toggle the junction-hulls overlay."""
-        if self.junction_hull_actor is not None:
-            self.junction_hull_actor.SetVisibility(int(on))
-            self.plotter.render()
+        Idempotent: re-setting the current level is a no-op. C3 / A3 / A4 /
+        A1 layers stay on their natural NGII codes at every level.
+        """
+        if not _LEVEL_RAW <= level <= _LEVEL_ROAD_JUNCTION:
+            raise ValueError(level)
+        if level == self._abstraction_level:
+            return
+        self._abstraction_level = level
+        a2_poly = self.line_layers[0].poly
+        a2_poly.cell_data["rgb"] = self._a2_cell_colors_at(level)
+        a2_poly.Modified()
+        b2_poly = self.line_layers[1].poly
+        b2_poly.cell_data["rgb"] = self._b2_cell_colors_at(level)
+        b2_poly.Modified()
+        self.plotter.render()
 
     # ---- Shift-click dispatch ------------------------------------------------
 

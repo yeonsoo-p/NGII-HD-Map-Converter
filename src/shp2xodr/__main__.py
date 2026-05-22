@@ -24,7 +24,10 @@ log = logging.getLogger(__name__)
 @hydra.main(version_base=None, config_path="../../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     app = QApplication.instance() or QApplication(sys.argv)
-    window = HdMapWindow(junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m)
+    window = HdMapWindow(
+        junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m,
+        bidirectional_merge_max_separation_m=cfg.segmentation.bidirectional_merge_max_separation_m,
+    )
     window.show()
     if cfg.shp_dir is not None:
         # to_absolute_path resolves against the invocation cwd, not Hydra's
