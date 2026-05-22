@@ -27,6 +27,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
+import shapely.ops
 from numpy.typing import NDArray
 
 log = logging.getLogger(__name__)
@@ -127,6 +128,13 @@ def _load(shp_path: Path) -> gpd.GeoDataFrame:
     return _normalize_columns(gdf, shp_path.name)
 
 
+# Snap tolerance for stitching multipart LineString rows that NGII ships with
+# sub-cm endpoint drift. Wide enough to absorb a few-cm digitization slop
+# (we have observed 27 mm in the wild) and tight enough that genuinely
+# separate A2 link endpoints (always ≥ 1 m apart) cannot accidentally fuse.
+_MULTIPART_SNAP_TOL_M = 0.1
+
+
 # ---- Shared column / geometry extractors ---------------------------------------
 
 
@@ -157,20 +165,38 @@ def _outer_rings_from_gdf(gdf: gpd.GeoDataFrame) -> list[NDArray[np.float64]]:
 def _as_single_linestring(
     g: shapely.geometry.base.BaseGeometry, *, row_id: str
 ) -> shapely.LineString:
-    """Single-part LineString, unwrapping length-1 MultiLineStrings.
+    """Single-part LineString.
 
     OGR / pyogrio promote single-part rows to ``MultiLineString`` whenever a
-    layer is tagged multi-part; unwrap is lossless. Reject truly multi-part
-    rows with a row-id-tagged ``ValueError`` so the user can repair the SHP.
+    layer is tagged multi-part; unwrap is lossless. NGII also ships
+    genuinely multipart rows where the sub-LineStrings chain endpoint-to-
+    endpoint as one continuous edge — :func:`shapely.ops.linemerge`
+    collapses those into a single ``LineString``. Only when the parts are
+    *truly* disjoint after merge do we raise.
     """
     if isinstance(g, shapely.LineString):
         return g
     if isinstance(g, shapely.MultiLineString):
         if len(g.geoms) == 1:
             return g.geoms[0]
+        merged = shapely.ops.linemerge(g)
+        if isinstance(merged, shapely.LineString):
+            return merged
+        # Endpoints don't match exactly — snap sub-cm drift and retry via a
+        # unary_union pass (snap alone only *inserts* the foreign vertex into
+        # each part; union nodifies the now-overlapping vertices so linemerge
+        # can stitch the chain).
+        snapped = shapely.snap(g, g, _MULTIPART_SNAP_TOL_M)
+        merged = shapely.ops.linemerge(shapely.ops.unary_union(snapped))
+        if isinstance(merged, shapely.LineString):
+            return merged
+        n_remaining = len(merged.geoms)
         msg = (
-            f"row ID={row_id!r}: MultiLineString with {len(g.geoms)} parts is "
-            f"not supported — each NGII line-layer row must be a single polyline"
+            f"row ID={row_id!r}: MultiLineString with {len(g.geoms)} parts "
+            f"could not be merged into a single polyline ({n_remaining} "
+            f"disjoint chains remain after snap+linemerge at "
+            f"{_MULTIPART_SNAP_TOL_M} m tolerance) — the geometry is genuinely "
+            f"discontinuous and needs to be repaired in the source SHP"
         )
         raise ValueError(msg)
     msg = (

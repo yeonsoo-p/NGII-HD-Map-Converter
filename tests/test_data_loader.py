@@ -39,11 +39,57 @@ def test_polylines_unwrap_single_part_multilinestring() -> None:
     np.testing.assert_array_equal(out, np.array([[0.0, 0.0], [5.0, 5.0]]))
 
 
-def test_polylines_reject_true_multipart() -> None:
+def test_polylines_merge_connected_multipart() -> None:
+    """3-part MLS that chains endpoint-to-endpoint merges to one polyline."""
     mls = shapely.MultiLineString(
-        [shapely.LineString([(0.0, 0.0), (1.0, 0.0)]), shapely.LineString([(2.0, 0.0), (3.0, 0.0)])]
+        [
+            shapely.LineString([(0.0, 0.0), (1.0, 0.0)]),
+            shapely.LineString([(1.0, 0.0), (2.0, 0.0)]),
+            shapely.LineString([(2.0, 0.0), (3.0, 0.0)]),
+        ]
     )
-    with pytest.raises(ValueError, match=r"row ID='L042'.*2 parts"):
+    [out] = _polylines_from_gdf(_line_gdf(mls))
+    np.testing.assert_array_equal(out, np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]))
+
+
+def test_polylines_merge_connected_multipart_preserves_z() -> None:
+    """Same chain in 3-D — Z must survive the merge so OpenDRIVE elevations stay intact."""
+    mls = shapely.MultiLineString(
+        [
+            shapely.LineString([(0.0, 0.0, 10.0), (1.0, 0.0, 11.0)]),
+            shapely.LineString([(1.0, 0.0, 11.0), (2.0, 0.0, 12.0)]),
+        ]
+    )
+    [out] = _polylines_from_gdf(_line_gdf(mls))
+    np.testing.assert_array_equal(
+        out, np.array([[0.0, 0.0, 10.0], [1.0, 0.0, 11.0], [2.0, 0.0, 12.0]])
+    )
+
+
+def test_polylines_merge_sub_cm_drift() -> None:
+    """Parts with sub-cm endpoint drift (NGII roundtripping noise) snap-then-merge.
+
+    Pinned by real SEC01_송파대로 data: row A2196I000499 has a 27 mm gap
+    between the shared endpoint of its two sub-LineStrings. 3 cm here.
+    """
+    mls = shapely.MultiLineString(
+        [
+            shapely.LineString([(0.0, 0.0), (1.0, 0.0)]),
+            shapely.LineString([(1.03, 0.0), (2.0, 0.0)]),
+        ]
+    )
+    [out] = _polylines_from_gdf(_line_gdf(mls))
+    assert out.shape[0] >= 3, f"expected single merged polyline, got shape {out.shape}"
+    np.testing.assert_array_equal(out[0], np.array([0.0, 0.0]))
+    np.testing.assert_array_equal(out[-1], np.array([2.0, 0.0]))
+
+
+def test_polylines_reject_disconnected_multipart() -> None:
+    """Sub-lines that don't share endpoints can't be merged → row-id-tagged ValueError."""
+    mls = shapely.MultiLineString(
+        [shapely.LineString([(0.0, 0.0), (1.0, 0.0)]), shapely.LineString([(5.0, 0.0), (6.0, 0.0)])]
+    )
+    with pytest.raises(ValueError, match=r"row ID='L042'.*could not be merged"):
         _polylines_from_gdf(_line_gdf(mls, row_id="L042"))
 
 
