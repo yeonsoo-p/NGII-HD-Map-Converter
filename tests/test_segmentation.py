@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from shp2xodr.shp.io import load_a1_nodes, load_a2_links
-from shp2xodr.shp.segmentation import segment_links
+from shp2xodr.shp.data import A1Data, A2Data
+from shp2xodr.shp.segmentation import Segmentation
 
 _SAMPLE_SHP_DIR = (
     Path(__file__).resolve().parent.parent
@@ -30,15 +30,14 @@ def sample_dir() -> Path:
 
 
 def test_interior_link_iff_link_type_1(sample_dir: Path) -> None:
-    a2 = load_a2_links(sample_dir)
-    seg = segment_links(sample_dir)
-    link_types = a2["LinkType"].astype(str).to_numpy()
+    a2 = A2Data(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir)
     is_interior = seg.junction_id >= 0
-    assert np.array_equal(is_interior, link_types == "1")
+    assert np.array_equal(is_interior, a2.link_types == "1")
 
 
 def test_bundle_junction_uniform(sample_dir: Path) -> None:
-    seg = segment_links(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir)
     n_bundles = int(seg.bundle_id.max()) + 1
     for b in range(n_bundles):
         rows = seg.bundle_id == b
@@ -55,20 +54,16 @@ def test_interior_links_at_junction_node_share_junction(sample_dir: Path) -> Non
     resolve to the same junction id, and that id matches the node's own
     junction id.
     """
-    a1 = load_a1_nodes(sample_dir)
-    a2 = load_a2_links(sample_dir)
-    seg = segment_links(sample_dir)
+    a1 = A1Data(sample_dir)
+    a2 = A2Data(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir)
 
-    a1_nids = a1["ID"].astype(str).to_numpy()
-    froms = a2["FromNodeID"].astype(str).to_numpy()
-    tos = a2["ToNodeID"].astype(str).to_numpy()
-    link_types = a2["LinkType"].astype(str).to_numpy()
-    plane_xings = a1["NodeType"].astype(str).to_numpy() == "1"
+    plane_xings = a1.node_types == "1"
 
     checked = 0
     for idx in np.where(plane_xings)[0]:
-        nid = a1_nids[idx]
-        touch = ((froms == nid) | (tos == nid)) & (link_types == "1")
+        nid = a1.ids[idx]
+        touch = ((a2.from_node_ids == nid) | (a2.to_node_ids == nid)) & (a2.link_types == "1")
         if not touch.any():
             continue
         node_jid = int(seg.node_junction_id[idx])
@@ -88,12 +83,11 @@ def test_road_break_does_not_cut_bundle(sample_dir: Path) -> None:
     road runs continuously and the structure is a ``<bridge>``/``<tunnel>``
     span on it.
     """
-    a2 = load_a2_links(sample_dir)
-    seg = segment_links(sample_dir)
-    ids = a2["ID"].astype(str).to_numpy()
+    a2 = A2Data(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir)
     # 014391 and 014392 share node A123AI014623 (NodeType=4, 교량).
-    left = int(np.where(ids == "A223AI014391")[0][0])
-    right = int(np.where(ids == "A223AI014392")[0][0])
+    left = int(np.where(a2.ids == "A223AI014391")[0][0])
+    right = int(np.where(a2.ids == "A223AI014392")[0][0])
     assert seg.bundle_id[left] == seg.bundle_id[right]
 
 
@@ -102,18 +96,17 @@ def test_proximity_merge_fuses_split_intersection(sample_dir: Path) -> None:
     components — but that sit ~4 m apart inside one physical intersection
     — must end up in one junction once proximity merging is enabled.
     """
-    a1 = load_a1_nodes(sample_dir)
-    a1_nids = a1["ID"].astype(str).to_numpy()
+    a1 = A1Data(sample_dir)
     # See the bundle 306 / junction 46-vs-83 case from interactive picks: the
     # 4-node group around A123AI014562 was split off from the 6-node group
     # around A123AI014208, with ~3.8 m between their nearest nodes.
-    left_idx = int(np.where(a1_nids == "A123AI014208")[0][0])
-    right_idx = int(np.where(a1_nids == "A123AI014562")[0][0])
+    left_idx = int(np.where(a1.ids == "A123AI014208")[0][0])
+    right_idx = int(np.where(a1.ids == "A123AI014562")[0][0])
 
-    graph_only = segment_links(sample_dir)
+    graph_only = Segmentation.from_shp_dir(sample_dir)
     assert graph_only.node_junction_id[left_idx] != graph_only.node_junction_id[right_idx]
 
-    merged = segment_links(sample_dir, junction_merge_dist_m=5.0)
+    merged = Segmentation.from_shp_dir(sample_dir, junction_merge_dist_m=5.0)
     left_jid = int(merged.node_junction_id[left_idx])
     right_jid = int(merged.node_junction_id[right_idx])
     assert left_jid >= 0
@@ -128,12 +121,11 @@ def test_b2_two_sided_mainline_rows_share_bundle(sample_dir: Path) -> None:
     junction each bundle alone, so a B2 line straddling two of them is
     legitimately cross-bundle and is excluded here.)
     """
-    a2 = load_a2_links(sample_dir)
-    seg = segment_links(sample_dir)
-    link_types = a2["LinkType"].astype(str).to_numpy()
+    a2 = A2Data(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir)
     both_bound = (seg.b2_r_link_idx >= 0) & (seg.b2_l_link_idx >= 0)
-    r_main = both_bound & (link_types[np.clip(seg.b2_r_link_idx, 0, None)] != "1")
-    l_main = both_bound & (link_types[np.clip(seg.b2_l_link_idx, 0, None)] != "1")
+    r_main = both_bound & (a2.link_types[np.clip(seg.b2_r_link_idx, 0, None)] != "1")
+    l_main = both_bound & (a2.link_types[np.clip(seg.b2_l_link_idx, 0, None)] != "1")
     mask = r_main & l_main
     assert mask.any(), "no B2 row has both sides bound to mainline lanes"
     mismatched = int((mask & (seg.b2_r_bundle != seg.b2_l_bundle)).sum())
@@ -144,7 +136,7 @@ def test_bundle_side_junctions_well_formed(sample_dir: Path) -> None:
     """Interior bundles carry empty pred/succ sets; mainline bundles whose
     pred/succ side is non-empty must reference valid junction ids.
     """
-    seg = segment_links(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir)
     n_junctions = int(seg.node_junction_id.max()) + 1
     valid_jids = set(range(n_junctions))
     n_bundles = int(seg.bundle_id.max()) + 1
