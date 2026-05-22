@@ -187,6 +187,28 @@ class Segmentation:
     b2_r_junction: NDArray[np.int32]
     b2_l_junction: NDArray[np.int32]
 
+    # ---- Disjoint-set helpers -----------------------------------------------
+    # Stateless: each caller owns its own ``parent = np.arange(n, np.int32)``.
+    # Path-compressing find + arbitrary-root union. Used by every pass that
+    # builds connected components (link grouping, junction clustering,
+    # proximity merge, bidirectional centerline merge).
+
+    @staticmethod
+    def _uf_find(parent: NDArray[np.int32], x: int) -> int:
+        root = x
+        while parent[root] != root:
+            root = int(parent[root])
+        while parent[x] != root:
+            parent[x], x = np.int32(root), int(parent[x])
+        return root
+
+    @staticmethod
+    def _uf_union(parent: NDArray[np.int32], a: int, b: int) -> None:
+        ra = Segmentation._uf_find(parent, a)
+        rb = Segmentation._uf_find(parent, b)
+        if ra != rb:
+            parent[rb] = np.int32(ra)
+
     # ---- Construction ---------------------------------------------------------
 
     @classmethod
@@ -219,7 +241,6 @@ class Segmentation:
         group_junction, group_pred, group_succ = cls._resolve_group_endpoints(
             a2, group_id, junction_id, nid_to_jid
         )
-        assert len(group_pred) == len(group_succ) == len(group_junction)
 
         node_junction_id = cls._node_junction_array(a1, nid_to_jid)
         b2_r_link, b2_l_link, b2_r_group, b2_l_group = cls._resolve_b2_to_groups(a2, b2, group_id)
@@ -275,21 +296,22 @@ class Segmentation:
     def road(self, rid: int) -> Road:
         """Return the :class:`Road` with id ``rid``. Raises ``IndexError`` if
         ``rid`` is out of range — caller's contract to pass a valid id.
+
+        ``roads[rid].id == rid`` by construction in :meth:`_build_graph`.
         """
         if rid < 0:
             raise IndexError(rid)
         # Natural IndexError on rid >= len(self.roads).
-        road = self.roads[rid]
-        assert road.id == rid
-        return road
+        return self.roads[rid]
 
     def junction(self, jid: int) -> Junction:
-        """Return the :class:`Junction` with id ``jid``."""
+        """Return the :class:`Junction` with id ``jid``.
+
+        ``junctions[jid].id == jid`` by construction in :meth:`_build_graph`.
+        """
         if jid < 0:
             raise IndexError(jid)
-        junction = self.junctions[jid]
-        assert junction.id == jid
-        return junction
+        return self.junctions[jid]
 
     # ---- Pipeline steps -------------------------------------------------------
 
@@ -334,19 +356,6 @@ class Segmentation:
         n = len(link_ids)
         parent = np.arange(n, dtype=np.int32)
 
-        def find(x: int) -> int:
-            root = x
-            while parent[root] != root:
-                root = int(parent[root])
-            while parent[x] != root:
-                parent[x], x = np.int32(root), int(parent[x])
-            return root
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = np.int32(ra)
-
         id_to_idx = {lid: i for i, lid in enumerate(link_ids)}
 
         r_ids = a2.r_link_ids
@@ -355,7 +364,7 @@ class Segmentation:
             for nb_id in (r_ids[i], l_ids[i]):
                 j = id_to_idx.get(nb_id)
                 if j is not None:
-                    union(i, j)
+                    Segmentation._uf_union(parent, i, j)
 
         from_nodes = a2.from_node_ids
         to_nodes = a2.to_node_ids
@@ -368,12 +377,12 @@ class Segmentation:
             if node_role.get(tn, NodeRole.IGNORE) is NodeRole.JUNCTION:
                 continue
             for j in by_from.get(tn, ()):
-                union(i, j)
+                Segmentation._uf_union(parent, i, j)
 
         group_ids = np.empty(n, dtype=np.int32)
         root_to_bid: dict[int, int] = {}
         for i in range(n):
-            root = find(i)
+            root = Segmentation._uf_find(parent, i)
             bid = root_to_bid.get(root)
             if bid is None:
                 bid = len(root_to_bid)
@@ -418,19 +427,6 @@ class Segmentation:
         m = len(nid_to_idx)
         parent = np.arange(m, dtype=np.int32)
 
-        def find(x: int) -> int:
-            root = x
-            while parent[root] != root:
-                root = int(parent[root])
-            while parent[x] != root:
-                parent[x], x = np.int32(root), int(parent[x])
-            return root
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = np.int32(ra)
-
         from_ids = a2.from_node_ids
         to_ids = a2.to_node_ids
         link_types = a2.link_types
@@ -444,19 +440,19 @@ class Segmentation:
             ti = nid_to_idx.get(to_ids[i])
             if fi is None or ti is None:
                 continue
-            union(fi, ti)
+            Segmentation._uf_union(parent, fi, ti)
             interior[i] = True
             group_junction_idxs.setdefault(int(group_id[i]), []).extend((fi, ti))
         for idxs in group_junction_idxs.values():
             first = idxs[0]
             for j in idxs[1:]:
-                union(first, j)
+                Segmentation._uf_union(parent, first, j)
 
         root_to_jid: dict[int, int] = {}
         idx_to_jid = np.empty(m, dtype=np.int32)
         for nid in junction_nids:
             idx = nid_to_idx[nid]
-            root = find(idx)
+            root = Segmentation._uf_find(parent, idx)
             jid = root_to_jid.get(root)
             if jid is None:
                 jid = len(root_to_jid)
@@ -505,33 +501,23 @@ class Segmentation:
         n_jids = int(idx_to_jid.max()) + 1
         jparent = np.arange(n_jids, dtype=np.int32)
 
-        def jfind(x: int) -> int:
-            root = x
-            while jparent[root] != root:
-                root = int(jparent[root])
-            while jparent[x] != root:
-                jparent[x], x = np.int32(root), int(jparent[x])
-            return root
-
-        def junion(a: int, b: int) -> None:
-            ra, rb = jfind(a), jfind(b)
-            if ra != rb:
-                jparent[rb] = np.int32(ra)
-
-        threshold_sq = max_distance_m * max_distance_m
-        for i in range(m - 1):
-            diff = coords[i + 1 :] - coords[i]
-            d2 = np.einsum("ij,ij->i", diff, diff)
+        # STRtree on junction-node points, then dwithin-query per node. Same
+        # idiom as the bidirectional Pass B on B2 centerlines.
+        points = [shapely.Point(float(coords[i, 0]), float(coords[i, 1])) for i in range(m)]
+        tree = shapely.STRtree(points)
+        for i in range(m):
             ji = int(idx_to_jid[i])
-            for off in np.flatnonzero(d2 <= threshold_sq):
-                jj = int(idx_to_jid[i + 1 + int(off)])
+            for j in tree.query(points[i], predicate="dwithin", distance=max_distance_m):
+                if int(j) <= i:
+                    continue
+                jj = int(idx_to_jid[int(j)])
                 if ji != jj:
-                    junion(ji, jj)
+                    Segmentation._uf_union(jparent, ji, jj)
 
         old_to_new: dict[int, int] = {}
         merged = np.empty(m, dtype=np.int32)
         for i in range(m):
-            root = jfind(int(idx_to_jid[i]))
+            root = Segmentation._uf_find(jparent, int(idx_to_jid[i]))
             new = old_to_new.get(root)
             if new is None:
                 new = len(old_to_new)
@@ -574,12 +560,14 @@ class Segmentation:
         for b, rows in rows_by_group.items():
             row_jids = {int(junction_id[i]) for i in rows}
             if -1 not in row_jids:
-                assert len(row_jids) == 1, (
-                    f"group {b} is interior but spans junction ids {row_jids}"
-                )
+                if len(row_jids) != 1:
+                    msg = f"group {b} is interior but spans junction ids {row_jids}"
+                    raise ValueError(msg)
                 group_junction[b] = row_jids.pop()
                 continue
-            assert row_jids == {-1}, f"group {b} mixes mainline and interior rows: {row_jids}"
+            if row_jids != {-1}:
+                msg = f"group {b} mixes mainline and interior rows: {row_jids}"
+                raise ValueError(msg)
             froms = {from_ids[i] for i in rows}
             tos = {to_ids[i] for i in rows}
             pred_sets[b] = frozenset(nid_to_jid[nid] for nid in froms - tos if nid in nid_to_jid)
@@ -660,19 +648,6 @@ class Segmentation:
         n_groups = len(group_junction)
         parent = np.arange(n_groups, dtype=np.int32)
 
-        def find(x: int) -> int:
-            root = x
-            while parent[root] != root:
-                root = int(parent[root])
-            while parent[x] != root:
-                parent[x], x = np.int32(root), int(parent[x])
-            return root
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = np.int32(ra)
-
         def is_main(g: int) -> bool:
             return g >= 0 and int(group_junction[g]) == -1
 
@@ -682,7 +657,7 @@ class Segmentation:
         for i in centerline_idxs:
             rg, lg = int(b2_r_group[i]), int(b2_l_group[i])
             if is_main(rg) and is_main(lg):
-                union(rg, lg)
+                Segmentation._uf_union(parent, rg, lg)
 
         # Pass B: cross-row geometric pairing
         if len(centerline_idxs) >= 2:
@@ -710,9 +685,9 @@ class Segmentation:
                     gb = bound_groups[int(b)]
                     if gb < 0:
                         continue
-                    if find(ga) == find(gb):
+                    if Segmentation._uf_find(parent, ga) == Segmentation._uf_find(parent, gb):
                         continue
-                    union(ga, gb)
+                    Segmentation._uf_union(parent, ga, gb)
 
         # Densify into road ids (mainline only)
         group_road = np.full(n_groups, -1, dtype=np.int32)
@@ -720,7 +695,7 @@ class Segmentation:
         for b in range(n_groups):
             if int(group_junction[b]) >= 0:
                 continue
-            root = find(b)
+            root = Segmentation._uf_find(parent, b)
             rid = roots.get(root)
             if rid is None:
                 rid = len(roots)
@@ -750,23 +725,21 @@ class Segmentation:
         junction-interior link. Both default to ``-1`` when the side is
         unbound or doesn't apply.
         """
-        n = len(b2_r_group)
-        b2_r_road = np.full(n, -1, dtype=np.int32)
-        b2_l_road = np.full(n, -1, dtype=np.int32)
-        b2_r_junction = np.full(n, -1, dtype=np.int32)
-        b2_l_junction = np.full(n, -1, dtype=np.int32)
 
-        r_mainline = (b2_r_group >= 0) & (group_road[np.clip(b2_r_group, 0, None)] >= 0)
-        b2_r_road[r_mainline] = group_road[b2_r_group[r_mainline]]
-        l_mainline = (b2_l_group >= 0) & (group_road[np.clip(b2_l_group, 0, None)] >= 0)
-        b2_l_road[l_mainline] = group_road[b2_l_group[l_mainline]]
+        def project(src: NDArray[np.int32], idx: NDArray[np.int32]) -> NDArray[np.int32]:
+            # Allocate -1; project src[idx] only where idx is valid; preserve
+            # the source's own -1 sentinel in the output. No clip on -1 idx.
+            out = np.full(idx.shape, -1, dtype=np.int32)
+            valid = idx >= 0
+            out[valid] = src[idx[valid]]
+            return out
 
-        r_interior = (b2_r_link >= 0) & (junction_id[np.clip(b2_r_link, 0, None)] >= 0)
-        b2_r_junction[r_interior] = junction_id[b2_r_link[r_interior]]
-        l_interior = (b2_l_link >= 0) & (junction_id[np.clip(b2_l_link, 0, None)] >= 0)
-        b2_l_junction[l_interior] = junction_id[b2_l_link[l_interior]]
-
-        return b2_r_road, b2_l_road, b2_r_junction, b2_l_junction
+        return (
+            project(group_road, b2_r_group),
+            project(group_road, b2_l_group),
+            project(junction_id, b2_r_link),
+            project(junction_id, b2_l_link),
+        )
 
     @staticmethod
     def _build_graph(
@@ -798,20 +771,27 @@ class Segmentation:
         ).astype(np.int32)
 
         # ---- Pass A: instantiate with empty cross-refs ------------------
-        # Per-road group list, link index list, and the set of touching junction ids.
+        # Per-road group list. One sorted-bucket pass over road_id_per_link
+        # builds every road's link-index list without re-scanning per road.
         groups_by_road: list[list[int]] = [[] for _ in range(n_roads)]
         for b in range(n_groups):
             r = int(group_road[b])
             if r >= 0:
                 groups_by_road[r].append(b)
 
+        # Sort link rows by road id; mainline rids are contiguous after the
+        # leading -1 run. searchsorted locates each road's slice in O(log n).
+        order = np.argsort(road_id_per_link, kind="stable")
+        sorted_rids = road_id_per_link[order]
+        rid_range = np.arange(n_roads, dtype=np.int32)
+        starts = np.searchsorted(sorted_rids, rid_range)
+        ends = np.searchsorted(sorted_rids, rid_range, side="right")
+
         road_junction_ids: list[frozenset[int]] = []
         roads: list[Road] = []
         for rid in range(n_roads):
             gids = tuple(sorted(groups_by_road[rid]))
-            link_indices = np.sort(
-                np.flatnonzero(np.isin(group_id, np.asarray(gids, dtype=np.int32)))
-            ).astype(np.int32)
+            link_indices = np.sort(order[starts[rid] : ends[rid]]).astype(np.int32)
             jids: frozenset[int] = frozenset()
             for b in gids:
                 jids = jids | group_pred[b] | group_succ[b]

@@ -350,13 +350,15 @@ class HdMapViz:
         self.plotter = plotter if plotter is not None else pv.Plotter()
         self.on_pick = on_pick
 
-        # Typed data records — one per NGII layer, geometry kind enforced by base.
+        # Typed data records — one per NGII layer, geometry kind enforced by
+        # base. A1 / A2 / B2 are required for the segmentation pipeline; A3 /
+        # A4 / C3 are optional layers a section is allowed to ship without.
         self.a1 = A1Data(shp_dir)
         self.a2 = A2Data(shp_dir)
-        self.a3 = A3Data(shp_dir)
-        self.a4 = A4Data(shp_dir)
         self.b2 = B2Data(shp_dir)
-        self.c3 = C3Data(shp_dir)
+        self.a3: A3Data | None = A3Data.try_load(shp_dir)
+        self.a4: A4Data | None = A4Data.try_load(shp_dir)
+        self.c3: C3Data | None = C3Data.try_load(shp_dir)
 
         # Segmentation + per-group / per-junction / per-road palettes.
         self.segmentation = Segmentation.from_shp_dir(shp_dir, seg_cfg)
@@ -379,7 +381,7 @@ class HdMapViz:
             point_size=viz_cfg.node_point_size,
             picker_tolerance=viz_cfg.picker_tol_a1,
         )
-        self.line_layers: tuple[_LineLayer, ...] = (
+        line_specs: list[_LineLayer] = [
             _LineLayer(
                 "A2",
                 self.a2,
@@ -394,37 +396,47 @@ class HdMapViz:
                 line_width=viz_cfg.line_width_b2,
                 picker_tolerance=viz_cfg.picker_tol_thin,
             ),
-            _LineLayer(
-                "C3",
-                self.c3,
-                self._c3_cell_colors,
-                line_width=viz_cfg.line_width_c3,
-                picker_tolerance=viz_cfg.picker_tol_thin,
-            ),
-        )
+        ]
+        if self.c3 is not None:
+            line_specs.append(
+                _LineLayer(
+                    "C3",
+                    self.c3,
+                    self._c3_cell_colors,
+                    line_width=viz_cfg.line_width_c3,
+                    picker_tolerance=viz_cfg.picker_tol_thin,
+                )
+            )
+        self.line_layers: tuple[_LineLayer, ...] = tuple(line_specs)
 
         # A3 / A4 share one polygon picker — dispatch is by actor identity.
         self.poly_picker = vtk.vtkCellPicker()
         self.poly_picker.SetTolerance(viz_cfg.picker_tol_poly)
         self.poly_picker.PickFromListOn()
-        self.polygon_layers: tuple[_PolygonLayer, ...] = (
-            _PolygonLayer(
-                "A3",
-                self.a3,
-                self._a3_face_rgb,
-                opacity=viz_cfg.poly_opacity,
-                depth_offset_factor=viz_cfg.poly_depth_offset_factor,
-                depth_offset_units=viz_cfg.poly_depth_offset_units,
-            ),
-            _PolygonLayer(
-                "A4",
-                self.a4,
-                self._a4_face_rgb,
-                opacity=viz_cfg.poly_opacity,
-                depth_offset_factor=viz_cfg.poly_depth_offset_factor,
-                depth_offset_units=viz_cfg.poly_depth_offset_units,
-            ),
-        )
+        poly_specs: list[_PolygonLayer] = []
+        if self.a3 is not None:
+            poly_specs.append(
+                _PolygonLayer(
+                    "A3",
+                    self.a3,
+                    self._a3_face_rgb,
+                    opacity=viz_cfg.poly_opacity,
+                    depth_offset_factor=viz_cfg.poly_depth_offset_factor,
+                    depth_offset_units=viz_cfg.poly_depth_offset_units,
+                )
+            )
+        if self.a4 is not None:
+            poly_specs.append(
+                _PolygonLayer(
+                    "A4",
+                    self.a4,
+                    self._a4_face_rgb,
+                    opacity=viz_cfg.poly_opacity,
+                    depth_offset_factor=viz_cfg.poly_depth_offset_factor,
+                    depth_offset_units=viz_cfg.poly_depth_offset_units,
+                )
+            )
+        self.polygon_layers: tuple[_PolygonLayer, ...] = tuple(poly_specs)
 
         # Highlight overlay — starts empty so PyVista's allow_empty_mesh
         # covers it; geometry is swapped in on the first pick.
@@ -519,7 +531,14 @@ class HdMapViz:
         return self._b2_cell_colors_at(self._abstraction_level)
 
     def _c3_cell_colors(self) -> NDArray[np.uint8]:
-        """RGB per C3 row keyed off Type (facility class)."""
+        """RGB per C3 row keyed off Type (facility class).
+
+        Invariant: only invoked when ``self.c3`` is the data of an existing
+        ``_LineLayer`` in :attr:`line_layers` — so it's never None here.
+        """
+        if self.c3 is None:
+            msg = "C3 callback invoked but layer was not loaded"
+            raise RuntimeError(msg)
         cfg = self.viz_cfg
         n = len(self.c3.types)
         rgb = np.zeros((n, 3), dtype=np.uint8)
@@ -528,6 +547,9 @@ class HdMapViz:
         return rgb
 
     def _a3_face_rgb(self) -> NDArray[np.uint8]:
+        if self.a3 is None:
+            msg = "A3 callback invoked but layer was not loaded"
+            raise RuntimeError(msg)
         cfg = self.viz_cfg
         n = len(self.a3.ids)
         rgb = np.zeros((n, 3), dtype=np.uint8)
@@ -541,6 +563,9 @@ class HdMapViz:
         return rgb
 
     def _a4_face_rgb(self) -> NDArray[np.uint8]:
+        if self.a4 is None:
+            msg = "A4 callback invoked but layer was not loaded"
+            raise RuntimeError(msg)
         cfg = self.viz_cfg
         n = len(self.a4.ids)
         rgb = np.zeros((n, 3), dtype=np.uint8)

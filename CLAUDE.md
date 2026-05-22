@@ -33,10 +33,12 @@ NGII (Korean precise road map) SHP → OpenDRIVE converter.
 - **Unit suffixes on variables where the unit matters.** `width_m`,
   `length_m`, `hdg_rad`, `curvature_per_m`. OpenDRIVE mixes radians/degrees
   and meters/millimeters across fields — ambiguity here is a real bug source.
-- **`assert` for invariants, `raise` for input validation.** Asserts get
-  stripped with `python -O`, so they must only state "this cannot be false
-  unless the code is broken." Anything depending on file contents or user
-  input uses an explicit `raise`.
+- **No `assert` in `src/`; tests can use it freely.** Production code uses
+  `raise` for every runtime check, including type narrowing (`if x is None:
+  raise RuntimeError(...)`) and post-conditions you actually want enforced.
+  Asserts get stripped with `python -O`, so any check that should hold at
+  runtime must be a `raise`. `assert` is the right tool in `tests/` —
+  pytest depends on it.
 
 ## Workflow
 

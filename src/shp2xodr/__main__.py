@@ -50,7 +50,9 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
 
 def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
     raw = OmegaConf.to_container(cfg.viz, resolve=True)
-    assert isinstance(raw, dict)
+    if not isinstance(raw, dict):
+        msg = f"viz config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
     return VizConfig(
         node_point_size=float(raw["node_point_size"]),
         poly_opacity=float(raw["poly_opacity"]),

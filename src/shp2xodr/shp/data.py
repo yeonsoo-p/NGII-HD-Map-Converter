@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Self
 
 import geopandas as gpd
 import numpy as np
@@ -30,8 +30,45 @@ from numpy.typing import NDArray
 
 log = logging.getLogger(__name__)
 
-_COLUMN_ALIASES: dict[str, str] = {
-    "L_LinKID": "L_LinkID",
+# NGII vendors ship the same field with assorted capitalizations (R_LinkID vs
+# R_linkID, IsCentral vs isCentral, etc.). Compare case-insensitively; rename
+# to the manual-canonical spelling so downstream `_populate` methods don't
+# need to know about vendor drift. Keys are lower-case; values are the names
+# used throughout the data classes and the NGII 2023.07 manual.
+_CANONICAL_COLUMNS: dict[str, str] = {
+    # A1_NODE
+    "id": "ID",
+    "nodetype": "NodeType",
+    "itsnodeid": "ITSNodeID",
+    # A2_LINK
+    "roadrank": "RoadRank",
+    "roadtype": "RoadType",
+    "roadno": "RoadNo",
+    "linktype": "LinkType",
+    "laneno": "LaneNo",
+    "r_linkid": "R_LinkID",
+    "l_linkid": "L_LinkID",
+    "fromnodeid": "FromNodeID",
+    "tonodeid": "ToNodeID",
+    "sectionid": "SectionID",
+    "length": "Length",
+    "itslinkid": "ITSLinkID",
+    # A3 / A4
+    "kind": "Kind",
+    "remark": "Remark",
+    "subtype": "SubType",
+    "name": "Name",
+    "direction": "Direction",
+    "gasstation": "GasStation",
+    "lpgstation": "LpgStation",
+    "evcharger": "EvCharger",
+    "toilet": "Toilet",
+    # B2
+    "type": "Type",
+    # C3
+    "iscentral": "IsCentral",
+    "lowhigh": "LowHigh",
+    "ref_id": "Ref_ID",
 }
 
 
@@ -54,6 +91,27 @@ def _looks_like_cp949_mojibake(gdf: gpd.GeoDataFrame) -> bool:
     return bool(gdf[obj_cols].stack().astype(str).str.contains(r"[｡-ﾟ]", regex=True).any())
 
 
+def _normalize_columns(gdf: gpd.GeoDataFrame, shp_name: str) -> gpd.GeoDataFrame:
+    """Rename vendor-capitalized columns to their NGII-canonical spelling."""
+    by_lower: dict[str, list[str]] = {}
+    for col in gdf.columns:
+        by_lower.setdefault(col.lower(), []).append(col)
+    rename: dict[str, str] = {}
+    for lower, cols in by_lower.items():
+        canon = _CANONICAL_COLUMNS.get(lower)
+        if canon is None:
+            continue
+        if len(cols) > 1:
+            msg = f"{shp_name}: column {canon} present in multiple capitalizations: {cols}"
+            raise ValueError(msg)
+        if cols[0] != canon:
+            rename[cols[0]] = canon
+    if rename:
+        log.debug("normalized columns in %s: %s", shp_name, rename)
+        gdf = gdf.rename(columns=rename)
+    return gdf
+
+
 def _load(shp_path: Path) -> gpd.GeoDataFrame:
     if not shp_path.is_file():
         raise FileNotFoundError(shp_path)
@@ -65,11 +123,7 @@ def _load(shp_path: Path) -> gpd.GeoDataFrame:
     if retry_reason is not None:
         log.debug("retrying %s with cp949 after %s", shp_path.name, retry_reason)
         gdf = gpd.read_file(shp_path, encoding="cp949")
-    rename = {src: dst for src, dst in _COLUMN_ALIASES.items() if src in gdf.columns}
-    if rename:
-        log.debug("normalized columns in %s: %s", shp_path.name, rename)
-        gdf = gdf.rename(columns=rename)
-    return gdf
+    return _normalize_columns(gdf, shp_path.name)
 
 
 # ---- Shared column / geometry extractors ---------------------------------------
@@ -128,6 +182,17 @@ class PointLayerData:
         gdf = _load(shp_dir / self.SHP_FILENAME)
         self._populate(gdf)
 
+    @classmethod
+    def try_load(cls, shp_dir: Path) -> Self | None:
+        """Return an instance if ``shp_dir / SHP_FILENAME`` exists, else None.
+
+        Use this for layers a section is allowed to ship without (A3, A4, C3).
+        Required layers (A1, A2, B2) call the constructor directly.
+        """
+        if not (shp_dir / cls.SHP_FILENAME).is_file():
+            return None
+        return cls(shp_dir)
+
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:
         # Subclasses override and call PointLayerData._populate(self, gdf)
         # explicitly first - super() is broken under @dataclass(slots=True)
@@ -153,6 +218,12 @@ class LineLayerData:
         gdf = _load(shp_dir / self.SHP_FILENAME)
         self._populate(gdf)
 
+    @classmethod
+    def try_load(cls, shp_dir: Path) -> Self | None:
+        if not (shp_dir / cls.SHP_FILENAME).is_file():
+            return None
+        return cls(shp_dir)
+
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:
         object.__setattr__(self, "ids", _ids(gdf))
         object.__setattr__(self, "polylines", _polylines_from_gdf(gdf))
@@ -175,6 +246,12 @@ class PolygonLayerData:
             raise NotADirectoryError(shp_dir)
         gdf = _load(shp_dir / self.SHP_FILENAME)
         self._populate(gdf)
+
+    @classmethod
+    def try_load(cls, shp_dir: Path) -> Self | None:
+        if not (shp_dir / cls.SHP_FILENAME).is_file():
+            return None
+        return cls(shp_dir)
 
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:
         object.__setattr__(self, "ids", _ids(gdf))

@@ -304,7 +304,15 @@ class HdMapWindow(QMainWindow):
         log.info("picked %s[%d]", kind, idx)
 
     def _fields_for(self, kind: str, idx: int) -> list[tuple[str, str]]:
-        if self.viz is None:
+        """Single boundary that narrows ``self.viz``: dispatch field-builders
+        with the resolved :class:`HdMapViz` so each builder takes it as a
+        non-Optional argument.
+
+        Returns ``[]`` when no section is loaded — the dock is disabled in
+        that state, so this is a defensive no-op for any stray callback.
+        """
+        viz = self.viz
+        if viz is None:
             return []
         fn = {
             "A1": self._fields_a1,
@@ -314,12 +322,11 @@ class HdMapWindow(QMainWindow):
             "B2": self._fields_b2,
             "C3": self._fields_c3,
         }.get(kind)
-        return fn(idx) if fn is not None else []
+        return fn(viz, idx) if fn is not None else []
 
-    def _fields_a1(self, idx: int) -> list[tuple[str, str]]:
-        assert self.viz is not None
-        d = self.viz.a1
-        seg = self.viz.segmentation
+    def _fields_a1(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
+        d = viz.a1
+        seg = viz.segmentation
         x, y, z = d.points[idx]
         jid = int(seg.node_junction_id[idx])
         return [
@@ -332,10 +339,9 @@ class HdMapWindow(QMainWindow):
             ("Junction", str(jid) if jid >= 0 else "-"),
         ]
 
-    def _fields_a2(self, idx: int) -> list[tuple[str, str]]:
-        assert self.viz is not None
-        d = self.viz.a2
-        seg = self.viz.segmentation
+    def _fields_a2(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
+        d = viz.a2
+        seg = viz.segmentation
         jid = int(seg.junction_id[idx])
         return [
             ("ID", str(d.ids[idx])),
@@ -355,9 +361,11 @@ class HdMapWindow(QMainWindow):
             ("Junction", str(jid) if jid >= 0 else "-"),
         ]
 
-    def _fields_a3(self, idx: int) -> list[tuple[str, str]]:
-        assert self.viz is not None
-        d = self.viz.a3
+    def _fields_a3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
+        d = viz.a3
+        if d is None:
+            msg = "A3 layer not loaded"
+            raise RuntimeError(msg)
         return [
             ("ID", str(d.ids[idx])),
             ("Kind", _coded(d.kinds[idx], A3Data.KIND_LABEL)),
@@ -365,9 +373,11 @@ class HdMapWindow(QMainWindow):
             ("Remark", _opt(d.remarks[idx])),
         ]
 
-    def _fields_a4(self, idx: int) -> list[tuple[str, str]]:
-        assert self.viz is not None
-        d = self.viz.a4
+    def _fields_a4(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
+        d = viz.a4
+        if d is None:
+            msg = "A4 layer not loaded"
+            raise RuntimeError(msg)
         return [
             ("ID", str(d.ids[idx])),
             ("SubType", _coded(d.subtypes[idx], A4Data.SUBTYPE_LABEL)),
@@ -379,10 +389,9 @@ class HdMapWindow(QMainWindow):
             ("Toilet", _opt(d.toilets[idx])),
         ]
 
-    def _fields_b2(self, idx: int) -> list[tuple[str, str]]:
-        assert self.viz is not None
-        d = self.viz.b2
-        seg = self.viz.segmentation
+    def _fields_b2(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
+        d = viz.b2
+        seg = viz.segmentation
         type_code = str(d.types[idx])
         color_label = B2Data.TYPE_COLOR_LABEL.get(type_code[:1], "")
         type_text = f"{type_code} ({color_label})" if color_label else type_code
@@ -398,9 +407,11 @@ class HdMapWindow(QMainWindow):
             ("L Group", str(l_b) if l_b >= 0 else "-"),
         ]
 
-    def _fields_c3(self, idx: int) -> list[tuple[str, str]]:
-        assert self.viz is not None
-        d = self.viz.c3
+    def _fields_c3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
+        d = viz.c3
+        if d is None:
+            msg = "C3 layer not loaded"
+            raise RuntimeError(msg)
         return [
             ("ID", str(d.ids[idx])),
             ("Type", _coded(d.types[idx], C3Data.TYPE_LABEL)),
