@@ -103,8 +103,8 @@ class HdMapWindow(QMainWindow):
         self.qt_plotter.enable_parallel_projection()
         self.qt_plotter.view_xy()
 
-        # Checkbox handles — populated in _build_dock(); read in _load() to
-        # carry user preferences forward into a freshly-attached viz.
+        # Checkbox handles — populated in _build_dock(); read in load_folder()
+        # to carry user preferences forward into a freshly-attached viz.
         self._layer_cbs: dict[str, QCheckBox] = {}
         self._bundle_cb: QCheckBox
         self._junction_hulls_cb: QCheckBox
@@ -219,9 +219,9 @@ class HdMapWindow(QMainWindow):
         d = QFileDialog.getExistingDirectory(self, "Open NGII SHP section folder")
         if not d:
             return
-        self._load(Path(d))
+        self.load_folder(Path(d))
 
-    def _load(self, shp_dir: Path) -> None:
+    def load_folder(self, shp_dir: Path) -> None:
         """Tear down any existing viz, build a fresh one against ``shp_dir``,
         and sync the dock-toggle states into the new viz.
 

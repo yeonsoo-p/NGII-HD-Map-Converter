@@ -1,3 +1,9 @@
+# Section folder to auto-open on startup. null = open empty; the user picks
+# a folder via File → Open SHP folder…. Override on the CLI with
+# ``shp_dir=/path/to/section``. Relative paths resolve against the
+# invocation cwd, not Hydra's run directory.
+shp_dir: examples/SEC001_제주첨단과학기술단지/HDMap_UTM52N_타원체고
+
 segmentation:
   # Planimetric distance (meters) under which graph-disjoint junction
   # components are fused into one. NGII sometimes leaves channelized turns
