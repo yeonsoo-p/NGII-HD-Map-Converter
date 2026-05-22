@@ -50,66 +50,19 @@ from shp2xodr.shp.data import (
     PointLayerData,
     PolygonLayerData,
 )
-from shp2xodr.shp.segmentation import Segmentation
+from shp2xodr.shp.segmentation import Segmentation, SegmentationConfig
 
 log = logging.getLogger(__name__)
 
 
-# ---- Rendering constants -------------------------------------------------------
-
-_NODE_POINT_SIZE = 3.0
-_POLY_OPACITY = 0.85
-# Polygon offset for A3/A4 mappers: pushes coincident-Z polygons back so
-# A2 lines render in front. Values chosen empirically — large enough to
-# beat translucent-pass draw order, small enough to avoid visible gaps.
-_POLY_DEPTH_OFFSET: tuple[float, float] = (2.0, 2.0)
-
-# Line widths per layer (A2 thickest so the group/junction coloring stays
-# visually dominant over markings + barriers).
-_LW_A2 = 2.5
-_LW_B2 = 1.4
-_LW_C3 = 1.8
-# Highlight overlay - fatter than every base layer so it always reads as
-# "the picked line" even when multiple base cells share XY (단선 중앙선).
-_LW_HIGHLIGHT = 4.5
-
-# Picker tolerances. A1 dots are small (point picker); A2 has tight tol since
-# the lines are thick. B2 / C3 are slimmer lines that pass over A3 / A4
-# polygons whose own picker is point-in-polygon (tol=0). A tight tolerance on
-# the line pickers would let the cursor "slip off" thin lines and have the
-# polygon picker win; ~1.2% of screen makes line grabbing reliable without
-# bleeding into wrong cells (B2 / C3 are still several screen-px apart at
-# typical zoom).
-_PICKER_TOL_A1 = 0.01
-_PICKER_TOL_A2 = 0.005
-_PICKER_TOL_THIN = 0.012
-_PICKER_TOL_POLY = 0.0
-
-# Slight cool off-white background so pure-white B2 lines (백색 차선 /
-# 유도선 / 정지선) have contrast — they're invisible on a true #ffffff
-# background. Dark enough to give white paint a visible edge, light enough
-# that the A3 road fill (200,200,200) still reads as "darker than empty".
-_BG_COLOR: tuple[float, float, float] = (0.86, 0.88, 0.90)
-
-# Highlight overlay color. The overlay sits on top of every base layer at
-# _LW_HIGHLIGHT thickness, so this color is what the user reads as "picked".
-# Magenta wins against every base palette (B2 primaries, C3 neutrals, A3/A4
-# cool fills, A2 random saturated range).
-_HIGHLIGHT_RGB: tuple[int, int, int] = (255, 30, 200)
-
-# Uniform color used for A2 (and B2 fallback) at abstraction level 1 — the
-# "no segmentation overlay" view that lets the user read raw geometry.
-_A2_UNIFORM_RGB: tuple[int, int, int] = (110, 110, 120)
-
-# Abstraction levels — keep symbolic; the GUI radio buttons map to these
-# integers, and viz.set_abstraction_level asserts 1 <= level <= 3.
+# Abstraction levels — contract constants matching the GUI radio-button IDs in
+# gui.py. Not tunable; the rest of the scene-coloring code reads these literals.
 _LEVEL_RAW = 1
 _LEVEL_GROUP = 2
 _LEVEL_ROAD_JUNCTION = 3
-_DEFAULT_LEVEL = _LEVEL_ROAD_JUNCTION
 
 # Enable VTK's coincident-topology resolution mode globally; per-mapper
-# relative offsets above only take effect once this is on.
+# relative offsets only take effect once this is on.
 vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 
 # The highlight overlay starts empty (no picks yet). PyVista 0.43+ refuses
@@ -118,64 +71,63 @@ vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 pv.global_theme.allow_empty_mesh = True
 
 
-# ---- A3 / A4 polygon palettes --------------------------------------------------
-
-# A3.RoadType → fill color (NGII codes from manual table 9.23).
-_A3_ROAD_TYPE_RGB: dict[str, tuple[int, int, int]] = {
-    "1": (200, 200, 200),  # 일반도로
-    "2": (80, 80, 80),  # 터널
-    "3": (140, 180, 220),  # 교량
-    "4": (60, 40, 140),  # 지하차도
-    "5": (200, 170, 120),  # 고가차도
-}
-_A3_PROTECTED_RGB: tuple[int, int, int] = (220, 80, 80)  # Kind=7 overrides RoadType color
-
-# A4.SubType → fill color. SubType code list per data.A4Data.SUBTYPE_LABEL.
-_A4_SUBTYPE_RGB: dict[str, tuple[int, int, int]] = {
-    "1": (120, 200, 120),
-    "2": (180, 220, 140),
-    "3": (220, 200, 160),
-    "4": (240, 180, 80),
-    "5": (180, 140, 220),
-}
-_A4_FALLBACK_RGB: tuple[int, int, int] = (180, 180, 180)
-
-
-# ---- B2 line palette -----------------------------------------------------------
-
-# B2.Type is a 3-digit code; the first digit is the paint color:
-# 1 황색, 2 백색, 3 청색, 9 기타 (see data.B2Data.TYPE_COLOR_LABEL).
-_B2_PAINT_RGB: dict[str, tuple[int, int, int]] = {
-    "1": (245, 235, 0),
-    "2": (255, 255, 255),
-    "3": (20, 90, 230),
-}
-_B2_PAINT_FALLBACK_RGB: tuple[int, int, int] = (130, 130, 130)
-
-
-# ---- C3 line palette -----------------------------------------------------------
-
-# C3.Type code (NGII manual table 9.61) → line color. C3 covers guardrails,
-# concrete barriers, kerbs, pedestrian-crossing fences, and walls — real
-# materials, so the palette stays in the neutral / warm-gray band that
-# matches concrete + metal, well clear of B2's pure primaries and A3/A4's
-# saturated polygon fills.
-_C3_TYPE_RGB: dict[str, tuple[int, int, int]] = {
-    "2": (140, 140, 150),
-    "3": (210, 210, 200),
-    "4": (190, 175, 140),
-    "5": (50, 50, 50),
-    "6": (170, 170, 170),
-    "7": (220, 130, 30),
-    "8": (90, 90, 90),
-}
-_C3_TYPE_FALLBACK_RGB: tuple[int, int, int] = (140, 140, 140)
-
-
 # ---- Pick callback type --------------------------------------------------------
 
 # (layer_name, row_idx). layer_name ∈ {"A1", "A2", "A3", "A4", "B2", "C3"}.
 PickCallback = Callable[[str, int], None]
+
+
+# ---- Hydra-managed config ------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class VizConfig:
+    """Tuning knobs for :class:`HdMapViz`. Values live in ``conf/config.yaml``
+    under ``viz:``; the entry point builds an instance and hands it to the
+    window / viz constructors. Tests construct directly.
+
+    The NGII code-list color tables (``a3_road_type_rgb``, ``a4_subtype_rgb``,
+    ``b2_paint_rgb``, ``c3_type_rgb``) map data-model codes — first digit of
+    B2.Type, A3.RoadType, A4.SubType, C3.Type — to RGB triples.
+
+    ``background_color`` is a float-RGB in ``[0, 1]`` (VTK convention for
+    renderer backgrounds); every other RGB is uint8 in ``[0, 255]``.
+    """
+
+    # Rendering geometry
+    node_point_size: float
+    poly_opacity: float
+    poly_depth_offset_factor: float
+    poly_depth_offset_units: float
+    line_width_a2: float
+    line_width_b2: float
+    line_width_c3: float
+    line_width_highlight: float
+    # Picker tolerances (fraction of screen)
+    picker_tol_a1: float
+    picker_tol_a2: float
+    picker_tol_thin: float
+    picker_tol_poly: float
+    # Scene colors
+    background_color: tuple[float, float, float]
+    highlight_rgb: tuple[int, int, int]
+    a2_uniform_rgb: tuple[int, int, int]
+    # Random-palette seeds
+    group_palette_seed: int
+    junction_palette_seed: int
+    road_palette_seed: int
+    # Default abstraction level (1 None / 2 Group / 3 Road & Junction)
+    default_abstraction_level: int
+    # NGII code-list color tables
+    a3_road_type_rgb: dict[str, tuple[int, int, int]]
+    a3_protected_rgb: tuple[int, int, int]
+    a3_fallback_rgb: tuple[int, int, int]
+    a4_subtype_rgb: dict[str, tuple[int, int, int]]
+    a4_fallback_rgb: tuple[int, int, int]
+    b2_paint_rgb: dict[str, tuple[int, int, int]]
+    b2_paint_fallback_rgb: tuple[int, int, int]
+    c3_type_rgb: dict[str, tuple[int, int, int]]
+    c3_type_fallback_rgb: tuple[int, int, int]
 
 
 # ---- Generic helpers -----------------------------------------------------------
@@ -339,6 +291,9 @@ class _PolygonLayer:
     name: str
     data: PolygonLayerData
     face_rgb_fn: Callable[[], NDArray[np.uint8]]
+    opacity: float
+    depth_offset_factor: float
+    depth_offset_units: float
     poly: pv.PolyData = field(init=False)
     actor: vtk.vtkActor | None = field(default=None, init=False)
 
@@ -355,13 +310,13 @@ class _PolygonLayer:
             self.poly,
             scalars="rgb",
             rgb=True,
-            opacity=_POLY_OPACITY,
+            opacity=self.opacity,
             show_scalar_bar=False,
             show_edges=False,
             lighting=False,
         )
         self.actor.GetMapper().SetRelativeCoincidentTopologyPolygonOffsetParameters(
-            *_POLY_DEPTH_OFFSET
+            self.depth_offset_factor, self.depth_offset_units
         )
         picker.AddPickList(self.actor)
 
@@ -385,12 +340,13 @@ class HdMapViz:
     def __init__(
         self,
         shp_dir: Path,
-        junction_merge_dist_m: float = 0.0,
-        bidirectional_merge_max_separation_m: float = 15.0,
+        seg_cfg: SegmentationConfig,
+        viz_cfg: VizConfig,
         plotter: pv.Plotter | None = None,
         on_pick: PickCallback | None = None,
     ) -> None:
         self.shp_dir = shp_dir
+        self.viz_cfg = viz_cfg
         self.plotter = plotter if plotter is not None else pv.Plotter()
         self.on_pick = on_pick
 
@@ -403,56 +359,71 @@ class HdMapViz:
         self.c3 = C3Data(shp_dir)
 
         # Segmentation + per-group / per-junction / per-road palettes.
-        self.segmentation = Segmentation.from_shp_dir(
-            shp_dir,
-            junction_merge_dist_m=junction_merge_dist_m,
-            bidirectional_merge_max_separation_m=bidirectional_merge_max_separation_m,
+        self.segmentation = Segmentation.from_shp_dir(shp_dir, seg_cfg)
+        self.group_palette = _random_palette(
+            int(self.segmentation.group_id.max()) + 1, seed=viz_cfg.group_palette_seed
         )
-        self.group_palette = _random_palette(int(self.segmentation.group_id.max()) + 1, seed=42)
         self.junction_palette = _random_palette(
-            int(self.segmentation.node_junction_id.max()) + 1, seed=137
+            int(self.segmentation.node_junction_id.max()) + 1,
+            seed=viz_cfg.junction_palette_seed,
         )
-        self.road_palette = _random_palette(len(self.segmentation.roads), seed=1729)
+        self.road_palette = _random_palette(
+            len(self.segmentation.roads), seed=viz_cfg.road_palette_seed
+        )
 
         # Pickable layer wrappers. Order in the line-layer tuple is also the
         # shift-click priority order (first match wins).
         self.a1_layer = _PointLayer(
             "A1",
             self.a1,
-            point_size=_NODE_POINT_SIZE,
-            picker_tolerance=_PICKER_TOL_A1,
+            point_size=viz_cfg.node_point_size,
+            picker_tolerance=viz_cfg.picker_tol_a1,
         )
         self.line_layers: tuple[_LineLayer, ...] = (
             _LineLayer(
                 "A2",
                 self.a2,
                 self._a2_cell_colors,
-                line_width=_LW_A2,
-                picker_tolerance=_PICKER_TOL_A2,
+                line_width=viz_cfg.line_width_a2,
+                picker_tolerance=viz_cfg.picker_tol_a2,
             ),
             _LineLayer(
                 "B2",
                 self.b2,
                 self._b2_cell_colors,
-                line_width=_LW_B2,
-                picker_tolerance=_PICKER_TOL_THIN,
+                line_width=viz_cfg.line_width_b2,
+                picker_tolerance=viz_cfg.picker_tol_thin,
             ),
             _LineLayer(
                 "C3",
                 self.c3,
                 self._c3_cell_colors,
-                line_width=_LW_C3,
-                picker_tolerance=_PICKER_TOL_THIN,
+                line_width=viz_cfg.line_width_c3,
+                picker_tolerance=viz_cfg.picker_tol_thin,
             ),
         )
 
         # A3 / A4 share one polygon picker — dispatch is by actor identity.
         self.poly_picker = vtk.vtkCellPicker()
-        self.poly_picker.SetTolerance(_PICKER_TOL_POLY)
+        self.poly_picker.SetTolerance(viz_cfg.picker_tol_poly)
         self.poly_picker.PickFromListOn()
         self.polygon_layers: tuple[_PolygonLayer, ...] = (
-            _PolygonLayer("A3", self.a3, self._a3_face_rgb),
-            _PolygonLayer("A4", self.a4, self._a4_face_rgb),
+            _PolygonLayer(
+                "A3",
+                self.a3,
+                self._a3_face_rgb,
+                opacity=viz_cfg.poly_opacity,
+                depth_offset_factor=viz_cfg.poly_depth_offset_factor,
+                depth_offset_units=viz_cfg.poly_depth_offset_units,
+            ),
+            _PolygonLayer(
+                "A4",
+                self.a4,
+                self._a4_face_rgb,
+                opacity=viz_cfg.poly_opacity,
+                depth_offset_factor=viz_cfg.poly_depth_offset_factor,
+                depth_offset_units=viz_cfg.poly_depth_offset_units,
+            ),
         )
 
         # Highlight overlay — starts empty so PyVista's allow_empty_mesh
@@ -460,9 +431,9 @@ class HdMapViz:
         self.highlight_poly = pv.PolyData()
         self.highlight_actor: vtk.vtkActor | None = None
 
-        # Current abstraction level — default to level 3 so the user lands
-        # on the OpenDRIVE-aligned road/junction view.
-        self._abstraction_level: int = _DEFAULT_LEVEL
+        # Current abstraction level — default per viz config so the user
+        # lands on whatever level the config picked.
+        self._abstraction_level: int = viz_cfg.default_abstraction_level
 
         # Teardown handles - populated in attach(), consumed by detach().
         self._left_press_tag: int | None = None
@@ -481,7 +452,9 @@ class HdMapViz:
         """
         seg = self.segmentation
         if level == _LEVEL_RAW:
-            return np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (len(self.a2.ids), 1))
+            return np.tile(
+                np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8), (len(self.a2.ids), 1)
+            )
         if level == _LEVEL_GROUP:
             return np.asarray(self.group_palette[seg.group_id], dtype=np.uint8).copy()
         if level == _LEVEL_ROAD_JUNCTION:
@@ -501,21 +474,22 @@ class HdMapViz:
 
         * Level 1 — paint code (current B2 palette).
         * Level 2 — bound group's color; R side wins, falls back to L; both
-          unbound rows fall back to ``_A2_UNIFORM_RGB``.
+          unbound rows fall back to ``viz_cfg.a2_uniform_rgb``.
         * Level 3 — bound road's color (mainline), else bound junction's
           color (interior), else fallback. A centerline between two
           bidirectionally-merged groups paints the same color as the road,
           which is by design: the visual merge signals one OpenDRIVE road.
         """
         seg = self.segmentation
+        cfg = self.viz_cfg
         n = len(self.b2.types)
         if level == _LEVEL_RAW:
             rgb = np.zeros((n, 3), dtype=np.uint8)
             for i, t in enumerate(self.b2.types):
-                rgb[i] = _B2_PAINT_RGB.get(t[:1], _B2_PAINT_FALLBACK_RGB)
+                rgb[i] = cfg.b2_paint_rgb.get(t[:1], cfg.b2_paint_fallback_rgb)
             return rgb
         if level == _LEVEL_GROUP:
-            rgb = np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (n, 1))
+            rgb = np.tile(np.asarray(cfg.a2_uniform_rgb, dtype=np.uint8), (n, 1))
             r_bound = seg.b2_r_group >= 0
             rgb[r_bound] = self.group_palette[seg.b2_r_group[r_bound]]
             # L-side as fallback for rows where R is unbound but L is bound.
@@ -523,7 +497,7 @@ class HdMapViz:
             rgb[l_only] = self.group_palette[seg.b2_l_group[l_only]]
             return rgb
         if level == _LEVEL_ROAD_JUNCTION:
-            rgb = np.tile(np.asarray(_A2_UNIFORM_RGB, dtype=np.uint8), (n, 1))
+            rgb = np.tile(np.asarray(cfg.a2_uniform_rgb, dtype=np.uint8), (n, 1))
             r_road = seg.b2_r_road >= 0
             rgb[r_road] = self.road_palette[seg.b2_r_road[r_road]]
             r_junction = (~r_road) & (seg.b2_r_junction >= 0)
@@ -546,25 +520,32 @@ class HdMapViz:
 
     def _c3_cell_colors(self) -> NDArray[np.uint8]:
         """RGB per C3 row keyed off Type (facility class)."""
+        cfg = self.viz_cfg
         n = len(self.c3.types)
         rgb = np.zeros((n, 3), dtype=np.uint8)
         for i, t in enumerate(self.c3.types):
-            rgb[i] = _C3_TYPE_RGB.get(t, _C3_TYPE_FALLBACK_RGB)
+            rgb[i] = cfg.c3_type_rgb.get(t, cfg.c3_type_fallback_rgb)
         return rgb
 
     def _a3_face_rgb(self) -> NDArray[np.uint8]:
+        cfg = self.viz_cfg
         n = len(self.a3.ids)
         rgb = np.zeros((n, 3), dtype=np.uint8)
         for i, (kind, rt) in enumerate(zip(self.a3.kinds, self.a3.road_types, strict=True)):
-            base = _A3_PROTECTED_RGB if kind == "7" else _A3_ROAD_TYPE_RGB.get(rt, _A4_FALLBACK_RGB)
+            base = (
+                cfg.a3_protected_rgb
+                if kind == "7"
+                else cfg.a3_road_type_rgb.get(rt, cfg.a3_fallback_rgb)
+            )
             rgb[i] = base
         return rgb
 
     def _a4_face_rgb(self) -> NDArray[np.uint8]:
+        cfg = self.viz_cfg
         n = len(self.a4.ids)
         rgb = np.zeros((n, 3), dtype=np.uint8)
         for i, st in enumerate(self.a4.subtypes):
-            rgb[i] = _A4_SUBTYPE_RGB.get(st, _A4_FALLBACK_RGB)
+            rgb[i] = cfg.a4_subtype_rgb.get(st, cfg.a4_fallback_rgb)
         return rgb
 
     # ---- View keys -----------------------------------------------------------
@@ -585,7 +566,7 @@ class HdMapViz:
         Idempotent in spirit but not strictly idempotent — call once per
         plotter instance. Standalone callers use :meth:`show` instead.
         """
-        self.plotter.background_color = _BG_COLOR
+        self.plotter.background_color = self.viz_cfg.background_color
 
         # Drawing order: polygons first (A3 / A4), then lines in pick-priority
         # reverse (C3 → B2 → A2 so A2 paints over B2 paints over C3), then A1
@@ -610,8 +591,8 @@ class HdMapViz:
         # populates it. pickable=False keeps the overlay out of the pickers.
         self.highlight_actor = self.plotter.add_mesh(
             self.highlight_poly,
-            color=_HIGHLIGHT_RGB,
-            line_width=_LW_HIGHLIGHT,
+            color=self.viz_cfg.highlight_rgb,
+            line_width=self.viz_cfg.line_width_highlight,
             show_scalar_bar=False,
             pickable=False,
         )

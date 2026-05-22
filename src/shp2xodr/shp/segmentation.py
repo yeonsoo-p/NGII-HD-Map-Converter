@@ -85,6 +85,19 @@ _CENTERLINE_B2_KIND = "501"
 
 
 @dataclass(slots=True, frozen=True)
+class SegmentationConfig:
+    """Hydra-managed tuning knobs for the segmentation pipeline.
+
+    Values live in ``conf/config.yaml`` under ``segmentation:``; the entry
+    point builds an instance and hands it to :meth:`Segmentation.from_shp_dir`.
+    Tests construct directly.
+    """
+
+    junction_merge_dist_m: float
+    bidirectional_merge_max_separation_m: float
+
+
+@dataclass(slots=True, frozen=True)
 class Junction:
     """One OpenDRIVE-level intersection.
 
@@ -177,23 +190,18 @@ class Segmentation:
     # ---- Construction ---------------------------------------------------------
 
     @classmethod
-    def from_shp_dir(
-        cls,
-        shp_dir: Path,
-        junction_merge_dist_m: float = 0.0,
-        bidirectional_merge_max_separation_m: float = 15.0,
-    ) -> Self:
+    def from_shp_dir(cls, shp_dir: Path, cfg: SegmentationConfig) -> Self:
         """Build a :class:`Segmentation` from one section's raw SHP layers.
 
-        ``junction_merge_dist_m`` controls a final spatial pass that fuses
-        graph-disjoint junction components whose nodes are closer than the
-        threshold; set to ``0`` to disable.
+        ``cfg.junction_merge_dist_m`` controls a final spatial pass that
+        fuses graph-disjoint junction components whose nodes are closer
+        than the threshold; set to ``0`` to disable.
 
-        ``bidirectional_merge_max_separation_m`` controls the divided-road
-        pairing step: two B2 중앙선 (Kind=501) rows whose ``LineString``s
-        come within this planimetric distance are treated as the two
-        centerlines of one divided road, and the mainline groups they each
-        bind are merged into one ``Road``.
+        ``cfg.bidirectional_merge_max_separation_m`` controls the
+        divided-road pairing step: two B2 중앙선 (Kind=501) rows whose
+        ``LineString``s come within this planimetric distance are treated
+        as the two centerlines of one divided road, and the mainline groups
+        they each bind are merged into one :class:`Road`.
 
         NGII makes B2_SURFACELINEMARK a mandatory layer for every section,
         so the B2 resolution always runs alongside the A2 pass; there is no
@@ -206,7 +214,7 @@ class Segmentation:
 
         group_id = cls._group_links(a2, node_role)
         junction_id, nid_to_jid = cls._cluster_junctions(
-            a1, a2, node_role, group_id, junction_merge_dist_m=junction_merge_dist_m
+            a1, a2, node_role, group_id, junction_merge_dist_m=cfg.junction_merge_dist_m
         )
         group_junction, group_pred, group_succ = cls._resolve_group_endpoints(
             a2, group_id, junction_id, nid_to_jid
@@ -221,7 +229,7 @@ class Segmentation:
             b2_r_group,
             b2_l_group,
             group_junction,
-            max_separation_m=bidirectional_merge_max_separation_m,
+            max_separation_m=cfg.bidirectional_merge_max_separation_m,
         )
         b2_r_road, b2_l_road, b2_r_junction, b2_l_junction = cls._resolve_b2_to_roads(
             b2_r_group, b2_l_group, b2_r_link, b2_l_link, group_road, junction_id

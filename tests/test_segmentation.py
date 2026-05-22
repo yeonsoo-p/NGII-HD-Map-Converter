@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from shp2xodr.shp.data import A1Data, A2Data, B2Data
-from shp2xodr.shp.segmentation import Segmentation
+from shp2xodr.shp.segmentation import Segmentation, SegmentationConfig
 
 _SAMPLE_SHP_DIR = (
     Path(__file__).resolve().parent.parent
@@ -29,15 +29,30 @@ def sample_dir() -> Path:
     return _SAMPLE_SHP_DIR
 
 
+def _seg_cfg(
+    *,
+    junction_merge_dist_m: float = 0.0,
+    bidirectional_merge_max_separation_m: float = 15.0,
+) -> SegmentationConfig:
+    """Test helper. Defaults match the production behaviour each test relied
+    on under the old float-arg signature: no junction-proximity merge unless
+    a test explicitly enables it, bidirectional centerline merge always on.
+    """
+    return SegmentationConfig(
+        junction_merge_dist_m=junction_merge_dist_m,
+        bidirectional_merge_max_separation_m=bidirectional_merge_max_separation_m,
+    )
+
+
 def test_interior_link_iff_link_type_1(sample_dir: Path) -> None:
     a2 = A2Data(sample_dir)
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     is_interior = seg.junction_id >= 0
     assert np.array_equal(is_interior, a2.link_types == "1")
 
 
 def test_group_junction_uniform(sample_dir: Path) -> None:
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     n_groups = int(seg.group_id.max()) + 1
     for b in range(n_groups):
         rows = seg.group_id == b
@@ -56,7 +71,7 @@ def test_interior_links_at_junction_node_share_junction(sample_dir: Path) -> Non
     """
     a1 = A1Data(sample_dir)
     a2 = A2Data(sample_dir)
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
 
     plane_xings = a1.node_types == "1"
 
@@ -84,7 +99,7 @@ def test_road_break_does_not_cut_group(sample_dir: Path) -> None:
     span on it.
     """
     a2 = A2Data(sample_dir)
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     # 014391 and 014392 share node A123AI014623 (NodeType=4, 교량).
     left = int(np.where(a2.ids == "A223AI014391")[0][0])
     right = int(np.where(a2.ids == "A223AI014392")[0][0])
@@ -103,10 +118,10 @@ def test_proximity_merge_fuses_split_intersection(sample_dir: Path) -> None:
     left_idx = int(np.where(a1.ids == "A123AI014208")[0][0])
     right_idx = int(np.where(a1.ids == "A123AI014562")[0][0])
 
-    graph_only = Segmentation.from_shp_dir(sample_dir)
+    graph_only = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     assert graph_only.node_junction_id[left_idx] != graph_only.node_junction_id[right_idx]
 
-    merged = Segmentation.from_shp_dir(sample_dir, junction_merge_dist_m=5.0)
+    merged = Segmentation.from_shp_dir(sample_dir, _seg_cfg(junction_merge_dist_m=5.0))
     left_jid = int(merged.node_junction_id[left_idx])
     right_jid = int(merged.node_junction_id[right_idx])
     assert left_jid >= 0
@@ -122,7 +137,7 @@ def test_b2_two_sided_mainline_rows_share_group(sample_dir: Path) -> None:
     legitimately cross-group and is excluded here.)
     """
     a2 = A2Data(sample_dir)
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     both_bound = (seg.b2_r_link_idx >= 0) & (seg.b2_l_link_idx >= 0)
     r_main = both_bound & (a2.link_types[np.clip(seg.b2_r_link_idx, 0, None)] != "1")
     l_main = both_bound & (a2.link_types[np.clip(seg.b2_l_link_idx, 0, None)] != "1")
@@ -136,7 +151,7 @@ def test_group_side_junctions_well_formed(sample_dir: Path) -> None:
     """Interior groups carry empty pred/succ sets; mainline groups whose
     pred/succ side is non-empty must reference valid junction ids.
     """
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     n_junctions = int(seg.node_junction_id.max()) + 1
     valid_jids = set(range(n_junctions))
     n_groups = int(seg.group_id.max()) + 1
@@ -161,21 +176,21 @@ def test_road_id_per_link_partitions_against_junction_id(sample_dir: Path) -> No
     junction-interior (road_id == -1, junction_id >= 0) — never both, never
     neither.
     """
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     mainline = seg.junction_id == -1
     assert (seg.road_id_per_link[mainline] >= 0).all()
     assert (seg.road_id_per_link[~mainline] == -1).all()
 
 
 def test_road_and_junction_ids_are_dense(sample_dir: Path) -> None:
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     assert tuple(r.id for r in seg.roads) == tuple(range(len(seg.roads)))
     assert tuple(j.id for j in seg.junctions) == tuple(range(len(seg.junctions)))
 
 
 def test_road_junction_back_references(sample_dir: Path) -> None:
     """Every road's touching junction lists that road, and vice versa."""
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     for road in seg.roads:
         for junction in road.junctions:
             assert road in junction.roads
@@ -194,7 +209,7 @@ def test_centerline_b2_both_sides_consistent_when_bound(sample_dir: Path) -> Non
     assertion still pins the invariant for fixtures that include two-sided
     centerlines.
     """
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     b2 = B2Data(sample_dir)
     is_centerline = b2.kinds == "501"
     both_mainline = is_centerline & (seg.b2_r_road >= 0) & (seg.b2_l_road >= 0)
@@ -207,7 +222,7 @@ def test_bidirectional_merge_engages_via_passb_in_sample(sample_dir: Path) -> No
     fewer mainline roads than mainline groups, and at least one road
     composed of multiple groups (the merge product).
     """
-    seg = Segmentation.from_shp_dir(sample_dir)
+    seg = Segmentation.from_shp_dir(sample_dir, _seg_cfg())
     n_mainline_groups = int((seg.group_junction == -1).sum())
     assert len(seg.roads) < n_mainline_groups
     multi_group_roads = [r for r in seg.roads if len(r.group_ids) > 1]

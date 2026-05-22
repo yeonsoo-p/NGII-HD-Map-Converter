@@ -5,15 +5,105 @@
 shp_dir: examples/SEC001_제주첨단과학기술단지/HDMap_UTM52N_타원체고
 
 segmentation:
-  # Planimetric distance (meters) under which graph-disjoint junction
-  # components are fused into one. NGII sometimes leaves channelized turns
-  # and free-flow paths topologically separate from the rest of an
-  # intersection's connecting lanes; this merges them back. Set to 0 to
-  # disable.
+  # Planimetric distance (m) under which graph-disjoint junction components
+  # are fused into one. NGII sometimes leaves channelized turns and free-flow
+  # paths topologically separate from the rest of an intersection's
+  # connecting lanes; this merges them back. Set to 0 to disable.
   junction_merge_dist_m: 5.0
-  # Max XY closest-point distance (meters) between two B2 Kind=501 (중앙선)
-  # rows to treat as a divided-road pair — each row painted along the inner
-  # edge of its own direction's leftmost lane, separated by a median. Korea's
+  # Max XY closest-point distance (m) between two B2 Kind=501 (중앙선) rows
+  # to treat as a divided-road pair — each row painted along the inner edge
+  # of its own direction's leftmost lane, separated by a median. Korea's
   # median widths run 1-12 m for typical urban/national roads; the default
   # leaves headroom for wider expressway medians.
   bidirectional_merge_max_separation_m: 15.0
+
+viz:
+  # ---- Rendering geometry --------------------------------------------------
+  node_point_size: 3.0
+  poly_opacity: 0.85
+  # VTK polygon-offset (factor, units) — pushes A3/A4 polygons back so A2 /
+  # B2 lines render in front of coincident-Z fills.
+  poly_depth_offset_factor: 2.0
+  poly_depth_offset_units: 2.0
+  # Line widths — A2 thickest so segmentation coloring dominates over markings.
+  line_width_a2: 2.5
+  line_width_b2: 1.4
+  line_width_c3: 1.8
+  # Highlight overlay - fatter than every base layer so it always reads as
+  # "the picked line" even when multiple base cells share XY (단선 중앙선).
+  line_width_highlight: 4.5
+
+  # ---- Picker tolerances (fraction of screen) ------------------------------
+  # A1 dots are small (point picker); A2 has tight tol since the lines are
+  # thick. B2 / C3 are slimmer lines that pass over A3 / A4 polygons whose
+  # own picker is point-in-polygon (tol=0). A tight tolerance on the line
+  # pickers would let the cursor "slip off" thin lines and have the polygon
+  # picker win; ~1.2% of screen makes line grabbing reliable without
+  # bleeding into wrong cells.
+  picker_tol_a1: 0.01
+  picker_tol_a2: 0.005
+  picker_tol_thin: 0.012
+  picker_tol_poly: 0.0
+
+  # ---- Scene colors --------------------------------------------------------
+  # Slight cool off-white background so pure-white B2 lines (백색 차선 /
+  # 유도선 / 정지선) have contrast — they're invisible on a true #ffffff
+  # background. Floats in [0, 1] (VTK convention for renderer background).
+  background_color: [0.86, 0.88, 0.90]
+  # Magenta — wins against every base palette (B2 primaries, C3 neutrals,
+  # A3/A4 cool fills, A2 random saturated range).
+  highlight_rgb: [255, 30, 200]
+  # Uniform color for A2 at level 1, and B2/A2 fallback at levels 2-3 when
+  # the bound side is -1.
+  a2_uniform_rgb: [110, 110, 120]
+
+  # ---- Random palette seeds ------------------------------------------------
+  group_palette_seed: 42
+  junction_palette_seed: 137
+  road_palette_seed: 1729
+
+  # ---- Default abstraction level (1 None / 2 Group / 3 Road & Junction) ----
+  default_abstraction_level: 3
+
+  # ---- A3 RoadType → fill color (NGII manual table 9.23) -------------------
+  a3_road_type_rgb:
+    "1": [200, 200, 200]   # 일반도로
+    "2": [80, 80, 80]      # 터널
+    "3": [140, 180, 220]   # 교량
+    "4": [60, 40, 140]     # 지하차도
+    "5": [200, 170, 120]   # 고가차도
+  # Kind=7 (자율주행금지구간/보호구역) overrides the RoadType-based color.
+  a3_protected_rgb: [220, 80, 80]
+  a3_fallback_rgb: [180, 180, 180]
+
+  # ---- A4 SubType → fill color (data.A4Data.SUBTYPE_LABEL) -----------------
+  a4_subtype_rgb:
+    "1": [120, 200, 120]
+    "2": [180, 220, 140]
+    "3": [220, 200, 160]
+    "4": [240, 180, 80]
+    "5": [180, 140, 220]
+  a4_fallback_rgb: [180, 180, 180]
+
+  # ---- B2 paint color (first digit of Type, data.B2Data.TYPE_COLOR_LABEL) --
+  # 1 황색, 2 백색, 3 청색.
+  b2_paint_rgb:
+    "1": [245, 235, 0]
+    "2": [255, 255, 255]
+    "3": [20, 90, 230]
+  b2_paint_fallback_rgb: [130, 130, 130]
+
+  # ---- C3 facility class → line color (NGII manual table 9.61) -------------
+  # C3 covers guardrails, concrete barriers, kerbs, pedestrian-crossing
+  # fences, and walls — real materials, so the palette stays in the
+  # neutral/warm-gray band that matches concrete + metal, well clear of B2's
+  # pure primaries and A3/A4's saturated polygon fills.
+  c3_type_rgb:
+    "2": [140, 140, 150]
+    "3": [210, 210, 200]
+    "4": [190, 175, 140]
+    "5": [50, 50, 50]
+    "6": [170, 170, 170]
+    "7": [220, 130, 30]
+    "8": [90, 90, 90]
+  c3_type_fallback_rgb: [140, 140, 140]

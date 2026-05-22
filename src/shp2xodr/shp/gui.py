@@ -47,7 +47,8 @@ from PySide6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from shp2xodr.shp.data import A1Data, A2Data, A3Data, A4Data, B2Data, C3Data
-from shp2xodr.shp.viz import HdMapViz
+from shp2xodr.shp.segmentation import SegmentationConfig
+from shp2xodr.shp.viz import HdMapViz, VizConfig
 
 log = logging.getLogger(__name__)
 
@@ -93,17 +94,13 @@ def _opt(value: str) -> str:
 class HdMapWindow(QMainWindow):
     """Main window hosting the 3D scene and the inspector dock."""
 
-    def __init__(
-        self,
-        junction_merge_dist_m: float = 0.0,
-        bidirectional_merge_max_separation_m: float = 15.0,
-    ) -> None:
+    def __init__(self, seg_cfg: SegmentationConfig, viz_cfg: VizConfig) -> None:
         super().__init__()
         self.setWindowTitle("shp2xodr — (no folder)")
         self.resize(1500, 950)
 
-        self._junction_merge_dist_m = junction_merge_dist_m
-        self._bidirectional_merge_max_separation_m = bidirectional_merge_max_separation_m
+        self._seg_cfg = seg_cfg
+        self._viz_cfg = viz_cfg
         self.viz: HdMapViz | None = None
 
         self.qt_plotter = QtInteractor(self)
@@ -115,7 +112,7 @@ class HdMapWindow(QMainWindow):
         # to carry user preferences forward into a freshly-attached viz.
         self._layer_cbs: dict[str, QCheckBox] = {}
         self._level_buttons: dict[int, QRadioButton] = {}
-        self._abstraction_level: int = 3
+        self._abstraction_level: int = viz_cfg.default_abstraction_level
         self._data_group: QGroupBox
         self._abstraction_group: QGroupBox
 
@@ -252,8 +249,8 @@ class HdMapWindow(QMainWindow):
         try:
             viz = HdMapViz(
                 shp_dir,
-                junction_merge_dist_m=self._junction_merge_dist_m,
-                bidirectional_merge_max_separation_m=self._bidirectional_merge_max_separation_m,
+                seg_cfg=self._seg_cfg,
+                viz_cfg=self._viz_cfg,
                 plotter=self.qt_plotter,
                 on_pick=self._on_pick,
             )

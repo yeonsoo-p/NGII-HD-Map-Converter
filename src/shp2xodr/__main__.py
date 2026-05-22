@@ -3,6 +3,10 @@
 The window opens empty by default; pick a section directory via
 **File → Open SHP folder…** (Ctrl+O). Pass ``shp_dir=/path/to/section`` on
 the CLI (or set it in ``conf/config.yaml``) to auto-load on startup.
+
+This module is the only place that knows about both Hydra/OmegaConf
+``DictConfig`` and the typed config dataclasses — every other module
+reads typed fields off :class:`SegmentationConfig` / :class:`VizConfig`.
 """
 
 from __future__ import annotations
@@ -13,21 +17,76 @@ from pathlib import Path
 
 import hydra
 from hydra.utils import to_absolute_path
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from PySide6.QtWidgets import QApplication
 
 from shp2xodr.shp.gui import HdMapWindow
+from shp2xodr.shp.segmentation import SegmentationConfig
+from shp2xodr.shp.viz import VizConfig
 
 log = logging.getLogger(__name__)
+
+
+def _rgb_int(v: list[int]) -> tuple[int, int, int]:
+    return (int(v[0]), int(v[1]), int(v[2]))
+
+
+def _rgb_float(v: list[float]) -> tuple[float, float, float]:
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _rgb_int_dict(v: dict[str, list[int]]) -> dict[str, tuple[int, int, int]]:
+    return {k: _rgb_int(c) for k, c in v.items()}
+
+
+def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
+    return SegmentationConfig(
+        junction_merge_dist_m=float(cfg.segmentation.junction_merge_dist_m),
+        bidirectional_merge_max_separation_m=float(
+            cfg.segmentation.bidirectional_merge_max_separation_m
+        ),
+    )
+
+
+def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
+    raw = OmegaConf.to_container(cfg.viz, resolve=True)
+    assert isinstance(raw, dict)
+    return VizConfig(
+        node_point_size=float(raw["node_point_size"]),
+        poly_opacity=float(raw["poly_opacity"]),
+        poly_depth_offset_factor=float(raw["poly_depth_offset_factor"]),
+        poly_depth_offset_units=float(raw["poly_depth_offset_units"]),
+        line_width_a2=float(raw["line_width_a2"]),
+        line_width_b2=float(raw["line_width_b2"]),
+        line_width_c3=float(raw["line_width_c3"]),
+        line_width_highlight=float(raw["line_width_highlight"]),
+        picker_tol_a1=float(raw["picker_tol_a1"]),
+        picker_tol_a2=float(raw["picker_tol_a2"]),
+        picker_tol_thin=float(raw["picker_tol_thin"]),
+        picker_tol_poly=float(raw["picker_tol_poly"]),
+        background_color=_rgb_float(raw["background_color"]),
+        highlight_rgb=_rgb_int(raw["highlight_rgb"]),
+        a2_uniform_rgb=_rgb_int(raw["a2_uniform_rgb"]),
+        group_palette_seed=int(raw["group_palette_seed"]),
+        junction_palette_seed=int(raw["junction_palette_seed"]),
+        road_palette_seed=int(raw["road_palette_seed"]),
+        default_abstraction_level=int(raw["default_abstraction_level"]),
+        a3_road_type_rgb=_rgb_int_dict(raw["a3_road_type_rgb"]),
+        a3_protected_rgb=_rgb_int(raw["a3_protected_rgb"]),
+        a3_fallback_rgb=_rgb_int(raw["a3_fallback_rgb"]),
+        a4_subtype_rgb=_rgb_int_dict(raw["a4_subtype_rgb"]),
+        a4_fallback_rgb=_rgb_int(raw["a4_fallback_rgb"]),
+        b2_paint_rgb=_rgb_int_dict(raw["b2_paint_rgb"]),
+        b2_paint_fallback_rgb=_rgb_int(raw["b2_paint_fallback_rgb"]),
+        c3_type_rgb=_rgb_int_dict(raw["c3_type_rgb"]),
+        c3_type_fallback_rgb=_rgb_int(raw["c3_type_fallback_rgb"]),
+    )
 
 
 @hydra.main(version_base=None, config_path="../../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     app = QApplication.instance() or QApplication(sys.argv)
-    window = HdMapWindow(
-        junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m,
-        bidirectional_merge_max_separation_m=cfg.segmentation.bidirectional_merge_max_separation_m,
-    )
+    window = HdMapWindow(seg_cfg=_build_seg_cfg(cfg), viz_cfg=_build_viz_cfg(cfg))
     window.show()
     if cfg.shp_dir is not None:
         # to_absolute_path resolves against the invocation cwd, not Hydra's
