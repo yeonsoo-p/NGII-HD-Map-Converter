@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -76,6 +76,12 @@ _LAYER_TITLE: dict[str, str] = {
 
 _PICK_PLACEHOLDER = "— open a folder to begin —"
 _PICK_PROMPT = "— shift-click a feature to inspect —"
+
+# Sentinel for the field-name slot that marks a section-header row in the
+# pick table. _on_pick spans both columns and bolds the row when it sees
+# this. The value slot carries the header text ("Segmentation").
+_SECTION_FIELD = "__section__"
+_SECTION_BG = QColor(230, 230, 235)
 
 
 def _coded(value: str, table: dict[str, str]) -> str:
@@ -297,10 +303,21 @@ class HdMapWindow(QMainWindow):
         # The first row is always ID, so use it for the header line.
         feature_id = fields[0][1] if fields else ""
         self._pick_header.setText(f"{title}    {feature_id}")
+        self._pick_table.clearSpans()
         self._pick_table.setRowCount(len(fields))
         for r, (field, value) in enumerate(fields):
-            self._pick_table.setItem(r, 0, QTableWidgetItem(field))
-            self._pick_table.setItem(r, 1, QTableWidgetItem(value))
+            if field == _SECTION_FIELD:
+                item = QTableWidgetItem(value)
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setBackground(QBrush(_SECTION_BG))
+                item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+                self._pick_table.setItem(r, 0, item)
+                self._pick_table.setSpan(r, 0, 1, 2)
+            else:
+                self._pick_table.setItem(r, 0, QTableWidgetItem(field))
+                self._pick_table.setItem(r, 1, QTableWidgetItem(value))
         log.info("picked %s[%d]", kind, idx)
 
     def _fields_for(self, kind: str, idx: int) -> list[tuple[str, str]]:
@@ -336,6 +353,7 @@ class HdMapWindow(QMainWindow):
             ("X (m)", f"{float(x):.3f}"),
             ("Y (m)", f"{float(y):.3f}"),
             ("Z (m)", f"{float(z):.3f}"),
+            (_SECTION_FIELD, "Segmentation"),
             ("Junction", str(jid) if jid >= 0 else "-"),
         ]
 
@@ -343,6 +361,7 @@ class HdMapWindow(QMainWindow):
         d = viz.a2
         seg = viz.segmentation
         jid = int(seg.junction_id[idx])
+        rid = int(seg.road_id_per_link[idx])
         return [
             ("ID", str(d.ids[idx])),
             ("RoadRank", _coded(d.road_ranks[idx], A2Data.ROAD_RANK_LABEL)),
@@ -357,7 +376,9 @@ class HdMapWindow(QMainWindow):
             ("SectionID", _opt(d.section_ids[idx])),
             ("Length (m)", f"{float(d.lengths_m[idx]):.2f}"),
             ("ITS_LinkID", _opt(d.its_link_ids[idx])),
+            (_SECTION_FIELD, "Segmentation"),
             ("Group", str(int(seg.group_id[idx]))),
+            ("Road", str(rid) if rid >= 0 else "-"),
             ("Junction", str(jid) if jid >= 0 else "-"),
         ]
 
@@ -395,16 +416,25 @@ class HdMapWindow(QMainWindow):
         type_code = str(d.types[idx])
         color_label = B2Data.TYPE_COLOR_LABEL.get(type_code[:1], "")
         type_text = f"{type_code} ({color_label})" if color_label else type_code
-        r_b = int(seg.b2_r_group[idx])
-        l_b = int(seg.b2_l_group[idx])
+        r_grp = int(seg.b2_r_group[idx])
+        l_grp = int(seg.b2_l_group[idx])
+        r_road = int(seg.b2_r_road[idx])
+        l_road = int(seg.b2_l_road[idx])
+        r_jct = int(seg.b2_r_junction[idx])
+        l_jct = int(seg.b2_l_junction[idx])
         return [
             ("ID", str(d.ids[idx])),
             ("Type", type_text),
             ("Kind", _coded(d.kinds[idx], B2Data.KIND_LABEL)),
             ("R_LinkID", _opt(d.r_link_ids[idx])),
             ("L_LinkID", _opt(d.l_link_ids[idx])),
-            ("R Group", str(r_b) if r_b >= 0 else "-"),
-            ("L Group", str(l_b) if l_b >= 0 else "-"),
+            (_SECTION_FIELD, "Segmentation"),
+            ("R Group", str(r_grp) if r_grp >= 0 else "-"),
+            ("R Road", str(r_road) if r_road >= 0 else "-"),
+            ("R Junction", str(r_jct) if r_jct >= 0 else "-"),
+            ("L Group", str(l_grp) if l_grp >= 0 else "-"),
+            ("L Road", str(l_road) if l_road >= 0 else "-"),
+            ("L Junction", str(l_jct) if l_jct >= 0 else "-"),
         ]
 
     def _fields_c3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:

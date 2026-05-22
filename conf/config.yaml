@@ -9,7 +9,7 @@ segmentation:
   # are fused into one. NGII sometimes leaves channelized turns and free-flow
   # paths topologically separate from the rest of an intersection's
   # connecting lanes; this merges them back. Set to 0 to disable.
-  junction_merge_dist_m: 5.0
+  junction_merge_dist_m: 10.0
   # Max XY closest-point distance (m) between two B2 Kind=501 (중앙선) rows
   # to treat as a divided-road pair — each row painted along the inner edge
   # of its own direction's leftmost lane, separated by a median. Korea's
