@@ -26,6 +26,7 @@ from typing import ClassVar, Self
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
 from numpy.typing import NDArray
 
 log = logging.getLogger(__name__)
@@ -138,11 +139,63 @@ def _points_from_gdf(gdf: gpd.GeoDataFrame) -> NDArray[np.float64]:
 
 
 def _polylines_from_gdf(gdf: gpd.GeoDataFrame) -> list[NDArray[np.float64]]:
-    return [np.asarray(g.coords, dtype=np.float64) for g in gdf.geometry]
+    ids = gdf["ID"].astype(str).to_numpy()
+    return [
+        np.asarray(_as_single_linestring(g, row_id=str(rid)).coords, dtype=np.float64)
+        for rid, g in zip(ids, gdf.geometry, strict=True)
+    ]
 
 
 def _outer_rings_from_gdf(gdf: gpd.GeoDataFrame) -> list[NDArray[np.float64]]:
-    return [np.asarray(g.exterior.coords, dtype=np.float64) for g in gdf.geometry]
+    ids = gdf["ID"].astype(str).to_numpy()
+    return [
+        np.asarray(_as_single_polygon(g, row_id=str(rid)).exterior.coords, dtype=np.float64)
+        for rid, g in zip(ids, gdf.geometry, strict=True)
+    ]
+
+
+def _as_single_linestring(
+    g: shapely.geometry.base.BaseGeometry, *, row_id: str
+) -> shapely.LineString:
+    """Single-part LineString, unwrapping length-1 MultiLineStrings.
+
+    OGR / pyogrio promote single-part rows to ``MultiLineString`` whenever a
+    layer is tagged multi-part; unwrap is lossless. Reject truly multi-part
+    rows with a row-id-tagged ``ValueError`` so the user can repair the SHP.
+    """
+    if isinstance(g, shapely.LineString):
+        return g
+    if isinstance(g, shapely.MultiLineString):
+        if len(g.geoms) == 1:
+            return g.geoms[0]
+        msg = (
+            f"row ID={row_id!r}: MultiLineString with {len(g.geoms)} parts is "
+            f"not supported — each NGII line-layer row must be a single polyline"
+        )
+        raise ValueError(msg)
+    msg = (
+        f"row ID={row_id!r}: unexpected geometry type {type(g).__name__}; "
+        f"expected (Multi)LineString"
+    )
+    raise TypeError(msg)
+
+
+def _as_single_polygon(g: shapely.geometry.base.BaseGeometry, *, row_id: str) -> shapely.Polygon:
+    """Single-part Polygon, unwrapping length-1 MultiPolygons. Same contract
+    as :func:`_as_single_linestring`.
+    """
+    if isinstance(g, shapely.Polygon):
+        return g
+    if isinstance(g, shapely.MultiPolygon):
+        if len(g.geoms) == 1:
+            return g.geoms[0]
+        msg = (
+            f"row ID={row_id!r}: MultiPolygon with {len(g.geoms)} parts is "
+            f"not supported — each NGII polygon-layer row must be a single polygon"
+        )
+        raise ValueError(msg)
+    msg = f"row ID={row_id!r}: unexpected geometry type {type(g).__name__}; expected (Multi)Polygon"
+    raise TypeError(msg)
 
 
 def _str_col(gdf: gpd.GeoDataFrame, col: str, *, fillna: str | None = None) -> NDArray[np.str_]:
