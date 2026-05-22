@@ -356,10 +356,21 @@ class Segmentation:
     def _group_links(a2: A2Data, node_role: dict[str, NodeRole]) -> NDArray[np.int32]:
         """Assign a dense group id to each A2_LINK row.
 
-        Lateral unions: R/L_LinkID neighbours. Longitudinal unions: any
-        shared A1 node that isn't a JUNCTION (which is the only segmentation
-        cut — ROAD_BREAK passes through as a ``<bridge>``/``<tunnel>``,
-        LANE_SECTION becomes a ``<laneSection>`` break within the same road).
+        Lateral unions: R/L_LinkID neighbours, but *only* when both sides
+        share the interior-vs-mainline status. NGII sometimes lists a
+        LinkType=1 (intersection-interior path) and an adjacent LinkType=6
+        (ordinary lane through the same intersection footprint) as R/L
+        neighbours; the segmentation invariant downstream requires a group
+        to be fully one or the other, so we must not fuse them here.
+
+        Longitudinal unions: any shared A1 node that isn't a JUNCTION
+        (which is the only segmentation cut — ROAD_BREAK passes through as
+        a ``<bridge>``/``<tunnel>``, LANE_SECTION becomes a
+        ``<laneSection>`` break within the same road). The same
+        interior-vs-mainline gate applies — NGII occasionally places a
+        LANE_SECTION node at the lane-stripe boundary between an
+        intersection-interior path (1) and the mainline lane (6) feeding
+        into it, and we must not let that shared node fuse them.
         """
         link_ids = a2.ids
         n = len(link_ids)
@@ -369,11 +380,16 @@ class Segmentation:
 
         r_ids = a2.r_link_ids
         l_ids = a2.l_link_ids
+        link_types = a2.link_types
         for i in range(n):
+            i_interior = link_types[i] == _INTERIOR_LINK_TYPE
             for nb_id in (r_ids[i], l_ids[i]):
                 j = id_to_idx.get(nb_id)
-                if j is not None:
-                    Segmentation._uf_union(parent, i, j)
+                if j is None:
+                    continue
+                if (link_types[j] == _INTERIOR_LINK_TYPE) != i_interior:
+                    continue
+                Segmentation._uf_union(parent, i, j)
 
         from_nodes = a2.from_node_ids
         to_nodes = a2.to_node_ids
@@ -385,7 +401,10 @@ class Segmentation:
             tn = to_nodes[i]
             if node_role.get(tn, NodeRole.IGNORE) is NodeRole.JUNCTION:
                 continue
+            i_interior = link_types[i] == _INTERIOR_LINK_TYPE
             for j in by_from.get(tn, ()):
+                if (link_types[j] == _INTERIOR_LINK_TYPE) != i_interior:
+                    continue
                 Segmentation._uf_union(parent, i, j)
 
         group_ids = np.empty(n, dtype=np.int32)
@@ -409,12 +428,19 @@ class Segmentation:
     ) -> tuple[NDArray[np.int32], dict[str, int]]:
         """Cluster JUNCTION-role A1 nodes into junction components.
 
-        An interior link is one with ``LinkType=1`` (intersection interior path)
-        and both endpoints junction-role. Junction nodes are unioned if they
-        share an interior link, *or* if their interior links sit in the same
-        group — laterally adjacent connecting lanes belong to one physical
-        intersection even when no single link directly joins their endpoints.
-        When ``junction_merge_dist_m > 0``, a final pass also unions any two
+        An interior link is any A2 row tagged ``LinkType=1`` (intersection
+        interior path, per NGII spec table 9.18). The spec guarantees both
+        endpoints reference junction-class A1 nodes, but real NGII exports
+        occasionally ship rows whose ``ToNodeID`` / ``FromNodeID`` refers to
+        an A1 row that doesn't exist (residue of the deprecated dummy-node
+        mechanism). We still trust the ``LinkType=1`` tag and attach the
+        row to whichever junction component its known endpoint belongs to.
+
+        Junction nodes are unioned if they share an interior link, *or* if
+        their interior links sit in the same group — laterally adjacent
+        connecting lanes belong to one physical intersection even when no
+        single link directly joins their endpoints. When
+        ``junction_merge_dist_m > 0``, a final pass also unions any two
         components whose closest junction nodes lie within that planimetric
         distance — this catches channelized turns and free-flow paths that
         are physically inside one intersection but topologically disjoint
@@ -436,22 +462,9 @@ class Segmentation:
         m = len(nid_to_idx)
         parent = np.arange(m, dtype=np.int32)
 
-        from_ids = a2.from_node_ids
-        to_ids = a2.to_node_ids
-        link_types = a2.link_types
-        n_links = len(a2.ids)
-        interior = np.zeros(n_links, dtype=bool)
-        group_junction_idxs: dict[int, list[int]] = {}
-        for i in range(n_links):
-            if link_types[i] != _INTERIOR_LINK_TYPE:
-                continue
-            fi = nid_to_idx.get(from_ids[i])
-            ti = nid_to_idx.get(to_ids[i])
-            if fi is None or ti is None:
-                continue
-            Segmentation._uf_union(parent, fi, ti)
-            interior[i] = True
-            group_junction_idxs.setdefault(int(group_id[i]), []).extend((fi, ti))
+        interior, group_junction_idxs = Segmentation._mark_interior_links(
+            a2, nid_to_idx, group_id, parent
+        )
         for idxs in group_junction_idxs.values():
             first = idxs[0]
             for j in idxs[1:]:
@@ -474,11 +487,111 @@ class Segmentation:
             )
 
         nid_to_jid = {nid: int(idx_to_jid[nid_to_idx[nid]]) for nid in junction_nids}
+        junction_id_per_link = Segmentation._assign_link_junction_ids(
+            a2, interior, nid_to_jid, idx_to_jid, group_id, group_junction_idxs
+        )
+        return junction_id_per_link, nid_to_jid
+
+    @staticmethod
+    def _mark_interior_links(
+        a2: A2Data,
+        nid_to_idx: dict[str, int],
+        group_id: NDArray[np.int32],
+        parent: NDArray[np.int32],
+    ) -> tuple[NDArray[np.bool_], dict[int, list[int]]]:
+        """Tag every ``LinkType=1`` row as interior and union its junction
+        endpoints.
+
+        Rows whose ``FromNodeID`` / ``ToNodeID`` reference an A1 row that
+        doesn't exist (data-quality bug in NGII exports) still count as
+        interior — the ``LinkType=1`` tag is dispositive per spec — and
+        get attached at the assignment step via either their surviving
+        endpoint or a junction-bearing peer in their group.
+        """
+        from_ids = a2.from_node_ids
+        to_ids = a2.to_node_ids
+        link_types = a2.link_types
+        n_links = len(a2.ids)
+        interior = np.zeros(n_links, dtype=bool)
+        group_junction_idxs: dict[int, list[int]] = {}
+        n_orphan_endpoint = 0
+        n_orphan_both = 0
+        for i in range(n_links):
+            if link_types[i] != _INTERIOR_LINK_TYPE:
+                continue
+            interior[i] = True
+            fi = nid_to_idx.get(from_ids[i])
+            ti = nid_to_idx.get(to_ids[i])
+            known = tuple(int(x) for x in (fi, ti) if x is not None)
+            if len(known) == 2:
+                Segmentation._uf_union(parent, known[0], known[1])
+            elif len(known) == 1:
+                n_orphan_endpoint += 1
+            else:
+                n_orphan_both += 1
+                log.warning(
+                    "A2 row %s: LinkType=1 has no JUNCTION-role endpoint "
+                    "(from=%s, to=%s); will try to inherit junction from "
+                    "group %d peers, else demote to mainline",
+                    a2.ids[i],
+                    from_ids[i],
+                    to_ids[i],
+                    int(group_id[i]),
+                )
+            if known:
+                group_junction_idxs.setdefault(int(group_id[i]), []).extend(known)
+        if n_orphan_endpoint or n_orphan_both:
+            log.info(
+                "_cluster_junctions: %d interior rows with one missing endpoint, "
+                "%d with both missing (data-quality bugs in A2 FK references)",
+                n_orphan_endpoint,
+                n_orphan_both,
+            )
+        return interior, group_junction_idxs
+
+    @staticmethod
+    def _assign_link_junction_ids(
+        a2: A2Data,
+        interior: NDArray[np.bool_],
+        nid_to_jid: dict[str, int],
+        idx_to_jid: NDArray[np.int32],
+        group_id: NDArray[np.int32],
+        group_junction_idxs: dict[int, list[int]],
+    ) -> NDArray[np.int32]:
+        """Per-row junction-id for interior rows. Picks from whichever
+        endpoint is JUNCTION-role; falls back to a junction-bearing peer
+        in the same group when neither endpoint is. If neither path
+        resolves (truly orphaned LinkType=1 stub), demotes the row to
+        mainline (``junction_id = -1``) so the rest of the section can
+        still load — the operator already saw the WARNING upstream and
+        can repair the SHP."""
+        from_ids = a2.from_node_ids
+        to_ids = a2.to_node_ids
+        n_links = len(a2.ids)
         junction_id_per_link = np.full(n_links, -1, dtype=np.int32)
         for i in range(n_links):
-            if interior[i]:
+            if not interior[i]:
+                continue
+            if from_ids[i] in nid_to_jid:
                 junction_id_per_link[i] = nid_to_jid[from_ids[i]]
-        return junction_id_per_link, nid_to_jid
+                continue
+            if to_ids[i] in nid_to_jid:
+                junction_id_per_link[i] = nid_to_jid[to_ids[i]]
+                continue
+            peers = group_junction_idxs.get(int(group_id[i]), [])
+            if peers:
+                junction_id_per_link[i] = int(idx_to_jid[peers[0]])
+                continue
+            log.warning(
+                "A2 row %s: LinkType=1 has no JUNCTION-role endpoint and no "
+                "junction-bearing peer in group %d; demoting to mainline. "
+                "Geometry preserved as a single-link road. Repair the SHP "
+                "(FromNodeID / ToNodeID must reference existing A1 rows) to "
+                "restore the interior classification.",
+                a2.ids[i],
+                int(group_id[i]),
+            )
+        return junction_id_per_link
 
     @staticmethod
     def _merge_junctions_by_proximity(

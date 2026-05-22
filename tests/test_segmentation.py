@@ -324,3 +324,101 @@ def test_passb_unblocked_by_c3_outside_corridor() -> None:
     assert int(group_road[0]) == int(group_road[1]), (
         "C3 is outside the corridor — merge should still fire"
     )
+
+
+# ---- _cluster_junctions resilience to orphan node refs --------------------------
+# Pinned by SEC01_송파대로 row A2196I000215: a LinkType=1 link whose ToNodeID
+# references an A1 row that doesn't exist (deprecated dummy-node residue).
+
+
+from shp2xodr.shp.segmentation import NodeRole  # noqa: E402
+
+
+def _a1_with_junctions(ids: list[str]) -> A1Data:
+    a1 = object.__new__(A1Data)
+    object.__setattr__(a1, "ids", np.array(ids, dtype=np.str_))
+    object.__setattr__(a1, "points", np.zeros((len(ids), 3), dtype=np.float64))
+    object.__setattr__(a1, "node_types", np.array(["1"] * len(ids), dtype=np.str_))
+    object.__setattr__(a1, "its_node_ids", np.array([""] * len(ids), dtype=np.str_))
+    return a1
+
+
+def _a2_with_rows(rows: list[dict[str, str]]) -> A2Data:
+    n = len(rows)
+    a2 = object.__new__(A2Data)
+    object.__setattr__(a2, "ids", np.array([r["id"] for r in rows], dtype=np.str_))
+    object.__setattr__(a2, "polylines", [np.zeros((2, 3), dtype=np.float64)] * n)
+    object.__setattr__(a2, "road_ranks", np.array(["3"] * n, dtype=np.str_))
+    object.__setattr__(a2, "road_types", np.array(["1"] * n, dtype=np.str_))
+    object.__setattr__(a2, "road_nos", np.array([""] * n, dtype=np.str_))
+    object.__setattr__(a2, "link_types", np.array([r["link_type"] for r in rows], dtype=np.str_))
+    object.__setattr__(a2, "lane_nos", np.array([1] * n, dtype=np.int32))
+    object.__setattr__(a2, "r_link_ids", np.array([r.get("r", "") for r in rows], dtype=np.str_))
+    object.__setattr__(a2, "l_link_ids", np.array([r.get("l", "") for r in rows], dtype=np.str_))
+    object.__setattr__(a2, "from_node_ids", np.array([r["from"] for r in rows], dtype=np.str_))
+    object.__setattr__(a2, "to_node_ids", np.array([r["to"] for r in rows], dtype=np.str_))
+    object.__setattr__(a2, "section_ids", np.array([""] * n, dtype=np.str_))
+    object.__setattr__(a2, "lengths_m", np.ones(n, dtype=np.float64))
+    object.__setattr__(a2, "its_link_ids", np.array([""] * n, dtype=np.str_))
+    return a2
+
+
+def test_cluster_junctions_accepts_interior_with_missing_endpoint() -> None:
+    """LinkType=1 with one orphan endpoint still attaches to the known junction."""
+    a1 = _a1_with_junctions(["J1"])
+    a2 = _a2_with_rows([{"id": "L1", "link_type": "1", "from": "J1", "to": "ORPHAN"}])
+    node_role = {"J1": NodeRole.JUNCTION}
+    group_id = np.array([0], dtype=np.int32)
+    junction_id, nid_to_jid = Segmentation._cluster_junctions(a1, a2, node_role, group_id)
+    assert int(junction_id[0]) == 0
+    assert nid_to_jid == {"J1": 0}
+
+
+def test_group_links_does_not_fuse_interior_with_mainline_via_shared_node() -> None:
+    """Pinned by SEC01_여의도 group 0: a LinkType=6 mainline row whose
+    to_node equals a LinkType=1 interior row's from_node, with that
+    shared node being LANE_SECTION (not JUNCTION). The longitudinal
+    union must respect the interior-vs-mainline gate."""
+    a2 = _a2_with_rows(
+        [
+            {"id": "MAIN", "link_type": "6", "from": "N_UP", "to": "N_MID"},
+            {"id": "INT", "link_type": "1", "from": "N_MID", "to": "N_JCT"},
+        ]
+    )
+    node_role = {
+        "N_UP": NodeRole.LANE_SECTION,
+        "N_MID": NodeRole.LANE_SECTION,
+        "N_JCT": NodeRole.JUNCTION,
+    }
+    group_id = Segmentation._group_links(a2, node_role)
+    assert int(group_id[0]) != int(group_id[1]), (
+        "mainline (6) and interior (1) must not share a group via a non-JUNCTION node"
+    )
+
+
+def test_cluster_junctions_demotes_fully_orphaned_interior_to_mainline() -> None:
+    """Pinned by SEC001_익산시자율주행시범지구 row A2239I018423: a LinkType=1
+    row with both endpoints missing from A1 and no R/L_LinkID neighbours
+    must be demoted to mainline (junction_id=-1) instead of crashing."""
+    a1 = _a1_with_junctions(["UNUSED_J"])
+    a2 = _a2_with_rows([{"id": "ORPH", "link_type": "1", "from": "MISSING_A", "to": "MISSING_B"}])
+    node_role = {"UNUSED_J": NodeRole.JUNCTION}
+    group_id = np.array([0], dtype=np.int32)
+    junction_id, _ = Segmentation._cluster_junctions(a1, a2, node_role, group_id)
+    assert int(junction_id[0]) == -1
+
+
+def test_cluster_junctions_inherits_junction_from_group_peer() -> None:
+    """Two LinkType=1 rows in the same group, one fully orphaned. The orphan
+    inherits its junction id from its junction-bearing peer."""
+    a1 = _a1_with_junctions(["J1", "J2"])
+    a2 = _a2_with_rows(
+        [
+            {"id": "L1", "link_type": "1", "from": "J1", "to": "J2", "r": "L2"},
+            {"id": "L2", "link_type": "1", "from": "ORPHAN_A", "to": "ORPHAN_B", "l": "L1"},
+        ]
+    )
+    node_role = {"J1": NodeRole.JUNCTION, "J2": NodeRole.JUNCTION}
+    group_id = np.array([0, 0], dtype=np.int32)
+    junction_id, _ = Segmentation._cluster_junctions(a1, a2, node_role, group_id)
+    assert int(junction_id[0]) == int(junction_id[1]) == 0
