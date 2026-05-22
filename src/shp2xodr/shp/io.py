@@ -131,6 +131,10 @@ def load_b2_lines(shp_dir: Path) -> gpd.GeoDataFrame:
     return _load(shp_dir / "B2_SURFACELINEMARK.shp")
 
 
+def load_c3_lines(shp_dir: Path) -> gpd.GeoDataFrame:
+    return _load(shp_dir / "C3_VEHICLEPROTECTIONSAFETY.shp")
+
+
 def b2_data(
     shp_dir: Path,
 ) -> tuple[
@@ -159,3 +163,37 @@ def b2_data(
     r_ids = b2["R_LinkID"].fillna("").astype(str).to_numpy()
     l_ids = b2["L_LinkID"].fillna("").astype(str).to_numpy()
     return ids, polylines, types, kinds, r_ids, l_ids
+
+
+def c3_data(
+    shp_dir: Path,
+) -> tuple[
+    NDArray[np.str_],
+    list[NDArray[np.float64]],
+    NDArray[np.str_],
+    NDArray[np.str_],
+    NDArray[np.str_],
+    NDArray[np.str_],
+]:
+    """Load C3_VEHICLEPROTECTIONSAFETY and return
+    ``(ids, polylines, types, is_central, low_high, ref_ids)``.
+
+    ``polylines`` is a list of ``(N_i, 3)`` XYZ arrays. ``Type`` is the
+    facility-class varchar (가드레일 / 콘크리트연석 / 무단횡단방지시설 …);
+    ``IsCentral`` is ``"0"`` road-edge or ``"1"`` central median; ``LowHigh``
+    is ``"1"`` 상단 (top) or ``"2"`` 하단 (base); ``Ref_ID`` pairs the
+    upper / lower polylines of one physical barrier.
+
+    The NGII manual table 9.60 spells the column ``isCentral``, but real
+    NGII SHPs ship it as ``IsCentral`` — we read the SHP name as-is rather
+    than aliasing capitalization differences (the existing column-alias
+    table is reserved for actual mojibake typos).
+    """
+    c3 = load_c3_lines(shp_dir)
+    ids = c3["ID"].astype(str).to_numpy()
+    polylines = [np.asarray(g.coords, dtype=np.float64) for g in c3.geometry]
+    types = c3["Type"].astype(str).to_numpy()
+    is_central = c3["IsCentral"].astype(str).to_numpy()
+    low_high = c3["LowHigh"].astype(str).to_numpy()
+    ref_ids = c3["Ref_ID"].fillna("").astype(str).to_numpy()
+    return ids, polylines, types, is_central, low_high, ref_ids

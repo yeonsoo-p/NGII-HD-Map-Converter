@@ -3,17 +3,21 @@
 :class:`HdMapViz` shows every layer at once: A2_LINKs colored by segmentation
 (mainline links get one color per future OpenDRIVE ``<road>`` bundle;
 interior links share one color per future ``<junction>``), B2 surface line
-marks rendered in their actual paint colors (yellow / white / blue), A1
-nodes as small black dots, and A3 / A4 polygon footprints colored by their
-NGII codes.
+marks rendered in their actual paint colors (yellow / white / blue),
+C3 vehicle-protection facilities (guardrails / kerbs / barriers / walls)
+colored by facility type, A1 nodes as small black dots, and A3 / A4 polygon
+footprints colored by their NGII codes.
 
 Shift + left-click any link, line, or polygon to log + display its
-attributes (and highlight A2 links in yellow).
+attributes. Clicking an A2 / B2 / C3 cell paints it yellow and clears any
+previous highlight across the three line layers.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +28,7 @@ import vtk
 from numpy.typing import NDArray
 from shapely.geometry import Polygon as ShapelyPolygon
 
-from shp2xodr.shp.io import a1_data, a2_data, a3_data, a4_data, b2_data
+from shp2xodr.shp.io import a1_data, a2_data, a3_data, a4_data, b2_data, c3_data
 from shp2xodr.shp.segmentation import Segmentation, segment_links
 
 _NODE_POINT_SIZE = 3.0
@@ -119,6 +123,33 @@ _B2_KIND_LABEL: dict[str, str] = {
     "599": "기타선",
 }
 
+# C3.Type code (NGII manual table 9.61) → line color. C3 covers guardrails,
+# concrete barriers, kerbs, pedestrian-crossing fences, and walls — real
+# materials, so the palette stays in the neutral / warm-gray band that
+# matches concrete + metal, well clear of B2's pure primaries and A3/A4's
+# saturated polygon fills.
+_C3_TYPE_RGB: dict[str, tuple[int, int, int]] = {
+    "2": (140, 140, 150),
+    "3": (210, 210, 200),
+    "4": (190, 175, 140),
+    "5": (50, 50, 50),
+    "6": (170, 170, 170),
+    "7": (220, 130, 30),
+    "8": (90, 90, 90),
+}
+_C3_TYPE_FALLBACK_RGB: tuple[int, int, int] = (140, 140, 140)
+
+_C3_TYPE_LABEL: dict[str, str] = {
+    "2": "가드레일",
+    "3": "콘크리트방호벽",
+    "4": "콘크리트연석",
+    "5": "무단횡단방지시설",
+    "6": "중앙분리대개구부",
+    "7": "임시구조물",
+    "8": "벽",
+    "99": "기타",
+}
+
 
 def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
     """Deterministic, saturated RGB rows — kept clear of pure black/white."""
@@ -129,6 +160,25 @@ def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
 
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class _LineLayer:
+    """One pickable line layer (A2 / B2 / C3) for the shift-click handler.
+
+    All three line layers behave the same way under picking: hit-test via a
+    dedicated cell picker, reset every layer's per-cell RGB to its captured
+    baseline (so a previous yellow highlight on a different layer clears),
+    paint the hit cell yellow, then emit pick text. The dataclass bundles
+    everything that varies per layer so :meth:`HdMapViz._try_line_pick` can
+    work uniformly.
+    """
+
+    picker: vtk.vtkCellPicker
+    actor: vtk.vtkActor | None
+    poly: pv.PolyData
+    initial_rgb: NDArray[np.uint8]
+    text_fn: Callable[[int], str]
 
 
 def _polyline_polydata(
@@ -164,6 +214,22 @@ def _b2_polydata(
     if poly.n_cells > 0:
         poly.cell_data["b2_id"] = ids
     return poly, ids, types, kinds
+
+
+def _c3_polydata(
+    shp_dir: Path,
+) -> tuple[
+    pv.PolyData,
+    NDArray[np.str_],
+    NDArray[np.str_],
+    NDArray[np.str_],
+    NDArray[np.str_],
+]:
+    ids, polylines, types, is_central, low_high, _ref_ids = c3_data(shp_dir)
+    poly = _polyline_polydata(polylines)
+    if poly.n_cells > 0:
+        poly.cell_data["c3_id"] = ids
+    return poly, ids, types, is_central, low_high
 
 
 def _polygon_polydata(rings: list[NDArray[np.float64]]) -> pv.PolyData:
@@ -240,6 +306,13 @@ class HdMapViz:
         self.a3_poly, self.a3_ids, self.a3_kinds, self.a3_road_types = _a3_polydata(shp_dir)
         self.a4_poly, self.a4_ids, self.a4_subtypes, self.a4_names = _a4_polydata(shp_dir)
         self.b2_poly, self.b2_ids, self.b2_types, self.b2_kinds = _b2_polydata(shp_dir)
+        (
+            self.c3_poly,
+            self.c3_ids,
+            self.c3_types,
+            self.c3_is_central,
+            self.c3_low_high,
+        ) = _c3_polydata(shp_dir)
         self.segmentation: Segmentation = segment_links(
             shp_dir, junction_merge_dist_m=junction_merge_dist_m
         )
@@ -251,7 +324,7 @@ class HdMapViz:
         self.plotter = pv.Plotter()
         # One picker per layer so A2 stays clickable through A3/A4 polygons —
         # a single picker returns the front-most hit and A3 covers A2 visually.
-        # Priority order: A1 (dots) > A2 (lines) > B2 (lines) > A3 / A4 (polygons).
+        # Priority: A1 (dots) > A2 (lines) > B2 (lines) > C3 (lines) > A3/A4.
         self.a1_picker = vtk.vtkPointPicker()
         self.a1_picker.SetTolerance(0.01)
         self.a1_picker.PickFromListOn()
@@ -267,6 +340,12 @@ class HdMapViz:
         # several screen-px apart at typical zoom).
         self.b2_picker.SetTolerance(0.012)
         self.b2_picker.PickFromListOn()
+        self.c3_picker = vtk.vtkCellPicker()
+        # Same justification as the B2 picker: thin barrier polylines cross
+        # A3/A4 polygons whose picker is point-in-polygon (tol=0), so a tight
+        # tolerance would lose every off-line click to the polygon picker.
+        self.c3_picker.SetTolerance(0.012)
+        self.c3_picker.PickFromListOn()
         self.poly_picker = vtk.vtkCellPicker()
         self.poly_picker.SetTolerance(0.0)
         self.poly_picker.PickFromListOn()
@@ -315,6 +394,26 @@ class HdMapViz:
         r_str = str(r_b) if r_b >= 0 else "-"
         l_str = str(l_b) if l_b >= 0 else "-"
         return f"B2 {b2_id}  Type={type_code}  Kind={kind}  R-bundle={r_str}  L-bundle={l_str}"
+
+    # ---- C3 vehicle-protection coloring / pick -------------------------------
+
+    def _c3_cell_colors(self) -> NDArray[np.uint8]:
+        """RGB per C3 row keyed off Type (facility class)."""
+        n = len(self.c3_types)
+        rgb = np.zeros((n, 3), dtype=np.uint8)
+        for i, t in enumerate(self.c3_types):
+            rgb[i] = _C3_TYPE_RGB.get(t, _C3_TYPE_FALLBACK_RGB)
+        return rgb
+
+    def _c3_pick_text(self, cell_id: int) -> str:
+        c3_id = self.c3_ids[cell_id]
+        type_code = self.c3_types[cell_id]
+        type_label = _C3_TYPE_LABEL.get(type_code, type_code)
+        return (
+            f"C3 {c3_id}  Type={type_label}  "
+            f"IsCentral={self.c3_is_central[cell_id]}  "
+            f"LowHigh={self.c3_low_high[cell_id]}"
+        )
 
     # ---- A3 / A4 polygon coloring / pick -------------------------------------
 
@@ -366,9 +465,6 @@ class HdMapViz:
     # ---- entry point ---------------------------------------------------------
 
     def show(self) -> None:
-        initial_rgb = self._a2_cell_colors()
-        self.a2_poly.cell_data["rgb"] = initial_rgb.copy()
-
         # Slight cool off-white so pure-white B2 lines (백색 차선 / 유도선 /
         # 정지선) have contrast — they're invisible on a true #ffffff background.
         # Dark enough to give white paint a visible edge, light enough that
@@ -379,26 +475,32 @@ class HdMapViz:
         a3_actor = self._add_polygon_layer(self.a3_poly, self._a3_face_rgb())
         a4_actor = self._add_polygon_layer(self.a4_poly, self._a4_face_rgb())
 
-        # B2 surface line marks rendered in their actual paint colors. Drawn
-        # before A2 so the lane-bundle coloring on A2 stays visually dominant.
-        b2_actor: vtk.vtkActor | None = None
-        if self.b2_poly.n_cells > 0:
-            self.b2_poly.cell_data["rgb"] = self._b2_cell_colors()
-            b2_actor = self.plotter.add_mesh(
-                self.b2_poly,
-                scalars="rgb",
-                rgb=True,
-                line_width=1.4,
-                show_scalar_bar=False,
-            )
-
-        a2_actor = self.plotter.add_mesh(
-            self.a2_poly,
-            scalars="rgb",
-            rgb=True,
-            line_width=2.5,
-            show_scalar_bar=False,
+        # Drawing order matters for visual stacking; pick priority is
+        # independent of it (each picker has its own pick list). C3 sits on
+        # the road edge below painted markings, so it's drawn after A3/A4
+        # polygons but before B2 + A2 lines.
+        c3_layer = self._add_line_layer(
+            self.c3_poly,
+            self._c3_cell_colors,
+            self.c3_picker,
+            line_width=1.8,
+            text_fn=self._c3_pick_text,
         )
+        b2_layer = self._add_line_layer(
+            self.b2_poly,
+            self._b2_cell_colors,
+            self.b2_picker,
+            line_width=1.4,
+            text_fn=self._b2_pick_text,
+        )
+        a2_layer = self._add_line_layer(
+            self.a2_poly,
+            self._a2_cell_colors,
+            self.a2_picker,
+            line_width=2.5,
+            text_fn=self._a2_pick_text,
+        )
+
         a1_actor = self.plotter.add_mesh(
             self.a1_poly,
             color="black",
@@ -407,16 +509,22 @@ class HdMapViz:
         )
         self.plotter.add_axes()
         self.plotter.add_text(
-            "[2] top-down  [3] 3D  [shift+click] A1 / A2 / B2 / A3 / A4",
+            "[2] top-down  [3] 3D  [shift+click] A1 / A2 / B2 / C3 / A3 / A4",
             position="lower_left",
             font_size=10,
         )
         self._add_view_keys()
 
+        # Pick priority: A1 dots first (smallest, easiest to miss with a
+        # cell picker), then A2 → B2 → C3 line layers (A2 first so lane-bundle
+        # picking takes priority over markings / barriers), then polygons.
         self.a1_picker.AddPickList(a1_actor)
-        self.a2_picker.AddPickList(a2_actor)
-        if b2_actor is not None:
-            self.b2_picker.AddPickList(b2_actor)
+        line_layers: tuple[_LineLayer, ...] = tuple(
+            layer for layer in (a2_layer, b2_layer, c3_layer) if layer.actor is not None
+        )
+        for layer in line_layers:
+            assert layer.actor is not None
+            layer.picker.AddPickList(layer.actor)
         if a3_actor is not None:
             self.poly_picker.AddPickList(a3_actor)
         if a4_actor is not None:
@@ -424,9 +532,79 @@ class HdMapViz:
 
         self.plotter.iren.add_observer(
             "LeftButtonPressEvent",
-            self._make_pick_handler(initial_rgb, b2_actor, a3_actor, a4_actor),
+            self._make_pick_handler(line_layers, a3_actor, a4_actor),
         )
         self.plotter.show()
+
+    def _add_line_layer(
+        self,
+        poly: pv.PolyData,
+        color_fn: Callable[[], NDArray[np.uint8]],
+        picker: vtk.vtkCellPicker,
+        *,
+        line_width: float,
+        text_fn: Callable[[int], str],
+    ) -> _LineLayer:
+        """Attach a line PolyData to the plotter (if non-empty) and return
+        the :class:`_LineLayer` record the pick handler will consume.
+
+        Empty layers (e.g. a section without B2 or C3) still produce a
+        layer record — with ``actor=None`` — so the pick chain can skip them
+        uniformly without callers needing extra branches.
+        """
+        if poly.n_cells == 0:
+            return _LineLayer(
+                picker=picker,
+                actor=None,
+                poly=poly,
+                initial_rgb=np.empty((0, 3), dtype=np.uint8),
+                text_fn=text_fn,
+            )
+        initial_rgb = color_fn()
+        poly.cell_data["rgb"] = initial_rgb.copy()
+        actor = self.plotter.add_mesh(
+            poly,
+            scalars="rgb",
+            rgb=True,
+            line_width=line_width,
+            show_scalar_bar=False,
+        )
+        return _LineLayer(
+            picker=picker,
+            actor=actor,
+            poly=poly,
+            initial_rgb=initial_rgb,
+            text_fn=text_fn,
+        )
+
+    def _try_line_pick(
+        self,
+        layer: _LineLayer,
+        all_layers: tuple[_LineLayer, ...],
+        x: int,
+        y: int,
+        renderer: Any,
+    ) -> bool:
+        """Shared pick pattern for A2 / B2 / C3 line layers.
+
+        Hit-tests ``layer.picker`` at ``(x, y)``; on a hit, restores every
+        layer's per-cell RGB to its captured baseline (clearing any stale
+        yellow highlight elsewhere), paints the hit cell yellow, and emits
+        pick text. Returns ``True`` when a pick was handled so the outer
+        chain can short-circuit.
+        """
+        if layer.actor is None or not layer.picker.Pick(x, y, 0, renderer):
+            return False
+        cid = layer.picker.GetCellId()
+        if cid < 0:
+            return False
+        for other in all_layers:
+            other.poly.cell_data["rgb"] = other.initial_rgb.copy()
+        rgb = layer.poly.cell_data["rgb"]
+        rgb[cid] = [255, 255, 0]
+        layer.poly.cell_data["rgb"] = rgb
+        self._show_pick(layer.text_fn(cid))
+        return True
 
     def _show_pick(self, text: str) -> None:
         log.info("picked %s", text)
@@ -442,8 +620,7 @@ class HdMapViz:
 
     def _make_pick_handler(
         self,
-        initial_rgb: NDArray[np.uint8],
-        b2_actor: vtk.vtkActor | None,
+        line_layers: tuple[_LineLayer, ...],
         a3_actor: vtk.vtkActor | None,
         a4_actor: vtk.vtkActor | None,
     ) -> Any:
@@ -458,19 +635,8 @@ class HdMapViz:
                 if pid >= 0:
                     self._show_pick(self._a1_pick_text(pid))
                     return
-            if self.a2_picker.Pick(x, y, 0, renderer):
-                cid = self.a2_picker.GetCellId()
-                if cid >= 0:
-                    rgb = self.a2_poly.cell_data["rgb"]
-                    rgb[:] = initial_rgb
-                    rgb[cid] = [255, 255, 0]
-                    self.a2_poly.cell_data["rgb"] = rgb
-                    self._show_pick(self._a2_pick_text(cid))
-                    return
-            if b2_actor is not None and self.b2_picker.Pick(x, y, 0, renderer):
-                cid = self.b2_picker.GetCellId()
-                if cid >= 0:
-                    self._show_pick(self._b2_pick_text(cid))
+            for layer in line_layers:
+                if self._try_line_pick(layer, line_layers, x, y, renderer):
                     return
             if self.poly_picker.Pick(x, y, 0, renderer):
                 cid = self.poly_picker.GetCellId()
