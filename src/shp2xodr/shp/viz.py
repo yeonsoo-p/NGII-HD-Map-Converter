@@ -351,14 +351,15 @@ class HdMapViz:
         self.on_pick = on_pick
 
         # Typed data records — one per NGII layer, geometry kind enforced by
-        # base. A1 / A2 / B2 are required for the segmentation pipeline; A3 /
-        # A4 / C3 are optional layers a section is allowed to ship without.
+        # base. A1 / A2 / B2 / C3 are required for the segmentation pipeline
+        # (C3 gates Pass B of the bidirectional merge); A3 / A4 are optional
+        # layers a section is allowed to ship without.
         self.a1 = A1Data(shp_dir)
         self.a2 = A2Data(shp_dir)
         self.b2 = B2Data(shp_dir)
+        self.c3 = C3Data(shp_dir)
         self.a3: A3Data | None = A3Data.try_load(shp_dir)
         self.a4: A4Data | None = A4Data.try_load(shp_dir)
-        self.c3: C3Data | None = C3Data.try_load(shp_dir)
 
         # Segmentation + per-group / per-junction / per-road palettes.
         self.segmentation = Segmentation.from_shp_dir(shp_dir, seg_cfg)
@@ -397,16 +398,15 @@ class HdMapViz:
                 picker_tolerance=viz_cfg.picker_tol_thin,
             ),
         ]
-        if self.c3 is not None:
-            line_specs.append(
-                _LineLayer(
-                    "C3",
-                    self.c3,
-                    self._c3_cell_colors,
-                    line_width=viz_cfg.line_width_c3,
-                    picker_tolerance=viz_cfg.picker_tol_thin,
-                )
+        line_specs.append(
+            _LineLayer(
+                "C3",
+                self.c3,
+                self._c3_cell_colors,
+                line_width=viz_cfg.line_width_c3,
+                picker_tolerance=viz_cfg.picker_tol_thin,
             )
+        )
         self.line_layers: tuple[_LineLayer, ...] = tuple(line_specs)
 
         # A3 / A4 share one polygon picker — dispatch is by actor identity.
@@ -531,14 +531,7 @@ class HdMapViz:
         return self._b2_cell_colors_at(self._abstraction_level)
 
     def _c3_cell_colors(self) -> NDArray[np.uint8]:
-        """RGB per C3 row keyed off Type (facility class).
-
-        Invariant: only invoked when ``self.c3`` is the data of an existing
-        ``_LineLayer`` in :attr:`line_layers` — so it's never None here.
-        """
-        if self.c3 is None:
-            msg = "C3 callback invoked but layer was not loaded"
-            raise RuntimeError(msg)
+        """RGB per C3 row keyed off Type (facility class)."""
         cfg = self.viz_cfg
         n = len(self.c3.types)
         rgb = np.zeros((n, 3), dtype=np.uint8)

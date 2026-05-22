@@ -439,9 +439,6 @@ class HdMapWindow(QMainWindow):
 
     def _fields_c3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.c3
-        if d is None:
-            msg = "C3 layer not loaded"
-            raise RuntimeError(msg)
         return [
             ("ID", str(d.ids[idx])),
             ("Type", _coded(d.types[idx], C3Data.TYPE_LABEL)),

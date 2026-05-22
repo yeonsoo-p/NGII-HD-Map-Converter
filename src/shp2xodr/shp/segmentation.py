@@ -48,7 +48,7 @@ import numpy as np
 import shapely
 from numpy.typing import NDArray
 
-from shp2xodr.shp.data import A1Data, A2Data, B2Data
+from shp2xodr.shp.data import A1Data, A2Data, B2Data, C3Data
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +82,11 @@ _INTERIOR_LINK_TYPE = "1"
 # bidirectional group merging. 5011 (가변차선) is a variable-direction lane,
 # 502 (유턴구역선) is a local U-turn pocket — neither is a sustained divider.
 _CENTERLINE_B2_KIND = "501"
+
+# Step (m) along the longer B2 centerline when probing for a C3 barrier in the
+# corridor between two pass-B candidate centerlines. Smaller = finer detection
+# at quadratic cost; NGII C3 polylines are continuous, so 2 m can't miss one.
+_PASSB_BARRIER_SAMPLE_STEP_M = 2.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -232,7 +237,10 @@ class Segmentation:
         a1 = A1Data(shp_dir)
         a2 = A2Data(shp_dir)
         b2 = B2Data(shp_dir)
+        c3 = C3Data(shp_dir)
         node_role = cls._classify_nodes(a1, a2)
+
+        c3_separators = cls._c3_separator_lines(c3)
 
         group_id = cls._group_links(a2, node_role)
         junction_id, nid_to_jid = cls._cluster_junctions(
@@ -251,6 +259,7 @@ class Segmentation:
             b2_l_group,
             group_junction,
             max_separation_m=cfg.bidirectional_merge_max_separation_m,
+            c3_separators=c3_separators,
         )
         b2_r_road, b2_l_road, b2_r_junction, b2_l_junction = cls._resolve_b2_to_roads(
             b2_r_group, b2_l_group, b2_r_link, b2_l_link, group_road, junction_id
@@ -619,12 +628,57 @@ class Segmentation:
         return r_link, l_link, r_group, l_group
 
     @staticmethod
+    def _barrier_between(
+        line_a: shapely.LineString,
+        line_b: shapely.LineString,
+        sep_tree: shapely.STRtree,
+        max_separation_m: float,
+    ) -> bool:
+        """True if any C3 separator in ``sep_tree`` crosses the corridor between A and B.
+
+        The corridor is sampled by walking ``line_a`` in
+        ``_PASSB_BARRIER_SAMPLE_STEP_M`` steps, projecting each sample to its
+        nearest point on ``line_b``, and keeping the rung where the gap is
+        within ``max_separation_m`` (samples beyond the threshold lie outside
+        the candidate overlap). The merge is blocked when any rung intersects
+        a C3 separator polyline.
+        """
+        length = float(line_a.length)
+        if length <= 0.0:
+            return False
+        step = _PASSB_BARRIER_SAMPLE_STEP_M
+        n_steps = max(int(np.ceil(length / step)), 1)
+        rungs: list[shapely.LineString] = []
+        for k in range(n_steps + 1):
+            s = min(k * step, length)
+            p_a = line_a.interpolate(s)
+            p_b = line_b.interpolate(line_b.project(p_a))
+            if p_a.distance(p_b) > max_separation_m:
+                continue
+            rungs.append(shapely.LineString([(p_a.x, p_a.y), (p_b.x, p_b.y)]))
+        if not rungs:
+            return False
+        corridor = shapely.MultiLineString(rungs)
+        return bool(len(sep_tree.query(corridor, predicate="intersects")))
+
+    @staticmethod
+    def _c3_separator_lines(c3: C3Data) -> tuple[shapely.LineString, ...]:
+        """Every C3 polyline as a 2-D ``LineString`` — used as Pass-B barriers.
+
+        All C3 facility classes count as separators (guardrail, concrete wall,
+        kerb, jaywalk barrier, median opening, wall, …). The merge corridor is
+        planimetric, so Z is dropped.
+        """
+        return tuple(shapely.LineString(poly[:, :2]) for poly in c3.polylines)
+
+    @staticmethod
     def _merge_groups_bidirectional(
         b2: B2Data,
         b2_r_group: NDArray[np.int32],
         b2_l_group: NDArray[np.int32],
         group_junction: NDArray[np.int32],
         max_separation_m: float,
+        c3_separators: tuple[shapely.LineString, ...],
     ) -> NDArray[np.int32]:
         """Bidirectional merge of mainline groups across B2 중앙선 rows.
 
@@ -633,14 +687,18 @@ class Segmentation:
         * **Pass A** — same-row pairing. For every B2 ``Kind=501`` row whose
           R and L sides both bind to mainline groups, union those two groups.
           This covers the typical undivided road: one painted centerline,
-          two adjacent opposing lanes.
+          two adjacent opposing lanes. Not C3-gated: an undivided road has
+          no median, the painted centerline is the only separator.
 
         * **Pass B** — cross-row pairing. For every pair of distinct B2
           ``Kind=501`` rows that each bind one mainline group and lie within
           ``max_separation_m`` planimetric distance, union the two bound
-          groups. This covers divided roads where each direction carries its
-          own centerline along the inner edge of its leftmost lane, separated
-          by a median (no single B2 row spans both directions).
+          groups — *unless* a ``c3_separators`` polyline crosses any rung of
+          the corridor between them. This covers divided roads where each
+          direction carries its own centerline along the inner edge of its
+          leftmost lane, separated by a median (no single B2 row spans both
+          directions), while preventing carriageways that NGII intentionally
+          split with a barrier from being merged back together.
 
         Returns ``group_road``: dense road id per mainline group; ``-1`` for
         junction-interior groups.
@@ -673,6 +731,7 @@ class Segmentation:
                     return lg
                 return -1
 
+            sep_tree = shapely.STRtree(c3_separators) if c3_separators else None
             bound_groups = [bound_main_group(int(i)) for i in centerline_idxs]
             for a in range(len(centerline_idxs)):
                 ga = bound_groups[a]
@@ -687,9 +746,22 @@ class Segmentation:
                         continue
                     if Segmentation._uf_find(parent, ga) == Segmentation._uf_find(parent, gb):
                         continue
+                    if sep_tree is not None and Segmentation._barrier_between(
+                        geoms[a], geoms[int(b)], sep_tree, max_separation_m
+                    ):
+                        continue
                     Segmentation._uf_union(parent, ga, gb)
 
-        # Densify into road ids (mainline only)
+        return Segmentation._densify_road_ids(parent, group_junction)
+
+    @staticmethod
+    def _densify_road_ids(
+        parent: NDArray[np.int32], group_junction: NDArray[np.int32]
+    ) -> NDArray[np.int32]:
+        """Pack union-find roots of mainline groups into dense ``[0, n_roads)`` ids;
+        junction-interior groups stay at ``-1``.
+        """
+        n_groups = len(group_junction)
         group_road = np.full(n_groups, -1, dtype=np.int32)
         roots: dict[int, int] = {}
         for b in range(n_groups):
