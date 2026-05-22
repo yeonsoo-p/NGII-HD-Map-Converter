@@ -1,4 +1,5 @@
-"""Group A2_LINK records into road bundles and junction components.
+"""Group A2_LINK records into road bundles and junction components, and
+bind B2_SURFACELINEMARK lines onto the resulting bundles.
 
 A *bundle* is a maximal set of A2_LINK lanes that should become one OpenDRIVE
 ``<road>``. Same-direction lanes are joined laterally via ``R_LinkID`` /
@@ -12,6 +13,10 @@ belong to one component even when no single link joins their endpoints.
 Each component becomes one OpenDRIVE ``<junction>``; each bundle whose
 rows are interior to it becomes a connecting road with
 ``road@junction = <jid>``.
+
+Each B2_SURFACELINEMARK row resolves its R/L_LinkID references to the A2
+bundle that lane belongs to. Bundle ids are dense and shared between the A2
+and B2 sides, so a B2 line and the lanes it bounds are always comparable.
 
 Bidirectional merging (opposite-direction pairs into one ``<road>``) is
 intentionally deferred — each direction stays its own bundle here.
@@ -61,11 +66,15 @@ _INTERIOR_LINK_TYPE = "1"
 
 @dataclass(slots=True, frozen=True)
 class Segmentation:
-    """Bundles + junction topology produced from one A1/A2 pair.
+    """Bundles, junction topology, and B2 line bindings for one section.
 
-    Per-link arrays are parallel to the A2 input row order; per-bundle fields
-    are indexed by bundle id ``0..n_bundles-1``; ``node_junction_id`` is
-    parallel to the A1 input row order.
+    Arrays carry different lengths depending on what they index:
+
+    * ``bundle_id`` / ``junction_id`` — parallel to the A2_LINK input row order.
+    * ``node_junction_id`` — parallel to the A1_NODE input row order.
+    * ``bundle_junction`` / ``bundle_pred_junctions`` / ``bundle_succ_junctions``
+      — indexed by bundle id ``0..n_bundles-1``.
+    * ``b2_*`` — parallel to the B2_SURFACELINEMARK input row order.
 
     A *mainline* bundle has ``bundle_junction[b] == -1`` and connects on each
     side to the set of junctions reachable through its boundary nodes (empty
@@ -73,6 +82,13 @@ class Segmentation:
     pred/succ endpoints sit in different junctions, so each side is modeled
     as a set rather than a single id. Interior bundles have empty pred/succ
     sets (their connectivity is implied by ``bundle_junction``).
+
+    The ``b2_*`` arrays carry ``-1`` on a side when that B2 row has no A2
+    reference in the loaded section. The two sides are kept independent on
+    purpose: a centerline (중앙선, Kind 501) separates two opposite-direction
+    bundles, so its R/L sides resolve to *different* bundle ids — we don't
+    want to force them to merge. Regular lane dividers have
+    ``b2_r_bundle == b2_l_bundle``; outer edge lines have one side ``-1``.
     """
 
     bundle_id: NDArray[np.int32]
@@ -81,24 +97,10 @@ class Segmentation:
     bundle_junction: NDArray[np.int32]
     bundle_pred_junctions: tuple[frozenset[int], ...]
     bundle_succ_junctions: tuple[frozenset[int], ...]
-
-
-@dataclass(slots=True, frozen=True)
-class B2Segmentation:
-    """B2_SURFACELINEMARK rows resolved onto A2 bundles.
-
-    All arrays are parallel to the B2 input row order; ``-1`` means that side
-    has no A2 reference in the loaded section. The two sides are kept
-    independent on purpose: a centerline (중앙선) separates two opposite-
-    direction bundles, so its R/L sides resolve to *different* bundle ids —
-    we don't want to force them to merge. Regular lane dividers have
-    ``r_bundle == l_bundle``; outer edge lines have one side ``-1``.
-    """
-
-    r_link_idx: NDArray[np.int32]
-    l_link_idx: NDArray[np.int32]
-    r_bundle: NDArray[np.int32]
-    l_bundle: NDArray[np.int32]
+    b2_r_link_idx: NDArray[np.int32]
+    b2_l_link_idx: NDArray[np.int32]
+    b2_r_bundle: NDArray[np.int32]
+    b2_l_bundle: NDArray[np.int32]
 
 
 def classify_nodes(a1: gpd.GeoDataFrame, a2: gpd.GeoDataFrame) -> dict[str, NodeRole]:
@@ -400,17 +402,55 @@ def _side_junctions(endpoints: set[str], nid_to_jid: dict[str, int]) -> frozense
     return frozenset(nid_to_jid[nid] for nid in endpoints if nid in nid_to_jid)
 
 
+def _resolve_b2_to_bundles(
+    a2: gpd.GeoDataFrame,
+    b2: gpd.GeoDataFrame,
+    bundle_id: NDArray[np.int32],
+) -> tuple[
+    NDArray[np.int32],
+    NDArray[np.int32],
+    NDArray[np.int32],
+    NDArray[np.int32],
+]:
+    """Resolve each B2 row's R/L_LinkID into A2 row indices and bundle ids.
+
+    Empty / unknown A2 references yield ``-1`` on that side. Pure look-up:
+    bundle topology is already fixed by the A2 pass.
+    """
+    a2_id_to_idx = {lid: i for i, lid in enumerate(a2["ID"].astype(str).tolist())}
+    r_ids = b2["R_LinkID"].fillna("").astype(str).tolist()
+    l_ids = b2["L_LinkID"].fillna("").astype(str).tolist()
+    n = len(b2)
+    r_link = np.full(n, -1, dtype=np.int32)
+    l_link = np.full(n, -1, dtype=np.int32)
+    for i in range(n):
+        ri = a2_id_to_idx.get(r_ids[i])
+        li = a2_id_to_idx.get(l_ids[i])
+        if ri is not None:
+            r_link[i] = np.int32(ri)
+        if li is not None:
+            l_link[i] = np.int32(li)
+    r_bundle = np.where(r_link >= 0, bundle_id[r_link], -1).astype(np.int32)
+    l_bundle = np.where(l_link >= 0, bundle_id[l_link], -1).astype(np.int32)
+    return r_link, l_link, r_bundle, l_bundle
+
+
 def segment_links(shp_dir: Path, junction_merge_dist_m: float = 0.0) -> Segmentation:
-    """Segment A2_LINKs into bundles and junction components.
+    """Segment A2_LINKs into bundles + junctions, and bind B2 lines onto them.
 
     ``junction_merge_dist_m`` controls a final spatial pass that fuses
     graph-disjoint junction components whose nodes are closer than the
     threshold; set to ``0`` to disable. Returns a :class:`Segmentation`
-    with per-link, per-bundle, and per-node arrays. Bundle ids and
-    junction ids are dense.
+    holding per-link, per-bundle, per-node, and per-B2-line arrays — all
+    bundle ids and junction ids are dense.
+
+    NGII makes B2_SURFACELINEMARK a mandatory layer for every section, so
+    the B2 resolution always runs alongside the A2 pass; there is no
+    A2-only mode.
     """
     a1 = load_a1_nodes(shp_dir)
     a2 = load_a2_links(shp_dir)
+    b2 = load_b2_lines(shp_dir)
     node_role = classify_nodes(a1, a2)
 
     bundle_id = _bundle_links_array(a2, node_role)
@@ -428,16 +468,22 @@ def segment_links(shp_dir: Path, junction_merge_dist_m: float = 0.0) -> Segmenta
         if jid is not None:
             node_junction_id[i] = jid
 
+    b2_r_link, b2_l_link, b2_r_bundle, b2_l_bundle = _resolve_b2_to_bundles(a2, b2, bundle_id)
+
     n_bundles = int(bundle_id.max()) + 1 if len(bundle_id) else 0
     n_junctions = int(node_junction_id.max()) + 1 if len(node_junction_id) else 0
     n_cuts = sum(1 for r in node_role.values() if _is_cut(r))
+    n_b2_bound = int(((b2_r_link >= 0) | (b2_l_link >= 0)).sum())
     log.info(
-        "segmentation: %d links → %d bundles, %d junctions (cut at %d / %d nodes)",
+        "segmentation: %d links → %d bundles, %d junctions (cut at %d / %d nodes); "
+        "%d / %d B2 lines bound",
         len(a2),
         n_bundles,
         n_junctions,
         n_cuts,
         len(node_role),
+        n_b2_bound,
+        len(b2),
     )
     return Segmentation(
         bundle_id=bundle_id,
@@ -446,51 +492,8 @@ def segment_links(shp_dir: Path, junction_merge_dist_m: float = 0.0) -> Segmenta
         bundle_junction=bundle_junction,
         bundle_pred_junctions=bundle_pred,
         bundle_succ_junctions=bundle_succ,
+        b2_r_link_idx=b2_r_link,
+        b2_l_link_idx=b2_l_link,
+        b2_r_bundle=b2_r_bundle,
+        b2_l_bundle=b2_l_bundle,
     )
-
-
-def segment_b2(
-    a2: gpd.GeoDataFrame,
-    b2: gpd.GeoDataFrame,
-    bundle_id: NDArray[np.int32],
-) -> B2Segmentation:
-    """Resolve each B2 row's R/L_LinkID into A2 row indices and bundle ids.
-
-    Empty / unknown A2 references yield ``-1`` on that side. The function is
-    a pure look-up — no union-find here, since the bundle topology is already
-    fixed by :func:`segment_links`.
-    """
-    a2_id_to_idx = {lid: i for i, lid in enumerate(a2["ID"].astype(str).tolist())}
-    r_ids = b2["R_LinkID"].fillna("").astype(str).tolist()
-    l_ids = b2["L_LinkID"].fillna("").astype(str).tolist()
-    n = len(b2)
-    r_link = np.full(n, -1, dtype=np.int32)
-    l_link = np.full(n, -1, dtype=np.int32)
-    for i in range(n):
-        ri = a2_id_to_idx.get(r_ids[i])
-        li = a2_id_to_idx.get(l_ids[i])
-        if ri is not None:
-            r_link[i] = np.int32(ri)
-        if li is not None:
-            l_link[i] = np.int32(li)
-    r_bundle = np.where(r_link >= 0, bundle_id[r_link], -1).astype(np.int32)
-    l_bundle = np.where(l_link >= 0, bundle_id[l_link], -1).astype(np.int32)
-    n_bound = int(((r_link >= 0) | (l_link >= 0)).sum())
-    log.info("b2 segmentation: %d / %d lines bound to a known A2 row", n_bound, n)
-    return B2Segmentation(
-        r_link_idx=r_link,
-        l_link_idx=l_link,
-        r_bundle=r_bundle,
-        l_bundle=l_bundle,
-    )
-
-
-def segment_with_b2(
-    shp_dir: Path, junction_merge_dist_m: float = 0.0
-) -> tuple[Segmentation, B2Segmentation]:
-    """Convenience: run A2 segmentation, then map B2 lines onto the result."""
-    seg = segment_links(shp_dir, junction_merge_dist_m=junction_merge_dist_m)
-    a2 = load_a2_links(shp_dir)
-    b2 = load_b2_lines(shp_dir)
-    b2_seg = segment_b2(a2, b2, seg.bundle_id)
-    return seg, b2_seg

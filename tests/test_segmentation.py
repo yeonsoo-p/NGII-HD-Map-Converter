@@ -120,6 +120,26 @@ def test_proximity_merge_fuses_split_intersection(sample_dir: Path) -> None:
     assert left_jid == right_jid
 
 
+def test_b2_two_sided_mainline_rows_share_bundle(sample_dir: Path) -> None:
+    """A B2 row with both sides bound to *mainline* A2 lanes must resolve to
+    the same bundle on both sides — mainline lanes that share a B2 divider
+    are laterally adjacent by definition, and the segmentation pass unions
+    them via R/L_LinkID. (Interior LinkType=1 connecting lanes inside a
+    junction each bundle alone, so a B2 line straddling two of them is
+    legitimately cross-bundle and is excluded here.)
+    """
+    a2 = load_a2_links(sample_dir)
+    seg = segment_links(sample_dir)
+    link_types = a2["LinkType"].astype(str).to_numpy()
+    both_bound = (seg.b2_r_link_idx >= 0) & (seg.b2_l_link_idx >= 0)
+    r_main = both_bound & (link_types[np.clip(seg.b2_r_link_idx, 0, None)] != "1")
+    l_main = both_bound & (link_types[np.clip(seg.b2_l_link_idx, 0, None)] != "1")
+    mask = r_main & l_main
+    assert mask.any(), "no B2 row has both sides bound to mainline lanes"
+    mismatched = int((mask & (seg.b2_r_bundle != seg.b2_l_bundle)).sum())
+    assert mismatched == 0, f"{mismatched} two-sided mainline B2 rows resolve to different bundles"
+
+
 def test_bundle_side_junctions_well_formed(sample_dir: Path) -> None:
     """Interior bundles carry empty pred/succ sets; mainline bundles whose
     pred/succ side is non-empty must reference valid junction ids.

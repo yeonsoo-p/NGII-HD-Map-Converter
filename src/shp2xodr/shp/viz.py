@@ -2,11 +2,13 @@
 
 :class:`HdMapViz` shows every layer at once: A2_LINKs colored by segmentation
 (mainline links get one color per future OpenDRIVE ``<road>`` bundle;
-interior links share one color per future ``<junction>``), A1 nodes as small
-black dots, and A3 / A4 polygon footprints colored by their NGII codes.
+interior links share one color per future ``<junction>``), B2 surface line
+marks rendered in their actual paint colors (yellow / white / blue), A1
+nodes as small black dots, and A3 / A4 polygon footprints colored by their
+NGII codes.
 
-Shift + left-click any link or polygon to log + display its attributes (and
-highlight A2 links in yellow).
+Shift + left-click any link, line, or polygon to log + display its
+attributes (and highlight A2 links in yellow).
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import vtk
 from numpy.typing import NDArray
 from shapely.geometry import Polygon as ShapelyPolygon
 
-from shp2xodr.shp.io import a1_data, a2_data, a3_data, a4_data
+from shp2xodr.shp.io import a1_data, a2_data, a3_data, a4_data, b2_data
 from shp2xodr.shp.segmentation import Segmentation, segment_links
 
 _NODE_POINT_SIZE = 3.0
@@ -87,6 +89,36 @@ _A4_SUBTYPE_RGB: dict[str, tuple[int, int, int]] = {
 }
 _A4_FALLBACK_RGB: tuple[int, int, int] = (180, 180, 180)
 
+# B2.Type is a 3-digit code; the first digit is the paint color:
+# 1 황색, 2 백색, 3 청색, 9 기타. We render the line in that color.
+# Colors are tuned to stay distinct from the A4 fills — A4 SubType=4 is
+# orange (240, 180, 80) and SubType=3 is tan (220, 200, 160), so the yellow
+# here pushes toward pure lemon to avoid being read as "an A4 polygon".
+_B2_PAINT_RGB: dict[str, tuple[int, int, int]] = {
+    "1": (245, 235, 0),
+    "2": (255, 255, 255),
+    "3": (20, 90, 230),
+}
+_B2_PAINT_FALLBACK_RGB: tuple[int, int, int] = (130, 130, 130)
+
+# B2.Kind code → 한글 라벨 (NGII manual table 9.45). Used only for the
+# shift-click pick text; unknown codes fall through to the raw code string.
+_B2_KIND_LABEL: dict[str, str] = {
+    "501": "중앙선",
+    "5011": "가변차선",
+    "502": "유턴구역선",
+    "503": "차선",
+    "504": "버스전용차선",
+    "505": "길가장자리구역선",
+    "506": "진로변경제한선",
+    "515": "주정차금지선",
+    "525": "유도선",
+    "530": "정지선",
+    "531": "안전지대",
+    "535": "자전거도로",
+    "599": "기타선",
+}
+
 
 def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
     """Deterministic, saturated RGB rows — kept clear of pure black/white."""
@@ -99,8 +131,14 @@ def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
 log = logging.getLogger(__name__)
 
 
-def _a2_polydata(shp_dir: Path) -> pv.PolyData:
-    ids, polylines = a2_data(shp_dir)
+def _polyline_polydata(
+    polylines: list[NDArray[np.float64]],
+) -> pv.PolyData:
+    """Stack a list of ``(N_i, 3)`` polylines into one ``pv.PolyData`` with
+    one line cell per source polyline.
+    """
+    if not polylines:
+        return pv.PolyData()
     line_cells: list[int] = []
     offset = 0
     for pts in polylines:
@@ -108,9 +146,24 @@ def _a2_polydata(shp_dir: Path) -> pv.PolyData:
         line_cells.append(n)
         line_cells.extend(range(offset, offset + n))
         offset += n
-    poly = pv.PolyData(np.vstack(polylines), lines=np.asarray(line_cells, dtype=np.int64))
+    return pv.PolyData(np.vstack(polylines), lines=np.asarray(line_cells, dtype=np.int64))
+
+
+def _a2_polydata(shp_dir: Path) -> pv.PolyData:
+    ids, polylines = a2_data(shp_dir)
+    poly = _polyline_polydata(polylines)
     poly.cell_data["link_id"] = ids
     return poly
+
+
+def _b2_polydata(
+    shp_dir: Path,
+) -> tuple[pv.PolyData, NDArray[np.str_], NDArray[np.str_], NDArray[np.str_]]:
+    ids, polylines, types, kinds, _r_ids, _l_ids = b2_data(shp_dir)
+    poly = _polyline_polydata(polylines)
+    if poly.n_cells > 0:
+        poly.cell_data["b2_id"] = ids
+    return poly, ids, types, kinds
 
 
 def _polygon_polydata(rings: list[NDArray[np.float64]]) -> pv.PolyData:
@@ -186,6 +239,7 @@ class HdMapViz:
         self.a2_poly = _a2_polydata(shp_dir)
         self.a3_poly, self.a3_ids, self.a3_kinds, self.a3_road_types = _a3_polydata(shp_dir)
         self.a4_poly, self.a4_ids, self.a4_subtypes, self.a4_names = _a4_polydata(shp_dir)
+        self.b2_poly, self.b2_ids, self.b2_types, self.b2_kinds = _b2_polydata(shp_dir)
         self.segmentation: Segmentation = segment_links(
             shp_dir, junction_merge_dist_m=junction_merge_dist_m
         )
@@ -197,13 +251,22 @@ class HdMapViz:
         self.plotter = pv.Plotter()
         # One picker per layer so A2 stays clickable through A3/A4 polygons —
         # a single picker returns the front-most hit and A3 covers A2 visually.
-        # Tried in priority order: A1 (dots) > A2 (lines) > A3 / A4 (polygons).
+        # Priority order: A1 (dots) > A2 (lines) > B2 (lines) > A3 / A4 (polygons).
         self.a1_picker = vtk.vtkPointPicker()
         self.a1_picker.SetTolerance(0.01)
         self.a1_picker.PickFromListOn()
         self.a2_picker = vtk.vtkCellPicker()
         self.a2_picker.SetTolerance(0.005)
         self.a2_picker.PickFromListOn()
+        self.b2_picker = vtk.vtkCellPicker()
+        # B2 lines render slimmer than A2 (1.4 vs 2.5), and they pass over
+        # A3/A4 polygons whose picker uses point-in-polygon (tol=0). With a
+        # tight tolerance the cursor "slips off" thin B2 lines and the poly
+        # picker wins; bumping tolerance to ~1.2% of screen makes B2 grabbing
+        # reliable without bleeding into wrong cells (B2 lines are still
+        # several screen-px apart at typical zoom).
+        self.b2_picker.SetTolerance(0.012)
+        self.b2_picker.PickFromListOn()
         self.poly_picker = vtk.vtkCellPicker()
         self.poly_picker.SetTolerance(0.0)
         self.poly_picker.PickFromListOn()
@@ -230,6 +293,28 @@ class HdMapViz:
         jid = int(self.a2_poly.cell_data["junction_id"][cell_id])
         jstr = str(jid) if jid >= 0 else "-"
         return f"link {link_id}  bundle {bid}  junction {jstr}"
+
+    # ---- B2 line coloring / pick ---------------------------------------------
+
+    def _b2_cell_colors(self) -> NDArray[np.uint8]:
+        """RGB per B2 row keyed off the first digit of ``Type`` (paint color)."""
+        n = len(self.b2_types)
+        rgb = np.zeros((n, 3), dtype=np.uint8)
+        for i, t in enumerate(self.b2_types):
+            head = t[:1]
+            rgb[i] = _B2_PAINT_RGB.get(head, _B2_PAINT_FALLBACK_RGB)
+        return rgb
+
+    def _b2_pick_text(self, cell_id: int) -> str:
+        b2_id = self.b2_ids[cell_id]
+        type_code = self.b2_types[cell_id]
+        kind_code = self.b2_kinds[cell_id]
+        kind = _B2_KIND_LABEL.get(kind_code, kind_code)
+        r_b = int(self.segmentation.b2_r_bundle[cell_id])
+        l_b = int(self.segmentation.b2_l_bundle[cell_id])
+        r_str = str(r_b) if r_b >= 0 else "-"
+        l_str = str(l_b) if l_b >= 0 else "-"
+        return f"B2 {b2_id}  Type={type_code}  Kind={kind}  R-bundle={r_str}  L-bundle={l_str}"
 
     # ---- A3 / A4 polygon coloring / pick -------------------------------------
 
@@ -284,11 +369,28 @@ class HdMapViz:
         initial_rgb = self._a2_cell_colors()
         self.a2_poly.cell_data["rgb"] = initial_rgb.copy()
 
-        self.plotter.background_color = "white"
+        # Slight cool off-white so pure-white B2 lines (백색 차선 / 유도선 /
+        # 정지선) have contrast — they're invisible on a true #ffffff background.
+        # Dark enough to give white paint a visible edge, light enough that
+        # the A3 road fill (200,200,200) still reads as "darker than empty".
+        self.plotter.background_color = (0.86, 0.88, 0.90)
 
-        # A3/A4 polygon footprints (drawn first so links/dots sit on top).
+        # A3/A4 polygon footprints (drawn first so lines/dots sit on top).
         a3_actor = self._add_polygon_layer(self.a3_poly, self._a3_face_rgb())
         a4_actor = self._add_polygon_layer(self.a4_poly, self._a4_face_rgb())
+
+        # B2 surface line marks rendered in their actual paint colors. Drawn
+        # before A2 so the lane-bundle coloring on A2 stays visually dominant.
+        b2_actor: vtk.vtkActor | None = None
+        if self.b2_poly.n_cells > 0:
+            self.b2_poly.cell_data["rgb"] = self._b2_cell_colors()
+            b2_actor = self.plotter.add_mesh(
+                self.b2_poly,
+                scalars="rgb",
+                rgb=True,
+                line_width=1.4,
+                show_scalar_bar=False,
+            )
 
         a2_actor = self.plotter.add_mesh(
             self.a2_poly,
@@ -305,7 +407,7 @@ class HdMapViz:
         )
         self.plotter.add_axes()
         self.plotter.add_text(
-            "[2] top-down  [3] 3D  [shift+click] A1 / A2 / A3 / A4",
+            "[2] top-down  [3] 3D  [shift+click] A1 / A2 / B2 / A3 / A4",
             position="lower_left",
             font_size=10,
         )
@@ -313,6 +415,8 @@ class HdMapViz:
 
         self.a1_picker.AddPickList(a1_actor)
         self.a2_picker.AddPickList(a2_actor)
+        if b2_actor is not None:
+            self.b2_picker.AddPickList(b2_actor)
         if a3_actor is not None:
             self.poly_picker.AddPickList(a3_actor)
         if a4_actor is not None:
@@ -320,7 +424,7 @@ class HdMapViz:
 
         self.plotter.iren.add_observer(
             "LeftButtonPressEvent",
-            self._make_pick_handler(initial_rgb, a3_actor, a4_actor),
+            self._make_pick_handler(initial_rgb, b2_actor, a3_actor, a4_actor),
         )
         self.plotter.show()
 
@@ -339,6 +443,7 @@ class HdMapViz:
     def _make_pick_handler(
         self,
         initial_rgb: NDArray[np.uint8],
+        b2_actor: vtk.vtkActor | None,
         a3_actor: vtk.vtkActor | None,
         a4_actor: vtk.vtkActor | None,
     ) -> Any:
@@ -361,6 +466,11 @@ class HdMapViz:
                     rgb[cid] = [255, 255, 0]
                     self.a2_poly.cell_data["rgb"] = rgb
                     self._show_pick(self._a2_pick_text(cid))
+                    return
+            if b2_actor is not None and self.b2_picker.Pick(x, y, 0, renderer):
+                cid = self.b2_picker.GetCellId()
+                if cid >= 0:
+                    self._show_pick(self._b2_pick_text(cid))
                     return
             if self.poly_picker.Pick(x, y, 0, renderer):
                 cid = self.poly_picker.GetCellId()
