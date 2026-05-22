@@ -1,10 +1,14 @@
-"""Hydra entry point: ``uv run python -m shp2xodr [dataset=...]``."""
+"""Hydra entry point: ``uv run python -m shp2xodr``.
+
+The window opens empty; pick a section directory via **File → Open SHP
+folder…** (Ctrl+O). The Hydra config now only carries segmentation tuning;
+the dataset is no longer selected from YAML.
+"""
 
 from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
 
 import hydra
 from omegaconf import DictConfig
@@ -17,10 +21,8 @@ log = logging.getLogger(__name__)
 
 @hydra.main(version_base=None, config_path="../../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    shp_dir = Path(cfg.dataset.shp_dir)
-    log.info("dataset=%s  shp_dir=%s", cfg.dataset.name, shp_dir)
     app = QApplication.instance() or QApplication(sys.argv)
-    window = HdMapWindow(shp_dir, junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m)
+    window = HdMapWindow(junction_merge_dist_m=cfg.segmentation.junction_merge_dist_m)
     window.show()
     app.exec()
 

@@ -451,6 +451,10 @@ class HdMapViz:
         self.junction_hull_actor: vtk.vtkActor | None = None
         self._bundle_palette_on: bool = True
 
+        # Teardown handles - populated in attach(), consumed by detach().
+        self._left_press_tag: int | None = None
+        self._key_events_bound: tuple[str, ...] = ()
+
     # ---- Per-layer color compute ---------------------------------------------
 
     def _a2_cell_colors(self) -> NDArray[np.uint8]:
@@ -555,6 +559,7 @@ class HdMapViz:
             self.plotter.view_xy()
 
         self.plotter.add_key_event("2", _view_2d)
+        self._key_events_bound = ("2",)
 
     # ---- Scene attach / standalone entry -------------------------------------
 
@@ -609,12 +614,38 @@ class HdMapViz:
 
         self.plotter.add_axes()
         self._add_view_keys()
-        self.plotter.iren.add_observer("LeftButtonPressEvent", self._on_left_press)
+        self._left_press_tag = self.plotter.iren.add_observer(
+            "LeftButtonPressEvent", self._on_left_press
+        )
 
     def show(self) -> None:
         """Standalone entry: build the scene and open a window."""
         self.attach()
         self.plotter.show()
+
+    def detach(self) -> None:
+        """Remove every actor, observer, and key event this viz added.
+
+        Leaves the underlying plotter (including camera, parallel-projection
+        setting, and background color) usable so the GUI can attach a fresh
+        viz against the same ``QtInteractor``.
+        """
+        for actor in (
+            self.a1_layer.actor,
+            *(line.actor for line in self.line_layers),
+            *(poly.actor for poly in self.polygon_layers),
+            self.junction_hull_actor,
+            self.highlight_actor,
+        ):
+            if actor is not None:
+                self.plotter.remove_actor(actor)
+        if self._left_press_tag is not None:
+            self.plotter.iren.remove_observer(self._left_press_tag)
+            self._left_press_tag = None
+        for key in self._key_events_bound:
+            self.plotter.clear_events_for_key(key)
+        self._key_events_bound = ()
+        self.plotter.hide_axes()
 
     # ---- GUI hooks -----------------------------------------------------------
 

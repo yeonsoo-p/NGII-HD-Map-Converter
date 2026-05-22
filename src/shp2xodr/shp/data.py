@@ -5,7 +5,6 @@ arrays the codebase reads and the NGII domain code → Korean label maps from
 the 2023.07 manual. Construct one with::
 
     A1Data(section_dir)        # section directory; SHP_FILENAME resolved
-    A1Data(some_path.shp)      # direct .shp file
 
 Same shape for `A2Data` / `A3Data` / `A4Data` / `B2Data` / `C3Data`. The
 constructor handles cp949 mojibake and NGII column-name drift internally;
@@ -47,13 +46,12 @@ def _looks_like_cp949_mojibake(gdf: gpd.GeoDataFrame) -> bool:
     katakana in any object column is the giveaway since real NGII text is
     Hangul + ASCII.
     """
-    for col in gdf.select_dtypes(include=["object", "str"]):
-        if col == "geometry":
-            continue
-        for v in gdf[col].dropna().astype(str):
-            if any("｡" <= ch <= "ﾟ" for ch in v):
-                return True
-    return False
+    obj_cols = gdf.select_dtypes(include=["object", "str"]).columns.drop(
+        "geometry", errors="ignore"
+    )
+    if obj_cols.empty:
+        return False
+    return bool(gdf[obj_cols].stack().astype(str).str.contains(r"[｡-ﾟ]", regex=True).any())
 
 
 def _load(shp_path: Path) -> gpd.GeoDataFrame:
@@ -61,13 +59,12 @@ def _load(shp_path: Path) -> gpd.GeoDataFrame:
         raise FileNotFoundError(shp_path)
     try:
         gdf = gpd.read_file(shp_path)
+        retry_reason = "mojibake heuristic" if _looks_like_cp949_mojibake(gdf) else None
     except UnicodeDecodeError:
-        log.debug("retrying %s with cp949 after UTF-8 decode failure", shp_path.name)
+        retry_reason = "UTF-8 decode failure"
+    if retry_reason is not None:
+        log.debug("retrying %s with cp949 after %s", shp_path.name, retry_reason)
         gdf = gpd.read_file(shp_path, encoding="cp949")
-    else:
-        if _looks_like_cp949_mojibake(gdf):
-            log.debug("retrying %s with cp949 after mojibake heuristic", shp_path.name)
-            gdf = gpd.read_file(shp_path, encoding="cp949")
     rename = {src: dst for src, dst in _COLUMN_ALIASES.items() if src in gdf.columns}
     if rename:
         log.debug("normalized columns in %s: %s", shp_path.name, rename)
@@ -117,15 +114,18 @@ class PointLayerData:
     """Base record for any NGII point-geometry layer (A1 nodes, future B1
     signs, C1 lights, …). ``points`` has shape ``(N, 3)`` in source CRS units.
 
-    Construct with ``Subclass(section_dir)`` or ``Subclass(path/to/file.shp)``.
+    Construct with ``Subclass(section_dir)`` — ``SHP_FILENAME`` is resolved
+    against the directory.
     """
 
     SHP_FILENAME: ClassVar[str]
     ids: NDArray[np.str_]
     points: NDArray[np.float64]
 
-    def __init__(self, source: Path) -> None:
-        gdf = _load(source if source.is_file() else source / self.SHP_FILENAME)
+    def __init__(self, shp_dir: Path) -> None:
+        if not shp_dir.is_dir():
+            raise NotADirectoryError(shp_dir)
+        gdf = _load(shp_dir / self.SHP_FILENAME)
         self._populate(gdf)
 
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:
@@ -147,8 +147,10 @@ class LineLayerData:
     ids: NDArray[np.str_]
     polylines: list[NDArray[np.float64]]
 
-    def __init__(self, source: Path) -> None:
-        gdf = _load(source if source.is_file() else source / self.SHP_FILENAME)
+    def __init__(self, shp_dir: Path) -> None:
+        if not shp_dir.is_dir():
+            raise NotADirectoryError(shp_dir)
+        gdf = _load(shp_dir / self.SHP_FILENAME)
         self._populate(gdf)
 
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:
@@ -168,8 +170,10 @@ class PolygonLayerData:
     ids: NDArray[np.str_]
     rings: list[NDArray[np.float64]]
 
-    def __init__(self, source: Path) -> None:
-        gdf = _load(source if source.is_file() else source / self.SHP_FILENAME)
+    def __init__(self, shp_dir: Path) -> None:
+        if not shp_dir.is_dir():
+            raise NotADirectoryError(shp_dir)
+        gdf = _load(shp_dir / self.SHP_FILENAME)
         self._populate(gdf)
 
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:

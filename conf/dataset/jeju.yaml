@@ -1,3 +1,0 @@
-name: Jeju
-shp_dir: ${paths.repo_root}/examples/SEC001_제주첨단과학기술단지/HDMap_UTM52N_타원체고
-output_file: ${paths.output_dir}/Jeju.xodr

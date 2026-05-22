@@ -1,6 +1,12 @@
 """Qt inspector window that hosts :class:`HdMapViz`.
 
-The window provides a side dock with three sections:
+The window starts empty: pick a section directory via **File → Open SHP
+folder…** (Ctrl+O) and the scene is built against it. Opening another
+folder tears down the previous viz and rebuilds. The window itself never
+closes the underlying ``QtInteractor``, so the plotter persists across
+reloads.
+
+The right-side dock has three sections:
 
 * **Data layers** — one checkbox per NGII layer (A1 / A2 / A3 / A4 / B2 /
   C3), toggling base-actor visibility.
@@ -10,9 +16,7 @@ The window provides a side dock with three sections:
   table populated from the data class and segmentation results. Only one
   feature can be picked at a time, so one panel is sufficient.
 
-The viz layer is plotter-agnostic; this module supplies a
-``pyvistaqt.QtInteractor`` as the plotter and an ``on_pick`` callback
-that routes pick events into the panel.
+Dock widgets stay disabled until the first successful load.
 """
 
 from __future__ import annotations
@@ -21,14 +25,17 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QDockWidget,
+    QFileDialog,
     QGroupBox,
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -63,6 +70,9 @@ _LAYER_TITLE: dict[str, str] = {
     "C3": "C3 Vehicle Protection Safety",
 }
 
+_PICK_PLACEHOLDER = "— open a folder to begin —"
+_PICK_PROMPT = "— shift-click a feature to inspect —"
+
 
 def _coded(value: str, table: dict[str, str]) -> str:
     """Format a coded field as ``"<code> (<label>)"`` or ``"-"`` if empty."""
@@ -80,28 +90,47 @@ def _opt(value: str) -> str:
 class HdMapWindow(QMainWindow):
     """Main window hosting the 3D scene and the inspector dock."""
 
-    def __init__(self, shp_dir: Path, junction_merge_dist_m: float = 0.0) -> None:
+    def __init__(self, junction_merge_dist_m: float = 0.0) -> None:
         super().__init__()
-        self.setWindowTitle(f"shp2xodr — {shp_dir.name}")
+        self.setWindowTitle("shp2xodr — (no folder)")
         self.resize(1500, 950)
+
+        self._junction_merge_dist_m = junction_merge_dist_m
+        self.viz: HdMapViz | None = None
 
         self.qt_plotter = QtInteractor(self)
         self.setCentralWidget(self.qt_plotter)
-
-        # Build the scene against the embedded plotter, route picks back.
-        self.viz = HdMapViz(
-            shp_dir,
-            junction_merge_dist_m=junction_merge_dist_m,
-            plotter=self.qt_plotter,
-            on_pick=self._on_pick,
-        )
-        self.viz.attach()
         self.qt_plotter.enable_parallel_projection()
         self.qt_plotter.view_xy()
 
-        self._build_dock()
+        # Checkbox handles — populated in _build_dock(); read in _load() to
+        # carry user preferences forward into a freshly-attached viz.
+        self._layer_cbs: dict[str, QCheckBox] = {}
+        self._bundle_cb: QCheckBox
+        self._junction_hulls_cb: QCheckBox
+        self._data_group: QGroupBox
+        self._abstraction_group: QGroupBox
 
-    # ---- Dock construction ----------------------------------------------------
+        self._build_menu()
+        self._build_dock()
+        self._set_dock_enabled(False)
+
+    # ---- Menu construction ---------------------------------------------------
+
+    def _build_menu(self) -> None:
+        bar = self.menuBar()
+        file_menu = bar.addMenu("&File")
+        open_act = QAction("&Open SHP folder…", self)
+        open_act.setShortcut(QKeySequence.StandardKey.Open)
+        open_act.triggered.connect(self._open_folder)
+        file_menu.addAction(open_act)
+        file_menu.addSeparator()
+        quit_act = QAction("&Quit", self)
+        quit_act.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_act.triggered.connect(self.close)
+        file_menu.addAction(quit_act)
+
+    # ---- Dock construction ---------------------------------------------------
 
     def _build_dock(self) -> None:
         dock = QDockWidget("Inspector", self)
@@ -111,8 +140,10 @@ class HdMapWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.addWidget(self._build_data_group())
-        layout.addWidget(self._build_abstraction_group())
+        self._data_group = self._build_data_group()
+        self._abstraction_group = self._build_abstraction_group()
+        layout.addWidget(self._data_group)
+        layout.addWidget(self._abstraction_group)
         layout.addWidget(self._build_pick_panel(), stretch=1)
         dock.setWidget(container)
         dock.setMinimumWidth(360)
@@ -124,27 +155,28 @@ class HdMapWindow(QMainWindow):
         for name, label in _LAYERS:
             cb = QCheckBox(label)
             cb.setChecked(True)
-            cb.toggled.connect(lambda on, n=name: self.viz.set_layer_visible(n, on))
+            cb.toggled.connect(lambda on, n=name: self._on_layer_toggle(n, on))
             v.addWidget(cb)
+            self._layer_cbs[name] = cb
         return gb
 
     def _build_abstraction_group(self) -> QGroupBox:
         gb = QGroupBox("Abstractions")
         v = QVBoxLayout(gb)
-        bp = QCheckBox("Bundle palette  (A2 colored by segmentation)")
-        bp.setChecked(True)
-        bp.toggled.connect(self.viz.set_bundle_palette_on)
-        jh = QCheckBox("Junction hulls  (convex hull per junction)")
-        jh.setChecked(False)
-        jh.toggled.connect(self.viz.set_junction_hulls_visible)
-        v.addWidget(bp)
-        v.addWidget(jh)
+        self._bundle_cb = QCheckBox("Bundle palette  (A2 colored by segmentation)")
+        self._bundle_cb.setChecked(True)
+        self._bundle_cb.toggled.connect(self._on_bundle_toggle)
+        self._junction_hulls_cb = QCheckBox("Junction hulls  (convex hull per junction)")
+        self._junction_hulls_cb.setChecked(False)
+        self._junction_hulls_cb.toggled.connect(self._on_junction_hulls_toggle)
+        v.addWidget(self._bundle_cb)
+        v.addWidget(self._junction_hulls_cb)
         return gb
 
     def _build_pick_panel(self) -> QGroupBox:
         gb = QGroupBox("Picked")
         v = QVBoxLayout(gb)
-        self._pick_header = QLabel("— shift-click a feature to inspect —")
+        self._pick_header = QLabel(_PICK_PLACEHOLDER)
         self._pick_header.setStyleSheet("font-weight: bold;")
         self._pick_header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         v.addWidget(self._pick_header)
@@ -162,6 +194,84 @@ class HdMapWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         v.addWidget(self._pick_table, stretch=1)
         return gb
+
+    def _set_dock_enabled(self, on: bool) -> None:
+        self._data_group.setEnabled(on)
+        self._abstraction_group.setEnabled(on)
+
+    # ---- Dock event handlers (no-op when no viz) -----------------------------
+
+    def _on_layer_toggle(self, name: str, on: bool) -> None:
+        if self.viz is not None:
+            self.viz.set_layer_visible(name, on)
+
+    def _on_bundle_toggle(self, on: bool) -> None:
+        if self.viz is not None:
+            self.viz.set_bundle_palette_on(on)
+
+    def _on_junction_hulls_toggle(self, on: bool) -> None:
+        if self.viz is not None:
+            self.viz.set_junction_hulls_visible(on)
+
+    # ---- Open-folder flow ----------------------------------------------------
+
+    def _open_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Open NGII SHP section folder")
+        if not d:
+            return
+        self._load(Path(d))
+
+    def _load(self, shp_dir: Path) -> None:
+        """Tear down any existing viz, build a fresh one against ``shp_dir``,
+        and sync the dock-toggle states into the new viz.
+
+        Wraps the constructor (which performs I/O) in a single try/except
+        scoped to the two specific exceptions that mean "user picked the
+        wrong folder" — a real I/O boundary with a meaningful recovery.
+        """
+        if self.viz is not None:
+            self.viz.detach()
+            self.viz = None
+
+        try:
+            viz = HdMapViz(
+                shp_dir,
+                junction_merge_dist_m=self._junction_merge_dist_m,
+                plotter=self.qt_plotter,
+                on_pick=self._on_pick,
+            )
+            viz.attach()
+        except (FileNotFoundError, NotADirectoryError) as e:
+            log.warning("cannot open %s: %s", shp_dir, e)
+            QMessageBox.warning(
+                self,
+                "Cannot open folder",
+                f"Not a valid NGII section folder:\n{shp_dir}\n\n{e}",
+            )
+            self.setWindowTitle("shp2xodr — (no folder)")
+            self._set_dock_enabled(False)
+            self._reset_pick_panel(_PICK_PLACEHOLDER)
+            self.qt_plotter.render()
+            return
+
+        self.viz = viz
+        # Carry dock-toggle state forward (the new viz defaults are all-on /
+        # bundle-on / hulls-off; the user may have changed any of these).
+        for name, cb in self._layer_cbs.items():
+            viz.set_layer_visible(name, cb.isChecked())
+        viz.set_bundle_palette_on(self._bundle_cb.isChecked())
+        viz.set_junction_hulls_visible(self._junction_hulls_cb.isChecked())
+
+        self.qt_plotter.view_xy()
+        self.qt_plotter.reset_camera()
+        self.setWindowTitle(f"shp2xodr — {shp_dir.name}")
+        self._set_dock_enabled(True)
+        self._reset_pick_panel(_PICK_PROMPT)
+        log.info("loaded %s", shp_dir)
+
+    def _reset_pick_panel(self, header_text: str) -> None:
+        self._pick_header.setText(header_text)
+        self._pick_table.setRowCount(0)
 
     # ---- Pick → table dispatch -----------------------------------------------
 
@@ -181,6 +291,8 @@ class HdMapWindow(QMainWindow):
         log.info("picked %s[%d]", kind, idx)
 
     def _fields_for(self, kind: str, idx: int) -> list[tuple[str, str]]:
+        if self.viz is None:
+            return []
         fn = {
             "A1": self._fields_a1,
             "A2": self._fields_a2,
@@ -192,6 +304,7 @@ class HdMapWindow(QMainWindow):
         return fn(idx) if fn is not None else []
 
     def _fields_a1(self, idx: int) -> list[tuple[str, str]]:
+        assert self.viz is not None
         d = self.viz.a1
         seg = self.viz.segmentation
         x, y, z = d.points[idx]
@@ -207,6 +320,7 @@ class HdMapWindow(QMainWindow):
         ]
 
     def _fields_a2(self, idx: int) -> list[tuple[str, str]]:
+        assert self.viz is not None
         d = self.viz.a2
         seg = self.viz.segmentation
         jid = int(seg.junction_id[idx])
@@ -229,6 +343,7 @@ class HdMapWindow(QMainWindow):
         ]
 
     def _fields_a3(self, idx: int) -> list[tuple[str, str]]:
+        assert self.viz is not None
         d = self.viz.a3
         return [
             ("ID", str(d.ids[idx])),
@@ -238,6 +353,7 @@ class HdMapWindow(QMainWindow):
         ]
 
     def _fields_a4(self, idx: int) -> list[tuple[str, str]]:
+        assert self.viz is not None
         d = self.viz.a4
         return [
             ("ID", str(d.ids[idx])),
@@ -251,6 +367,7 @@ class HdMapWindow(QMainWindow):
         ]
 
     def _fields_b2(self, idx: int) -> list[tuple[str, str]]:
+        assert self.viz is not None
         d = self.viz.b2
         seg = self.viz.segmentation
         type_code = str(d.types[idx])
@@ -269,6 +386,7 @@ class HdMapWindow(QMainWindow):
         ]
 
     def _fields_c3(self, idx: int) -> list[tuple[str, str]]:
+        assert self.viz is not None
         d = self.viz.c3
         return [
             ("ID", str(d.ids[idx])),
@@ -281,5 +399,8 @@ class HdMapWindow(QMainWindow):
     # ---- Qt lifecycle ---------------------------------------------------------
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 (Qt API)
+        if self.viz is not None:
+            self.viz.detach()
+            self.viz = None
         self.qt_plotter.close()
         super().closeEvent(event)  # type: ignore[arg-type]
