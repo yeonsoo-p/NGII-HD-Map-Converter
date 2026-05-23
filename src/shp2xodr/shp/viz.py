@@ -9,7 +9,7 @@ Pick events are delivered through ``on_pick(kind, idx)`` — the scene does
 not render pick info on-screen. The Qt window translates picks into
 structured tab fields; standalone mode just logs them.
 
-Layer visibility and the 3-level abstraction selector are exposed as plain
+Layer visibility and the 4-level abstraction selector are exposed as plain
 methods so the GUI can wire them to dock widgets:
 :meth:`set_layer_visible`, :meth:`set_abstraction_level`.
 
@@ -19,9 +19,12 @@ Abstraction levels (passed to :meth:`set_abstraction_level`):
   by natural NGII codes.
 * ``2`` — Group. A2 colored per SHP group (lateral lane cluster within a
   road segment); B2 inherits its bound group's color (paint code ignored).
-* ``3`` — Road & Junction. A2 mainline rows colored per OpenDRIVE road;
-  A2 junction-interior rows colored per junction; B2 inherits the
-  road/junction color of its bound side.
+* ``3`` — Junction. Only junction-interior A2 cells and junction-bound B2
+  cells carry a palette color; mainline-only cells fall back to the
+  neutral A2 fill.
+* ``4`` — Road. Only mainline A2 cells and road-bound B2 cells carry a
+  palette color; junction-interior cells fall back to the neutral A2
+  fill.
 """
 
 from __future__ import annotations
@@ -59,7 +62,8 @@ log = logging.getLogger(__name__)
 # gui.py. Not tunable; the rest of the scene-coloring code reads these literals.
 _LEVEL_RAW = 1
 _LEVEL_GROUP = 2
-_LEVEL_ROAD_JUNCTION = 3
+_LEVEL_JUNCTION = 3
+_LEVEL_ROAD = 4
 
 # Enable VTK's coincident-topology resolution mode globally; per-mapper
 # relative offsets only take effect once this is on.
@@ -116,7 +120,7 @@ class VizConfig:
     group_palette_seed: int
     junction_palette_seed: int
     road_palette_seed: int
-    # Default abstraction level (1 None / 2 Group / 3 Road & Junction)
+    # Default abstraction level (1 None / 2 Group / 3 Junction / 4 Road)
     default_abstraction_level: int
     # NGII code-list color tables
     a3_road_type_rgb: dict[str, tuple[int, int, int]]
@@ -459,25 +463,29 @@ class HdMapViz:
         * Level 1 — uniform neutral.
         * Level 2 — group palette across every row (mainline + interior
           alike), so the user reads the SHP-level group structure.
-        * Level 3 — road palette on mainline rows, junction palette on
-          interior rows; mirrors the OpenDRIVE entity each link belongs to.
+        * Level 3 — junction palette on interior rows; mainline rows fall
+          back to the neutral A2 fill so junctions stand out alone.
+        * Level 4 — road palette on mainline rows; interior rows fall back
+          to the neutral A2 fill so roads stand out alone.
         """
         seg = self.segmentation
+        n = len(self.a2.ids)
+        neutral = np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8)
         if level == _LEVEL_RAW:
-            return np.tile(
-                np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8), (len(self.a2.ids), 1)
-            )
+            return np.tile(neutral, (n, 1))
         if level == _LEVEL_GROUP:
             return np.asarray(self.group_palette[seg.group_id], dtype=np.uint8).copy()
-        if level == _LEVEL_ROAD_JUNCTION:
-            n = len(self.a2.ids)
-            rgb = np.zeros((n, 3), dtype=np.uint8)
-            mainline = seg.road_id_per_link >= 0
-            if mainline.any():
-                rgb[mainline] = self.road_palette[seg.road_id_per_link[mainline]]
+        if level == _LEVEL_JUNCTION:
+            rgb = np.tile(neutral, (n, 1))
             interior = seg.junction_id >= 0
             if interior.any():
                 rgb[interior] = self.junction_palette[seg.junction_id[interior]]
+            return rgb
+        if level == _LEVEL_ROAD:
+            rgb = np.tile(neutral, (n, 1))
+            mainline = seg.road_id_per_link >= 0
+            if mainline.any():
+                rgb[mainline] = self.road_palette[seg.road_id_per_link[mainline]]
             return rgb
         raise ValueError(level)
 
@@ -487,38 +495,46 @@ class HdMapViz:
         * Level 1 — paint code (current B2 palette).
         * Level 2 — bound group's color; R side wins, falls back to L; both
           unbound rows fall back to ``viz_cfg.a2_uniform_rgb``.
-        * Level 3 — bound road's color (mainline), else bound junction's
-          color (interior), else fallback. A centerline between two
-          bidirectionally-merged groups paints the same color as the road,
-          which is by design: the visual merge signals one OpenDRIVE road.
+        * Level 3 — bound junction's color (R wins, L is fallback); rows
+          bound only to mainline cells stay neutral. ``b2_*_junction`` is
+          ``-1`` for mainline-bound sides by construction, so the mask
+          naturally skips them.
+        * Level 4 — bound road's color (R wins, L is fallback); rows bound
+          only to junction-interior cells stay neutral. A centerline
+          between two bidirectionally-merged groups paints the same color
+          as the road, which is by design: the visual merge signals one
+          OpenDRIVE road.
         """
         seg = self.segmentation
         cfg = self.viz_cfg
         n = len(self.b2.types)
+        neutral = np.asarray(cfg.a2_uniform_rgb, dtype=np.uint8)
         if level == _LEVEL_RAW:
             rgb = np.zeros((n, 3), dtype=np.uint8)
             for i, t in enumerate(self.b2.types):
                 rgb[i] = cfg.b2_paint_rgb.get(t[:1], cfg.b2_paint_fallback_rgb)
             return rgb
         if level == _LEVEL_GROUP:
-            rgb = np.tile(np.asarray(cfg.a2_uniform_rgb, dtype=np.uint8), (n, 1))
+            rgb = np.tile(neutral, (n, 1))
             r_bound = seg.b2_r_group >= 0
             rgb[r_bound] = self.group_palette[seg.b2_r_group[r_bound]]
             # L-side as fallback for rows where R is unbound but L is bound.
             l_only = (seg.b2_r_group < 0) & (seg.b2_l_group >= 0)
             rgb[l_only] = self.group_palette[seg.b2_l_group[l_only]]
             return rgb
-        if level == _LEVEL_ROAD_JUNCTION:
-            rgb = np.tile(np.asarray(cfg.a2_uniform_rgb, dtype=np.uint8), (n, 1))
+        if level == _LEVEL_JUNCTION:
+            rgb = np.tile(neutral, (n, 1))
+            r_junction = seg.b2_r_junction >= 0
+            rgb[r_junction] = self.junction_palette[seg.b2_r_junction[r_junction]]
+            l_only = (~r_junction) & (seg.b2_l_junction >= 0)
+            rgb[l_only] = self.junction_palette[seg.b2_l_junction[l_only]]
+            return rgb
+        if level == _LEVEL_ROAD:
+            rgb = np.tile(neutral, (n, 1))
             r_road = seg.b2_r_road >= 0
             rgb[r_road] = self.road_palette[seg.b2_r_road[r_road]]
-            r_junction = (~r_road) & (seg.b2_r_junction >= 0)
-            rgb[r_junction] = self.junction_palette[seg.b2_r_junction[r_junction]]
-            covered = r_road | r_junction
-            l_road = (~covered) & (seg.b2_l_road >= 0)
-            rgb[l_road] = self.road_palette[seg.b2_l_road[l_road]]
-            l_junction = (~covered) & (~l_road) & (seg.b2_l_junction >= 0)
-            rgb[l_junction] = self.junction_palette[seg.b2_l_junction[l_junction]]
+            l_only = (~r_road) & (seg.b2_l_road >= 0)
+            rgb[l_only] = self.road_palette[seg.b2_l_road[l_only]]
             return rgb
         raise ValueError(level)
 
@@ -670,13 +686,13 @@ class HdMapViz:
         self.plotter.render()
 
     def set_abstraction_level(self, level: int) -> None:
-        """Switch the A2 + B2 cell coloring to one of the three abstraction
-        levels (1 None / 2 Group / 3 Road & Junction).
+        """Switch the A2 + B2 cell coloring to one of the four abstraction
+        levels (1 None / 2 Group / 3 Junction / 4 Road).
 
         Idempotent: re-setting the current level is a no-op. C3 / A3 / A4 /
         A1 layers stay on their natural NGII codes at every level.
         """
-        if not _LEVEL_RAW <= level <= _LEVEL_ROAD_JUNCTION:
+        if not _LEVEL_RAW <= level <= _LEVEL_ROAD:
             raise ValueError(level)
         if level == self._abstraction_level:
             return

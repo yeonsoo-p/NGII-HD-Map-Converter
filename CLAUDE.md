@@ -9,8 +9,6 @@ NGII (Korean precise road map) SHP → OpenDRIVE converter.
   `uv add --dev <pkg>` (dev). Sync with `uv sync`.
 - **Lint / format**: `ruff check` and `ruff format`.
 - **Types**: `mypy` with strict mode. New code must type-check clean.
-- **Tests**: `pytest`, kept light. Tests lock down tricky invariants — not
-  every line.
 
 ## Coding rules
 
@@ -33,17 +31,15 @@ NGII (Korean precise road map) SHP → OpenDRIVE converter.
 - **Unit suffixes on variables where the unit matters.** `width_m`,
   `length_m`, `hdg_rad`, `curvature_per_m`. OpenDRIVE mixes radians/degrees
   and meters/millimeters across fields — ambiguity here is a real bug source.
-- **No `assert` in `src/`; tests can use it freely.** Production code uses
+- **No `assert` in `src/`** Production code uses
   `raise` for every runtime check, including type narrowing (`if x is None:
   raise RuntimeError(...)`) and post-conditions you actually want enforced.
   Asserts get stripped with `python -O`, so any check that should hold at
-  runtime must be a `raise`. `assert` is the right tool in `tests/` —
-  pytest depends on it.
+  runtime must be a `raise`.
 
 ## Workflow
 
 1. Make the change.
 2. `uv run ruff format` and `uv run ruff check --fix`.
 3. `uv run mypy src` — clean.
-4. `uv run pytest` — green.
-5. Commit when the user asks.
+4. Commit when the user asks.

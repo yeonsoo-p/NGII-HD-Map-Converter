@@ -80,6 +80,14 @@ _AMBIGUOUS_NODE_TYPE = "99"
 # nodes, it's a road between junctions, not interior to one.
 _INTERIOR_LINK_TYPE = "1"
 
+# NGII A2_LINK LinkType: 6 = 일반주행차로 (general driving lane). The only
+# mainline LinkType the within-junction promotion rule fires for — bus
+# (4), variable (5), toll (2/3), rest-area (7-12) and ramp (13/14) lanes
+# carry domain semantics that would be silently erased by promoting them
+# to junction-interior. Manual §9.4.2 documents the case explicitly under
+# "교차로 내 예외(일반주행차로)": a Type=6 lane traversing a 평면교차로.
+_PROMOTABLE_LINK_TYPE = "6"
+
 # NGII B2_SURFACELINEMARK.Kind values that drive the bidirectional group
 # merge:
 #   501 = 중앙선 (yellow centerline between opposing directions) — the
@@ -103,6 +111,7 @@ class SegmentationConfig:
     """
 
     junction_merge_dist_m: float
+    junction_crossing_z_tol_m: float
     bidirectional_merge_max_separation_m: float
 
 
@@ -229,6 +238,13 @@ class Segmentation:
         fuses graph-disjoint junction components whose nodes are closer
         than the threshold; set to ``0`` to disable.
 
+        ``cfg.junction_crossing_z_tol_m`` controls the geometric-crossing
+        union: two ``LinkType=1`` interior polylines that cross in plan
+        with a |Δz| at the crossing point within this tolerance are
+        treated as belonging to one physical intersection. Different floors
+        of an overpass keep their distinct junctions because the z gap at
+        the planar crossing exceeds the tolerance.
+
         ``cfg.bidirectional_merge_max_separation_m`` controls the
         divided-road pairing step: two B2 centerline-like (Kind=501
         중앙선 or Kind=503 주행선) rows whose ``LineString``s come within
@@ -247,20 +263,34 @@ class Segmentation:
 
         group_id = cls._group_links(a2, node_role)
         junction_id, nid_to_jid = cls._cluster_junctions(
-            a1, a2, node_role, group_id, junction_merge_dist_m=cfg.junction_merge_dist_m
+            a1,
+            a2,
+            node_role,
+            group_id,
+            junction_merge_dist_m=cfg.junction_merge_dist_m,
+            junction_crossing_z_tol_m=cfg.junction_crossing_z_tol_m,
         )
         group_junction, group_pred, group_succ = cls._resolve_group_endpoints(
             a2, group_id, junction_id, nid_to_jid
+        )
+        junction_id, group_junction, group_pred, group_succ = (
+            cls._promote_within_junction_mainline_groups(
+                a2, group_id, junction_id, group_junction, group_pred, group_succ
+            )
         )
 
         node_junction_id = cls._node_junction_array(a1, nid_to_jid)
         b2_r_link, b2_l_link, b2_r_group, b2_l_group = cls._resolve_b2_to_groups(a2, b2, group_id)
 
+        junction_connected_pairs = cls._junction_connected_main_group_pairs(
+            a2, group_id, group_junction
+        )
         group_road = cls._merge_groups_bidirectional(
             b2,
             b2_r_group,
             b2_l_group,
             group_junction,
+            junction_connected_pairs,
             max_separation_m=cfg.bidirectional_merge_max_separation_m,
         )
         b2_r_road, b2_l_road, b2_r_junction, b2_l_junction = cls._resolve_b2_to_roads(
@@ -427,6 +457,7 @@ class Segmentation:
         node_role: dict[str, NodeRole],
         group_id: NDArray[np.int32],
         junction_merge_dist_m: float = 0.0,
+        junction_crossing_z_tol_m: float = 0.0,
     ) -> tuple[NDArray[np.int32], dict[str, int]]:
         """Cluster JUNCTION-role A1 nodes into junction components.
 
@@ -442,6 +473,12 @@ class Segmentation:
         their interior links sit in the same group — laterally adjacent
         connecting lanes belong to one physical intersection even when no
         single link directly joins their endpoints. When
+        ``junction_crossing_z_tol_m > 0``, a geometric pass also unions any
+        two interior links that cross in plan whose z-values at the
+        crossing point differ by at most this tolerance — catching turn
+        paths that physically intersect inside the same intersection but
+        share no A1 endpoint or group, while keeping different floors of an
+        overpass apart by the z gap at the crossing. When
         ``junction_merge_dist_m > 0``, a final pass also unions any two
         components whose closest junction nodes lie within that planimetric
         distance — this catches channelized turns and free-flow paths that
@@ -471,6 +508,11 @@ class Segmentation:
             first = idxs[0]
             for j in idxs[1:]:
                 Segmentation._uf_union(parent, first, j)
+
+        if junction_crossing_z_tol_m > 0:
+            Segmentation._union_crossing_interior_links(
+                a2, interior, nid_to_idx, parent, junction_crossing_z_tol_m
+            )
 
         root_to_jid: dict[int, int] = {}
         idx_to_jid = np.empty(m, dtype=np.int32)
@@ -596,6 +638,152 @@ class Segmentation:
         return junction_id_per_link
 
     @staticmethod
+    def _union_crossing_interior_links(
+        a2: A2Data,
+        interior: NDArray[np.bool_],
+        nid_to_idx: dict[str, int],
+        parent: NDArray[np.int32],
+        z_tol_m: float,
+    ) -> None:
+        """Union junction-node components whose interior polylines geometrically
+        cross at the same elevation.
+
+        Two ``LinkType=1`` connecting lanes that cross in plan are part of
+        one physical intersection — typical example: a right-turn slip and
+        a left-turn path inside one large intersection that share no A1
+        endpoint and aren't laterally adjacent. The z-tolerance keeps
+        stacked but topologically distinct overpasses apart: NGII puts the
+        bridge/underpass nodes themselves under NodeType 3-6 (ROAD_BREAK),
+        so genuine same-grade crossings sit at nearly identical z (sub-
+        decimeter), while overpasses clear ~4.5 m vertically.
+
+        Mutates ``parent`` in place; no return.
+        """
+        interior_rows: NDArray[np.intp] = np.flatnonzero(interior)
+        if len(interior_rows) < 2:
+            return
+
+        lines: list[shapely.LineString] = []
+        anchors: list[int] = []  # parallel to lines: a junction-node idx for each row
+        keep_rows: list[int] = []
+        for row_i in interior_rows:
+            anchor = Segmentation._row_anchor_junction_idx(int(row_i), a2, nid_to_idx)
+            if anchor is None:
+                # Truly orphaned LinkType=1 — no JUNCTION endpoint we can
+                # union toward. Skip; _assign_link_junction_ids will still
+                # try to inherit from a group peer.
+                continue
+            poly = a2.polylines[int(row_i)]
+            if len(poly) < 2:
+                continue
+            lines.append(shapely.LineString(poly[:, :2]))
+            anchors.append(anchor)
+            keep_rows.append(int(row_i))
+
+        if len(lines) < 2:
+            return
+
+        tree = shapely.STRtree(lines)
+        n_unioned = 0
+        for a_idx in range(len(lines)):
+            anchor_a = anchors[a_idx]
+            for b_raw in tree.query(lines[a_idx], predicate="crosses"):
+                b_idx = int(b_raw)
+                if b_idx <= a_idx:
+                    continue
+                anchor_b = anchors[b_idx]
+                if Segmentation._uf_find(parent, anchor_a) == Segmentation._uf_find(
+                    parent, anchor_b
+                ):
+                    continue
+                intersection = lines[a_idx].intersection(lines[b_idx])
+                if not Segmentation._crossing_within_z_tol(
+                    intersection,
+                    a2.polylines[keep_rows[a_idx]],
+                    a2.polylines[keep_rows[b_idx]],
+                    z_tol_m,
+                ):
+                    continue
+                Segmentation._uf_union(parent, anchor_a, anchor_b)
+                n_unioned += 1
+        if n_unioned:
+            log.info(
+                "_union_crossing_interior_links: unioned %d junction component pair(s) "
+                "via geometric crossings within z-tolerance %.2f m",
+                n_unioned,
+                z_tol_m,
+            )
+
+    @staticmethod
+    def _row_anchor_junction_idx(row_i: int, a2: A2Data, nid_to_idx: dict[str, int]) -> int | None:
+        """Return a junction-node index for the given A2 row, or ``None``
+        when neither endpoint is a JUNCTION-role node (orphaned FK)."""
+        fi = nid_to_idx.get(a2.from_node_ids[row_i])
+        if fi is not None:
+            return int(fi)
+        ti = nid_to_idx.get(a2.to_node_ids[row_i])
+        if ti is not None:
+            return int(ti)
+        return None
+
+    @staticmethod
+    def _crossing_within_z_tol(
+        intersection: shapely.geometry.base.BaseGeometry,
+        poly_a: NDArray[np.float64],
+        poly_b: NDArray[np.float64],
+        z_tol_m: float,
+    ) -> bool:
+        """True if at least one crossing point has |Δz| ≤ ``z_tol_m`` between
+        the two XYZ polylines. ``intersection`` is the shapely intersection
+        of the two XY LineStrings — typically a Point or MultiPoint when the
+        ``crosses`` predicate matched.
+        """
+        points: list[shapely.Point] = []
+        if isinstance(intersection, shapely.Point):
+            points.append(intersection)
+        elif isinstance(intersection, shapely.MultiPoint):
+            points.extend(intersection.geoms)
+        else:
+            # crosses can also yield LineString (collinear overlap). Sample
+            # the midpoint — same-grade overlaps satisfy the tolerance, and
+            # an overpass that overlaps in plan is so unusual that the
+            # midpoint test is good enough.
+            if intersection.is_empty:
+                return False
+            mid = intersection.interpolate(0.5, normalized=True)
+            if isinstance(mid, shapely.Point):
+                points.append(mid)
+        for pt in points:
+            z_a = Segmentation._z_at_xy(poly_a, pt.x, pt.y)
+            z_b = Segmentation._z_at_xy(poly_b, pt.x, pt.y)
+            if abs(z_a - z_b) <= z_tol_m:
+                return True
+        return False
+
+    @staticmethod
+    def _z_at_xy(poly_xyz: NDArray[np.float64], x: float, y: float) -> float:
+        """Linear-interp z at the polyline's nearest point to ``(x, y)``.
+
+        Uses planimetric arc-length to find the containing segment and
+        interpolates z within it. Falls back to the nearest vertex for
+        degenerate zero-length segments.
+        """
+        xy = poly_xyz[:, :2]
+        diffs = np.diff(xy, axis=0)
+        seg_lens = np.linalg.norm(diffs, axis=1)
+        cum = np.concatenate(([0.0], np.cumsum(seg_lens)))
+        line = shapely.LineString(xy)
+        s = float(line.project(shapely.Point(x, y)))
+        idx = int(np.searchsorted(cum, s) - 1)
+        idx = max(0, min(idx, len(poly_xyz) - 2))
+        seg_len = float(seg_lens[idx])
+        if seg_len <= 0.0:
+            return float(poly_xyz[idx, 2])
+        t = (s - cum[idx]) / seg_len
+        t = max(0.0, min(1.0, t))
+        return float((1.0 - t) * poly_xyz[idx, 2] + t * poly_xyz[idx + 1, 2])
+
+    @staticmethod
     def _merge_junctions_by_proximity(
         a1: A1Data,
         junction_nids: list[str],
@@ -699,6 +887,85 @@ class Segmentation:
         return group_junction, tuple(pred_sets), tuple(succ_sets)
 
     @staticmethod
+    def _promote_within_junction_mainline_groups(
+        a2: A2Data,
+        group_id: NDArray[np.int32],
+        junction_id: NDArray[np.int32],
+        group_junction: NDArray[np.int32],
+        group_pred: tuple[frozenset[int], ...],
+        group_succ: tuple[frozenset[int], ...],
+    ) -> tuple[
+        NDArray[np.int32],
+        NDArray[np.int32],
+        tuple[frozenset[int], ...],
+        tuple[frozenset[int], ...],
+    ]:
+        """Reclassify Type=6 mainline groups whose pred and succ touch the same
+        junction as interior of that junction.
+
+        NGII manual §9.4.2 documents the "exception lane" case explicitly
+        ("교차로 내 예외(일반주행차로)" page 151): a 일반주행차로 (LinkType=6)
+        traversing a 평면교차로. Topologically these rows enter and exit the
+        same junction via two of its boundary nodes, so
+        ``group_pred[b] ∩ group_succ[b]`` is non-empty for exactly the
+        offending group. Promoting them keeps the intersection a single
+        :class:`Junction` instead of fracturing it into two roads + one
+        spurious connector.
+
+        Only LinkType=6 rows are promoted; other LinkTypes (bus 4, variable
+        5, toll 2/3, rest-area 7-12, ramp 13/14) carry domain semantics
+        that would be silently erased by junction-interior reclassification.
+
+        Returns the four arrays/tuples updated in place semantics:
+        ``junction_id`` and ``group_junction`` gain the promoted ids;
+        ``group_pred`` / ``group_succ`` are emptied for promoted groups
+        (interior groups carry no pred/succ — connectivity is implied by
+        ``group_junction``).
+        """
+        n_groups = len(group_junction)
+        rows_by_group: dict[int, list[int]] = {}
+        for i, b in enumerate(group_id):
+            rows_by_group.setdefault(int(b), []).append(int(i))
+
+        pred_list = list(group_pred)
+        succ_list = list(group_succ)
+        link_types = a2.link_types
+        n_promoted = 0
+        for b in range(n_groups):
+            if int(group_junction[b]) != -1:
+                continue
+            rows = rows_by_group.get(b, [])
+            if not rows:
+                continue
+            if not all(link_types[i] == _PROMOTABLE_LINK_TYPE for i in rows):
+                continue
+            shared = pred_list[b] & succ_list[b]
+            if not shared:
+                continue
+            j = min(shared)
+            for i in rows:
+                junction_id[i] = np.int32(j)
+            group_junction[b] = np.int32(j)
+            pred_list[b] = frozenset()
+            succ_list[b] = frozenset()
+            n_promoted += 1
+            log.info(
+                "_promote_within_junction_mainline_groups: group %d (Type=6, %d row(s)) "
+                "promoted to interior of junction %d (pred ∩ succ = %s)",
+                b,
+                len(rows),
+                j,
+                sorted(shared),
+            )
+        if n_promoted:
+            log.info(
+                "_promote_within_junction_mainline_groups: promoted %d mainline group(s) "
+                "to junction interior",
+                n_promoted,
+            )
+        return junction_id, group_junction, tuple(pred_list), tuple(succ_list)
+
+    @staticmethod
     def _node_junction_array(a1: A1Data, nid_to_jid: dict[str, int]) -> NDArray[np.int32]:
         """Build ``(n_a1,)`` int array of junction ids, ``-1`` for non-junction rows."""
         n = len(a1.ids)
@@ -743,11 +1010,66 @@ class Segmentation:
         return r_link, l_link, r_group, l_group
 
     @staticmethod
+    def _junction_connected_main_group_pairs(
+        a2: A2Data,
+        group_id: NDArray[np.int32],
+        group_junction: NDArray[np.int32],
+    ) -> frozenset[tuple[int, int]]:
+        """Pairs of mainline groups directly bridged by a single LinkType=1
+        interior link via its FromNodeID / ToNodeID boundary.
+
+        For each interior row, the mainline group that *ends* at its
+        FromNodeID and the mainline group that *starts* at its ToNodeID are
+        two distinct roads connected through the junction's interior path.
+        They must not be merged by the bidirectional pass.
+
+        The broader "any shared junction in pred/succ" predicate this
+        replaces also caught legitimate opposing carriageways of every
+        divided road that touches an intersection — both carriageways
+        border that junction on the same side. The single-interior-link
+        formulation is tight: opposing carriageways have no interior link
+        going "northbound's terminus → southbound's start" at a normal
+        intersection, so they fall out of this set and merge correctly.
+        """
+        link_types = a2.link_types
+        from_ids = a2.from_node_ids
+        to_ids = a2.to_node_ids
+        n_links = len(a2.ids)
+
+        # For each A1 node id, the mainline groups whose rows end / start
+        # there. Skip junction-interior groups — their endpoints are inside
+        # the intersection, not on a mainline boundary.
+        main_ends_at: dict[str, set[int]] = {}
+        main_starts_at: dict[str, set[int]] = {}
+        for i in range(n_links):
+            if link_types[i] == _INTERIOR_LINK_TYPE:
+                continue
+            b = int(group_id[i])
+            if int(group_junction[b]) != -1:
+                continue
+            main_ends_at.setdefault(str(to_ids[i]), set()).add(b)
+            main_starts_at.setdefault(str(from_ids[i]), set()).add(b)
+
+        pairs: set[tuple[int, int]] = set()
+        for i in range(n_links):
+            if link_types[i] != _INTERIOR_LINK_TYPE:
+                continue
+            incoming = main_ends_at.get(str(from_ids[i]), ())
+            outgoing = main_starts_at.get(str(to_ids[i]), ())
+            for g_in in incoming:
+                for g_out in outgoing:
+                    if g_in == g_out:
+                        continue
+                    pairs.add((g_in, g_out) if g_in < g_out else (g_out, g_in))
+        return frozenset(pairs)
+
+    @staticmethod
     def _merge_groups_bidirectional(
         b2: B2Data,
         b2_r_group: NDArray[np.int32],
         b2_l_group: NDArray[np.int32],
         group_junction: NDArray[np.int32],
+        junction_connected_pairs: frozenset[tuple[int, int]],
         max_separation_m: float,
     ) -> NDArray[np.int32]:
         """Bidirectional merge of mainline groups across B2 centerline-like rows.
@@ -771,6 +1093,14 @@ class Segmentation:
           direction carries its own centerline along the inner edge of its
           leftmost lane (no single B2 row spans both directions).
 
+        Both passes additionally skip the union when the two groups appear
+        in ``junction_connected_pairs`` — i.e., some single LinkType=1
+        interior link directly bridges one group's terminus to the other's
+        start. Those are two distinct roads meeting at one intersection,
+        not opposing carriageways. Opposing carriageways of a divided road
+        meeting an intersection do *not* appear in this set, so the merge
+        proceeds for the typical divided-road case.
+
         Returns ``group_road``: dense road id per mainline group; ``-1`` for
         junction-interior groups.
         """
@@ -780,6 +1110,10 @@ class Segmentation:
         def is_main(g: int) -> bool:
             return g >= 0 and int(group_junction[g]) == -1
 
+        def junction_connected(g1: int, g2: int) -> bool:
+            a, b = (g1, g2) if g1 < g2 else (g2, g1)
+            return (a, b) in junction_connected_pairs
+
         centerline_idxs: NDArray[np.intp] = np.flatnonzero(
             np.isin(b2.kinds, list(_CENTERLINE_B2_KINDS))
         )
@@ -787,8 +1121,11 @@ class Segmentation:
         # Pass A: same-row pairing
         for i in centerline_idxs:
             rg, lg = int(b2_r_group[i]), int(b2_l_group[i])
-            if is_main(rg) and is_main(lg):
-                Segmentation._uf_union(parent, rg, lg)
+            if not (is_main(rg) and is_main(lg)):
+                continue
+            if junction_connected(rg, lg):
+                continue
+            Segmentation._uf_union(parent, rg, lg)
 
         # Pass B: cross-row geometric pairing
         if len(centerline_idxs) >= 2:
@@ -817,6 +1154,8 @@ class Segmentation:
                     if gb < 0:
                         continue
                     if Segmentation._uf_find(parent, ga) == Segmentation._uf_find(parent, gb):
+                        continue
+                    if junction_connected(ga, gb):
                         continue
                     Segmentation._uf_union(parent, ga, gb)
 

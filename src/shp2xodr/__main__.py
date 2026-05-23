@@ -11,6 +11,7 @@ reads typed fields off :class:`SegmentationConfig` / :class:`VizConfig`.
 
 from __future__ import annotations
 
+import io
 import logging
 import sys
 from pathlib import Path
@@ -42,6 +43,7 @@ def _rgb_int_dict(v: dict[str, list[int]]) -> dict[str, tuple[int, int, int]]:
 def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
     return SegmentationConfig(
         junction_merge_dist_m=float(cfg.segmentation.junction_merge_dist_m),
+        junction_crossing_z_tol_m=float(cfg.segmentation.junction_crossing_z_tol_m),
         bidirectional_merge_max_separation_m=float(
             cfg.segmentation.bidirectional_merge_max_separation_m
         ),
@@ -98,4 +100,8 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    # Windows stdio defaults to cp1252; UTF-8 makes logging non-ASCII-safe.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()

@@ -175,12 +175,13 @@ class HdMapWindow(QMainWindow):
         gb = QGroupBox("Abstraction")
         v = QVBoxLayout(gb)
         # QButtonGroup is mutually-exclusive by default and owns the buttons'
-        # ID assignment; we use level ints 1-3 directly as the button IDs.
+        # ID assignment; we use level ints 1-4 directly as the button IDs.
         self._level_button_group = QButtonGroup(gb)
         for level, label in (
             (1, "1  None\t(raw layer colors)"),
-            (2, "2  Group\t(A2 / B2 colored by SHP group)"),
-            (3, "3  Road & Junction\t(A2 / B2 by OpenDRIVE entity)"),
+            (2, "2  Group\t(A2 / B2 by SHP group)"),
+            (3, "3  Junction\t(A2 / B2 by OpenDRIVE junction)"),
+            (4, "4  Road\t(A2 / B2 by OpenDRIVE road)"),
         ):
             rb = QRadioButton(label)
             rb.setChecked(level == self._abstraction_level)

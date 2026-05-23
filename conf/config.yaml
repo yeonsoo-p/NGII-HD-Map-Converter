@@ -10,6 +10,14 @@ segmentation:
   # paths topologically separate from the rest of an intersection's
   # connecting lanes; this merges them back. Set to 0 to disable.
   junction_merge_dist_m: 10.0
+  # Max |Δz| (m) between two LinkType=1 interior polylines at their
+  # planimetric crossing point to count as the same physical intersection.
+  # Catches turn paths that cross in plan inside one large intersection
+  # without sharing an A1 endpoint. Typical overpass clearance is ~4.5 m,
+  # so 2.0 m comfortably separates floors without falsely splitting same-
+  # grade channelized turns whose digitized z values disagree by a few
+  # decimeters. Set to 0 to disable.
+  junction_crossing_z_tol_m: 2.0
   # Max XY closest-point distance (m) between two B2 Kind=501 (중앙선) rows
   # to treat as a divided-road pair — each row painted along the inner edge
   # of its own direction's leftmost lane, separated by a median. Korea's
@@ -62,8 +70,8 @@ viz:
   junction_palette_seed: 137
   road_palette_seed: 1729
 
-  # ---- Default abstraction level (1 None / 2 Group / 3 Road & Junction) ----
-  default_abstraction_level: 3
+  # ---- Default abstraction level (1 None / 2 Group / 3 Junction / 4 Road) ----
+  default_abstraction_level: 4
 
   # ---- A3 RoadType → fill color (NGII manual table 9.23) -------------------
   a3_road_type_rgb:
@@ -107,3 +115,15 @@ viz:
     "7": [220, 130, 30]
     "8": [90, 90, 90]
   c3_type_fallback_rgb: [140, 140, 140]
+
+# Hydra's default job_logging file handler opens its .log file with the
+# platform encoding (cp1252 on Windows). Section names contain Hangul and
+# segmentation summaries contain Unicode arrows; force UTF-8 so the file
+# handler doesn't throw UnicodeEncodeError mid-log. The console handler
+# already inherits the UTF-8 reconfigure of sys.stdout that __main__.py
+# applies before hydra.main runs.
+hydra:
+  job_logging:
+    handlers:
+      file:
+        encoding: utf-8
