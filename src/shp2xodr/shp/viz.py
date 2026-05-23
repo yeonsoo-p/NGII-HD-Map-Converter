@@ -1,12 +1,12 @@
 """3D scene builder for NGII HD-map (정밀도로지도) layers.
 
 :class:`HdMapViz` builds the VTK actors for every layer (A1 / A2 / A3 / A4
-/ B2 / C3) and binds shift-click pickers. The class is plotter-agnostic:
+/ B2 / C3) and binds shift-click selectors. The class is plotter-agnostic:
 pass any ``pyvista.BasePlotter`` subclass — a vanilla ``pv.Plotter`` for
 standalone use or a ``pyvistaqt.QtInteractor`` for the Qt inspector window.
 
-Pick events are delivered through ``on_pick(kind, idx)`` — the scene does
-not render pick info on-screen. The Qt window translates picks into
+Select events are delivered through ``on_select(kind, idx)`` — the scene does
+not render select info on-screen. The Qt window translates selects into
 structured tab fields; standalone mode just logs them.
 
 Layer visibility is exposed as a plain method so the GUI can wire it to
@@ -40,6 +40,7 @@ from shp2xodr.shp.data import (
     PointLayerData,
     PolygonLayerData,
 )
+from shp2xodr.shp.segmentation import Segmentation, SegmentationConfig
 
 log = logging.getLogger(__name__)
 
@@ -47,16 +48,16 @@ log = logging.getLogger(__name__)
 # relative offsets only take effect once this is on.
 vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 
-# The highlight overlay starts empty (no picks yet). PyVista 0.43+ refuses
+# The highlight overlay starts empty (no selects yet). PyVista 0.43+ refuses
 # empty meshes by default; flipping this global theme bit lets us attach the
-# actor up-front and swap geometry in on the first pick.
+# actor up-front and swap geometry in on the first select.
 pv.global_theme.allow_empty_mesh = True
 
 
-# ---- Pick callback type --------------------------------------------------------
+# ---- Select callback type --------------------------------------------------------
 
 # (layer_name, row_idx). layer_name ∈ {"A1", "A2", "A3", "A4", "B2", "C3"}.
-PickCallback = Callable[[str, int], None]
+SelectCallback = Callable[[str, int], None]
 
 
 # ---- Hydra-managed config ------------------------------------------------------
@@ -85,11 +86,11 @@ class VizConfig:
     line_width_b2: float
     line_width_c3: float
     line_width_highlight: float
-    # Picker tolerances (fraction of screen)
-    picker_tol_a1: float
-    picker_tol_a2: float
-    picker_tol_thin: float
-    picker_tol_poly: float
+    # Selector tolerances (fraction of screen)
+    selector_tol_a1: float
+    selector_tol_a2: float
+    selector_tol_thin: float
+    selector_tol_poly: float
     # Scene colors
     background_color: tuple[float, float, float]
     highlight_rgb: tuple[int, int, int]
@@ -107,6 +108,14 @@ class VizConfig:
 
 
 # ---- Generic helpers -----------------------------------------------------------
+
+
+def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
+    """Deterministic, saturated RGB rows — kept clear of pure black/white."""
+    if n <= 0:
+        return np.empty((0, 3), dtype=np.uint8)
+    rng = np.random.default_rng(seed)
+    return rng.integers(60, 240, size=(n, 3), dtype=np.uint8)
 
 
 def _polyline_polydata(polylines: list[NDArray[np.float64]]) -> pv.PolyData:
@@ -134,7 +143,7 @@ def _polygon_polydata(rings: list[NDArray[np.float64]]) -> pv.PolyData:
     Shapely's constrained Delaunay keeps every triangle inside the boundary
     and only uses input vertices, so we can look Z up by (x, y).
 
-    ``cell_data['poly_idx']`` maps each triangle to its source ring so picking
+    ``cell_data['poly_idx']`` maps each triangle to its source ring so selecting
     still resolves to the original polygon.
     """
     if not rings:
@@ -166,28 +175,28 @@ def _polygon_polydata(rings: list[NDArray[np.float64]]) -> pv.PolyData:
     return poly
 
 
-# ---- Pickable layer wrappers ---------------------------------------------------
+# ---- Selectable layer wrappers ---------------------------------------------------
 
 
 @dataclass(slots=True)
 class _PointLayer:
-    """One pickable point layer (A1 today; B1 / C1 later) wrapping a
-    :class:`PointLayerData` record plus its render-time picker / actor.
+    """One selectable point layer (A1 today; B1 / C1 later) wrapping a
+    :class:`PointLayerData` record plus its render-time selector / actor.
     """
 
     name: str
     data: PointLayerData
     point_size: float
-    picker_tolerance: float
+    selector_tolerance: float
     poly: pv.PolyData = field(init=False)
     actor: vtk.vtkActor | None = field(default=None, init=False)
-    picker: vtk.vtkPointPicker = field(init=False)
+    selector: vtk.vtkPointPicker = field(init=False)
 
     def __post_init__(self) -> None:
         self.poly = pv.PolyData(self.data.points)
-        self.picker = vtk.vtkPointPicker()
-        self.picker.SetTolerance(self.picker_tolerance)
-        self.picker.PickFromListOn()
+        self.selector = vtk.vtkPointPicker()
+        self.selector.SetTolerance(self.selector_tolerance)
+        self.selector.PickFromListOn()
 
     def attach(self, plotter: pv.Plotter) -> None:
         if self.poly.n_points == 0:
@@ -198,7 +207,7 @@ class _PointLayer:
             point_size=self.point_size,
             render_points_as_spheres=True,
         )
-        self.picker.AddPickList(self.actor)
+        self.selector.AddPickList(self.actor)
 
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
@@ -207,11 +216,11 @@ class _PointLayer:
 
 @dataclass(slots=True)
 class _LineLayer:
-    """One pickable line layer (A2 / B2 / C3) wrapping a
-    :class:`LineLayerData` record plus its render-time picker / actor.
+    """One selectable line layer (A2 / B2 / C3) wrapping a
+    :class:`LineLayerData` record plus its render-time selector / actor.
 
     ``color_fn`` produces the per-cell baseline colors used at attach time.
-    Highlight on pick is delivered via a dedicated overlay on :class:`HdMapViz`,
+    Highlight on select is delivered via a dedicated overlay on :class:`HdMapViz`,
     not by mutating this layer's per-cell RGB, so the same highlight is
     visible even when two base cells share geometry (단선 중앙선).
     """
@@ -220,16 +229,16 @@ class _LineLayer:
     data: LineLayerData
     color_fn: Callable[[], NDArray[np.uint8]]
     line_width: float
-    picker_tolerance: float
+    selector_tolerance: float
     poly: pv.PolyData = field(init=False)
     actor: vtk.vtkActor | None = field(default=None, init=False)
-    picker: vtk.vtkCellPicker = field(init=False)
+    selector: vtk.vtkCellPicker = field(init=False)
 
     def __post_init__(self) -> None:
         self.poly = _polyline_polydata(self.data.polylines)
-        self.picker = vtk.vtkCellPicker()
-        self.picker.SetTolerance(self.picker_tolerance)
-        self.picker.PickFromListOn()
+        self.selector = vtk.vtkCellPicker()
+        self.selector.SetTolerance(self.selector_tolerance)
+        self.selector.PickFromListOn()
 
     def attach(self, plotter: pv.Plotter) -> None:
         if self.poly.n_cells == 0:
@@ -242,7 +251,7 @@ class _LineLayer:
             line_width=self.line_width,
             show_scalar_bar=False,
         )
-        self.picker.AddPickList(self.actor)
+        self.selector.AddPickList(self.actor)
 
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
@@ -251,8 +260,8 @@ class _LineLayer:
 
 @dataclass(slots=True)
 class _PolygonLayer:
-    """One pickable polygon layer (A3 / A4) wrapping a
-    :class:`PolygonLayerData` record. The polygon picker is shared across
+    """One selectable polygon layer (A3 / A4) wrapping a
+    :class:`PolygonLayerData` record. The polygon selector is shared across
     all polygon layers; dispatch back to the layer is by actor identity.
     """
 
@@ -268,7 +277,7 @@ class _PolygonLayer:
     def __post_init__(self) -> None:
         self.poly = _polygon_polydata(self.data.rings)
 
-    def attach(self, plotter: pv.Plotter, picker: vtk.vtkCellPicker) -> None:
+    def attach(self, plotter: pv.Plotter, selector: vtk.vtkCellPicker) -> None:
         if self.poly.n_cells == 0:
             return
         face_rgb = self.face_rgb_fn()
@@ -286,7 +295,7 @@ class _PolygonLayer:
         self.actor.GetMapper().SetRelativeCoincidentTopologyPolygonOffsetParameters(
             self.depth_offset_factor, self.depth_offset_units
         )
-        picker.AddPickList(self.actor)
+        selector.AddPickList(self.actor)
 
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
@@ -300,22 +309,23 @@ class HdMapViz:
     """3D scene of every NGII layer.
 
     Pass an external ``plotter`` (e.g. ``QtInteractor``) for embedded use,
-    or omit it for a standalone window. Pass ``on_pick`` to receive
+    or omit it for a standalone window. Pass ``on_select`` to receive
     shift-click events as ``(layer_name, row_index)`` callbacks; the scene
-    never draws pick text on-screen.
+    never draws select text on-screen.
     """
 
     def __init__(
         self,
         shp_dir: Path,
+        seg_cfg: SegmentationConfig,
         viz_cfg: VizConfig,
         plotter: pv.Plotter | None = None,
-        on_pick: PickCallback | None = None,
+        on_select: SelectCallback | None = None,
     ) -> None:
         self.shp_dir = shp_dir
         self.viz_cfg = viz_cfg
         self.plotter = plotter if plotter is not None else pv.Plotter()
-        self.on_pick = on_pick
+        self.on_select = on_select
 
         # Typed data records — one per NGII layer, geometry kind enforced by
         # base. A1 / A2 / B2 / C3 are required layers; A3 / A4 are optional
@@ -326,14 +336,20 @@ class HdMapViz:
         self.c3 = C3Data(shp_dir)
         self.a3: A3Data | None = A3Data.try_load(shp_dir)
         self.a4: A4Data | None = A4Data.try_load(shp_dir)
+        self.segmentation = Segmentation.from_layers(self.a2, self.b2, seg_cfg)
+        self.segmentation_palettes = {
+            result.stage_id: _random_palette(len(result.entities), seed=10_001 + 997 * i)
+            for i, result in enumerate(self.segmentation.stage_results)
+        }
+        self._segmentation_level = 0
 
-        # Pickable layer wrappers. Order in the line-layer tuple is also the
+        # Selectable layer wrappers. Order in the line-layer tuple is also the
         # shift-click priority order (first match wins).
         self.a1_layer = _PointLayer(
             "A1",
             self.a1,
             point_size=viz_cfg.node_point_size,
-            picker_tolerance=viz_cfg.picker_tol_a1,
+            selector_tolerance=viz_cfg.selector_tol_a1,
         )
         line_specs: list[_LineLayer] = [
             _LineLayer(
@@ -341,14 +357,14 @@ class HdMapViz:
                 self.a2,
                 self._a2_cell_colors,
                 line_width=viz_cfg.line_width_a2,
-                picker_tolerance=viz_cfg.picker_tol_a2,
+                selector_tolerance=viz_cfg.selector_tol_a2,
             ),
             _LineLayer(
                 "B2",
                 self.b2,
                 self._b2_cell_colors,
                 line_width=viz_cfg.line_width_b2,
-                picker_tolerance=viz_cfg.picker_tol_thin,
+                selector_tolerance=viz_cfg.selector_tol_thin,
             ),
         ]
         line_specs.append(
@@ -357,15 +373,15 @@ class HdMapViz:
                 self.c3,
                 self._c3_cell_colors,
                 line_width=viz_cfg.line_width_c3,
-                picker_tolerance=viz_cfg.picker_tol_thin,
+                selector_tolerance=viz_cfg.selector_tol_thin,
             )
         )
         self.line_layers: tuple[_LineLayer, ...] = tuple(line_specs)
 
-        # A3 / A4 share one polygon picker — dispatch is by actor identity.
-        self.poly_picker = vtk.vtkCellPicker()
-        self.poly_picker.SetTolerance(viz_cfg.picker_tol_poly)
-        self.poly_picker.PickFromListOn()
+        # A3 / A4 share one polygon selector — dispatch is by actor identity.
+        self.poly_selector = vtk.vtkCellPicker()
+        self.poly_selector.SetTolerance(viz_cfg.selector_tol_poly)
+        self.poly_selector.PickFromListOn()
         poly_specs: list[_PolygonLayer] = []
         if self.a3 is not None:
             poly_specs.append(
@@ -392,7 +408,7 @@ class HdMapViz:
         self.polygon_layers: tuple[_PolygonLayer, ...] = tuple(poly_specs)
 
         # Highlight overlay — starts empty so PyVista's allow_empty_mesh
-        # covers it; geometry is swapped in on the first pick.
+        # covers it; geometry is swapped in on the first select.
         self.highlight_poly = pv.PolyData()
         self.highlight_actor: vtk.vtkActor | None = None
 
@@ -403,10 +419,19 @@ class HdMapViz:
     # ---- Per-layer color compute ---------------------------------------------
 
     def _a2_cell_colors(self) -> NDArray[np.uint8]:
-        """RGB per A2_LINK: one neutral color for raw link inspection."""
+        """RGB per A2_LINK at the current cumulative segmentation level."""
+        return self._a2_cell_colors_at(self._segmentation_level)
+
+    def _a2_cell_colors_at(self, level: int) -> NDArray[np.uint8]:
         n = len(self.a2.ids)
-        neutral = np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8)
-        return np.tile(neutral, (n, 1))
+        rgb = np.tile(np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8), (n, 1))
+        for result in self.segmentation.active_results(level):
+            palette = self.segmentation_palettes[result.stage_id]
+            entity_ids = result.entity_id_per_link
+            mask = entity_ids >= 0
+            if mask.any():
+                rgb[mask] = palette[entity_ids[mask]]
+        return rgb
 
     def _b2_cell_colors(self) -> NDArray[np.uint8]:
         """RGB per B2 row keyed off paint code."""
@@ -466,30 +491,32 @@ class HdMapViz:
     # ---- Scene attach / standalone entry -------------------------------------
 
     def attach(self) -> None:
-        """Build all actors, bind pickers, and register key events.
+        """Build all actors, bind selectors, and register key events.
 
         Idempotent in spirit but not strictly idempotent — call once per
         plotter instance. Standalone callers use :meth:`show` instead.
         """
         self.plotter.background_color = self.viz_cfg.background_color
 
-        # Drawing order: polygons first (A3 / A4), then lines in pick-priority
+        # Drawing order: polygons first (A3 / A4), then lines in select-priority
         # reverse (C3 → B2 → A2 so A2 paints over B2 paints over C3), then A1
-        # dots on top. Pick priority is independent of draw order — each
-        # picker has its own pick list.
+        # dots on top. Select priority is independent of draw order — each
+        # selector has its own candidate list.
         for poly_layer in self.polygon_layers:
-            poly_layer.attach(self.plotter, self.poly_picker)
+            poly_layer.attach(self.plotter, self.poly_selector)
         for line_layer in reversed(self.line_layers):
             line_layer.attach(self.plotter)
         self.a1_layer.attach(self.plotter)
 
-        # A2 cell_data extra lets pick consumers read the source link id.
+        # A2 cell_data extra lets select consumers read the source link id.
         a2_poly = self.line_layers[0].poly
         a2_poly.cell_data["link_id"] = self.a2.ids
+        for result in self.segmentation.stage_results:
+            a2_poly.cell_data[f"{result.stage_id}_id"] = result.entity_id_per_link
 
         # Highlight overlay — added last so it draws on top of every base
-        # mesh. Initial PolyData is empty, so nothing renders until a pick
-        # populates it. pickable=False keeps the overlay out of the pickers.
+        # mesh. Initial PolyData is empty, so nothing renders until a select
+        # populates it. pickable=False keeps the overlay out of VTK picking.
         self.highlight_actor = self.plotter.add_mesh(
             self.highlight_poly,
             color=self.viz_cfg.highlight_rgb,
@@ -552,6 +579,22 @@ class HdMapViz:
                         break
         self.plotter.render()
 
+    def set_segmentation_level(self, level: int) -> None:
+        """Switch cumulative A2 segmentation coloring level.
+
+        Level 0 is raw neutral A2; level N applies the first N registered
+        segmentation stages in order.
+        """
+        if level < 0 or level > len(self.segmentation.stage_results):
+            raise ValueError(level)
+        if level == self._segmentation_level:
+            return
+        self._segmentation_level = level
+        a2_poly = self.line_layers[0].poly
+        a2_poly.cell_data["rgb"] = self._a2_cell_colors_at(level)
+        a2_poly.Modified()
+        self.plotter.render()
+
     # ---- Shift-click dispatch ------------------------------------------------
 
     def _on_left_press(self, _obj: Any, _event: str) -> None:
@@ -560,51 +603,51 @@ class HdMapViz:
             return
         x, y = iren.GetEventPosition()
         renderer = self.plotter.renderer
-        if self._try_point_pick(self.a1_layer, x, y, renderer):
+        if self._try_point_select(self.a1_layer, x, y, renderer):
             return
         for layer in self.line_layers:
-            if self._try_line_pick(layer, x, y, renderer):
+            if self._try_line_select(layer, x, y, renderer):
                 return
-        self._try_polygon_pick(x, y, renderer)
+        self._try_polygon_select(x, y, renderer)
 
-    def _try_point_pick(self, layer: _PointLayer, x: int, y: int, renderer: Any) -> bool:
-        if layer.actor is None or not layer.picker.Pick(x, y, 0, renderer):
+    def _try_point_select(self, layer: _PointLayer, x: int, y: int, renderer: Any) -> bool:
+        if layer.actor is None or not layer.selector.Pick(x, y, 0, renderer):
             return False
-        pid = layer.picker.GetPointId()
+        pid = layer.selector.GetPointId()
         if pid < 0:
             return False
-        self._emit_pick(layer.name, pid)
+        self._emit_select(layer.name, pid)
         return True
 
-    def _try_line_pick(self, layer: _LineLayer, x: int, y: int, renderer: Any) -> bool:
-        """Hit-test ``layer.picker``; on hit, swap the highlight overlay's
-        geometry to the picked cell's polyline.
+    def _try_line_select(self, layer: _LineLayer, x: int, y: int, renderer: Any) -> bool:
+        """Hit-test ``layer.selector``; on hit, swap the highlight overlay's
+        geometry to the selected cell's polyline.
 
         The overlay is a separate PolyData rendered last with a fat stroke,
         which means the highlight stays visible even when multiple base
         cells share the same XY (단선 중앙선: two B2 rows draw on top of
         each other per NGII manual §9.4.7).
         """
-        if layer.actor is None or not layer.picker.Pick(x, y, 0, renderer):
+        if layer.actor is None or not layer.selector.Pick(x, y, 0, renderer):
             return False
-        cid = layer.picker.GetCellId()
+        cid = layer.selector.GetCellId()
         if cid < 0:
             return False
         self._set_highlight(layer.data.polylines[cid])
-        self._emit_pick(layer.name, cid)
+        self._emit_select(layer.name, cid)
         return True
 
-    def _try_polygon_pick(self, x: int, y: int, renderer: Any) -> None:
-        if not self.poly_picker.Pick(x, y, 0, renderer):
+    def _try_polygon_select(self, x: int, y: int, renderer: Any) -> None:
+        if not self.poly_selector.Pick(x, y, 0, renderer):
             return
-        cid = self.poly_picker.GetCellId()
+        cid = self.poly_selector.GetCellId()
         if cid < 0:
             return
-        actor = self.poly_picker.GetActor()
+        actor = self.poly_selector.GetActor()
         for layer in self.polygon_layers:
             if layer.actor is actor:
                 pi = int(layer.poly.cell_data["poly_idx"][cid])
-                self._emit_pick(layer.name, pi)
+                self._emit_select(layer.name, pi)
                 return
 
     def _set_highlight(self, polyline: NDArray[np.float64]) -> None:
@@ -620,8 +663,8 @@ class HdMapViz:
         self.highlight_poly.lines = new_poly.lines
         self.plotter.render()
 
-    def _emit_pick(self, kind: str, idx: int) -> None:
-        if self.on_pick is not None:
-            self.on_pick(kind, idx)
+    def _emit_select(self, kind: str, idx: int) -> None:
+        if self.on_select is not None:
+            self.on_select(kind, idx)
         else:
-            log.info("picked %s[%d]", kind, idx)
+            log.info("selected %s[%d]", kind, idx)

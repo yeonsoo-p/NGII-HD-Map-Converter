@@ -1,8 +1,20 @@
-# Section folder to auto-open on startup. null = open empty; the user picks
+# Section folder to auto-open on startup. null = open empty; the user selects
 # a folder via File → Open SHP folder…. Override on the CLI with
 # ``shp_dir=/path/to/section``. Relative paths resolve against the
 # invocation cwd, not Hydra's run directory.
 shp_dir: examples/SEC001_군산공항입구교차로_외고삼거리/HDMap_UTM52N_타원체고
+
+segmentation:
+  # Max |Δz| (m) at an XY intersection to count as the same physical feature.
+  # Used by U-turn marker matching and Type=1 junction-link intersection
+  # grouping. Typical overpass clearance is ~4.5 m, so 2.0 m keeps stacked
+  # roads apart while allowing small digitized z disagreements.
+  z_intersection_tol_m: 2.0
+  # Max planimetric gap (m) for merging nearby Type=1 junction-link
+  # components after exact R/L and intersection unions. This catches small
+  # digitization gaps inside one physical junction while staying narrower
+  # than a broad intersection-wide proximity merge.
+  junction_proximity_merge_dist_m: 5.0
 
 viz:
   # ---- Rendering geometry --------------------------------------------------
@@ -17,20 +29,20 @@ viz:
   line_width_b2: 1.4
   line_width_c3: 1.8
   # Highlight overlay - fatter than every base layer so it always reads as
-  # "the picked line" even when multiple base cells share XY (단선 중앙선).
+  # "the selected line" even when multiple base cells share XY (단선 중앙선).
   line_width_highlight: 4.5
 
-  # ---- Picker tolerances (fraction of screen) ------------------------------
-  # A1 dots are small (point picker); A2 has tight tol since the lines are
+  # ---- Selector tolerances (fraction of screen) ------------------------------
+  # A1 dots are small (point selector); A2 has tight tol since the lines are
   # thick. B2 / C3 are slimmer lines that pass over A3 / A4 polygons whose
-  # own picker is point-in-polygon (tol=0). A tight tolerance on the line
-  # pickers would let the cursor "slip off" thin lines and have the polygon
-  # picker win; ~1.2% of screen makes line grabbing reliable without
+  # own selector is point-in-polygon (tol=0). A tight tolerance on the line
+  # selectors would let the cursor "slip off" thin lines and have the polygon
+  # selector win; ~1.2% of screen makes line grabbing reliable without
   # bleeding into wrong cells.
-  picker_tol_a1: 0.01
-  picker_tol_a2: 0.005
-  picker_tol_thin: 0.012
-  picker_tol_poly: 0.0
+  selector_tol_a1: 0.01
+  selector_tol_a2: 0.005
+  selector_tol_thin: 0.012
+  selector_tol_poly: 0.0
 
   # ---- Scene colors --------------------------------------------------------
   # Slight cool off-white background so pure-white B2 lines (백색 차선 /

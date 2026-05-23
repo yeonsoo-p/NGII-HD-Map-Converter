@@ -1,11 +1,11 @@
 """Hydra entry point: ``uv run python -m shp2xodr``.
 
-The window opens empty by default; pick a section directory via
+The window opens empty by default; select a section directory via
 **File → Open SHP folder…** (Ctrl+O). Pass ``shp_dir=/path/to/section`` on
 the CLI (or set it in ``conf/config.yaml``) to auto-load on startup.
 
 This module is the only place that knows about both Hydra/OmegaConf
-``DictConfig`` and the typed :class:`VizConfig`.
+``DictConfig`` and typed config dataclasses.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from PySide6.QtWidgets import QApplication
 
 from shp2xodr.shp.gui import HdMapWindow
+from shp2xodr.shp.segmentation import SegmentationConfig
 from shp2xodr.shp.viz import VizConfig
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,13 @@ def _rgb_int_dict(v: dict[str, list[int]]) -> dict[str, tuple[int, int, int]]:
     return {k: _rgb_int(c) for k, c in v.items()}
 
 
+def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
+    return SegmentationConfig(
+        z_intersection_tol_m=float(cfg.segmentation.z_intersection_tol_m),
+        junction_proximity_merge_dist_m=float(cfg.segmentation.junction_proximity_merge_dist_m),
+    )
+
+
 def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
     raw = OmegaConf.to_container(cfg.viz, resolve=True)
     if not isinstance(raw, dict):
@@ -52,10 +60,10 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         line_width_b2=float(raw["line_width_b2"]),
         line_width_c3=float(raw["line_width_c3"]),
         line_width_highlight=float(raw["line_width_highlight"]),
-        picker_tol_a1=float(raw["picker_tol_a1"]),
-        picker_tol_a2=float(raw["picker_tol_a2"]),
-        picker_tol_thin=float(raw["picker_tol_thin"]),
-        picker_tol_poly=float(raw["picker_tol_poly"]),
+        selector_tol_a1=float(raw["selector_tol_a1"]),
+        selector_tol_a2=float(raw["selector_tol_a2"]),
+        selector_tol_thin=float(raw["selector_tol_thin"]),
+        selector_tol_poly=float(raw["selector_tol_poly"]),
         background_color=_rgb_float(raw["background_color"]),
         highlight_rgb=_rgb_int(raw["highlight_rgb"]),
         a2_uniform_rgb=_rgb_int(raw["a2_uniform_rgb"]),
@@ -74,7 +82,7 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
 @hydra.main(version_base=None, config_path="../../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     app = QApplication.instance() or QApplication(sys.argv)
-    window = HdMapWindow(viz_cfg=_build_viz_cfg(cfg))
+    window = HdMapWindow(seg_cfg=_build_seg_cfg(cfg), viz_cfg=_build_viz_cfg(cfg))
     window.show()
     if cfg.shp_dir is not None:
         # to_absolute_path resolves against the invocation cwd, not Hydra's
