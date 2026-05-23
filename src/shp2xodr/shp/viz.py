@@ -9,22 +9,9 @@ Pick events are delivered through ``on_pick(kind, idx)`` — the scene does
 not render pick info on-screen. The Qt window translates picks into
 structured tab fields; standalone mode just logs them.
 
-Layer visibility and the 4-level abstraction selector are exposed as plain
-methods so the GUI can wire them to dock widgets:
-:meth:`set_layer_visible`, :meth:`set_abstraction_level`.
-
-Abstraction levels (passed to :meth:`set_abstraction_level`):
-
-* ``1`` — None. A2 uniform neutral; everything else by natural NGII codes.
-* ``2`` — Group. A2 colored per SHP group (lateral lane cluster within a
-  road segment).
-* ``3`` — Junction. Junction-interior A2 cells carry the junction
-  palette; mainline cells fall back to the neutral A2 fill.
-* ``4`` — Road. Mainline A2 cells carry the road palette; junction-
-  interior cells fall back to the neutral A2 fill.
-
-B2 always renders by paint color regardless of level — segmentation no
-longer binds B2 rows to A2 entities, so the level only affects A2.
+Layer visibility is exposed as a plain method so the GUI can wire it to
+dock widgets. A2 renders in one neutral color; other layers render by their
+natural NGII attributes.
 """
 
 from __future__ import annotations
@@ -53,17 +40,8 @@ from shp2xodr.shp.data import (
     PointLayerData,
     PolygonLayerData,
 )
-from shp2xodr.shp.segmentation import Segmentation, SegmentationConfig
 
 log = logging.getLogger(__name__)
-
-
-# Abstraction levels — contract constants matching the GUI radio-button IDs in
-# gui.py. Not tunable; the rest of the scene-coloring code reads these literals.
-_LEVEL_RAW = 1
-_LEVEL_GROUP = 2
-_LEVEL_JUNCTION = 3
-_LEVEL_ROAD = 4
 
 # Enable VTK's coincident-topology resolution mode globally; per-mapper
 # relative offsets only take effect once this is on.
@@ -116,12 +94,6 @@ class VizConfig:
     background_color: tuple[float, float, float]
     highlight_rgb: tuple[int, int, int]
     a2_uniform_rgb: tuple[int, int, int]
-    # Random-palette seeds
-    group_palette_seed: int
-    junction_palette_seed: int
-    road_palette_seed: int
-    # Default abstraction level (1 None / 2 Group / 3 Junction / 4 Road)
-    default_abstraction_level: int
     # NGII code-list color tables
     a3_road_type_rgb: dict[str, tuple[int, int, int]]
     a3_protected_rgb: tuple[int, int, int]
@@ -135,14 +107,6 @@ class VizConfig:
 
 
 # ---- Generic helpers -----------------------------------------------------------
-
-
-def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
-    """Deterministic, saturated RGB rows — kept clear of pure black/white."""
-    if n <= 0:
-        return np.empty((0, 3), dtype=np.uint8)
-    rng = np.random.default_rng(seed)
-    return rng.integers(60, 240, size=(n, 3), dtype=np.uint8)
 
 
 def _polyline_polydata(polylines: list[NDArray[np.float64]]) -> pv.PolyData:
@@ -344,7 +308,6 @@ class HdMapViz:
     def __init__(
         self,
         shp_dir: Path,
-        seg_cfg: SegmentationConfig,
         viz_cfg: VizConfig,
         plotter: pv.Plotter | None = None,
         on_pick: PickCallback | None = None,
@@ -355,8 +318,7 @@ class HdMapViz:
         self.on_pick = on_pick
 
         # Typed data records — one per NGII layer, geometry kind enforced by
-        # base. A1 / A2 / B2 / C3 are required for the segmentation pipeline
-        # (C3 gates Pass B of the bidirectional merge); A3 / A4 are optional
+        # base. A1 / A2 / B2 / C3 are required layers; A3 / A4 are optional
         # layers a section is allowed to ship without.
         self.a1 = A1Data(shp_dir)
         self.a2 = A2Data(shp_dir)
@@ -364,22 +326,6 @@ class HdMapViz:
         self.c3 = C3Data(shp_dir)
         self.a3: A3Data | None = A3Data.try_load(shp_dir)
         self.a4: A4Data | None = A4Data.try_load(shp_dir)
-
-        # Segmentation + per-group / per-junction / per-road palettes.
-        self.segmentation = Segmentation.from_shp_dir(shp_dir, seg_cfg)
-        self.group_palette = _random_palette(
-            int(self.segmentation.group_id.max()) + 1, seed=viz_cfg.group_palette_seed
-        )
-        self.junction_palette = _random_palette(
-            int(self.segmentation.node_junction_id.max()) + 1,
-            seed=viz_cfg.junction_palette_seed,
-        )
-        n_roads = (
-            int(self.segmentation.road_id_per_link.max()) + 1
-            if (self.segmentation.road_id_per_link >= 0).any()
-            else 0
-        )
-        self.road_palette = _random_palette(n_roads, seed=viz_cfg.road_palette_seed)
 
         # Pickable layer wrappers. Order in the line-layer tuple is also the
         # shift-click priority order (first match wins).
@@ -450,73 +396,26 @@ class HdMapViz:
         self.highlight_poly = pv.PolyData()
         self.highlight_actor: vtk.vtkActor | None = None
 
-        # Current abstraction level — default per viz config so the user
-        # lands on whatever level the config picked.
-        self._abstraction_level: int = viz_cfg.default_abstraction_level
-
         # Teardown handles - populated in attach(), consumed by detach().
         self._left_press_tag: int | None = None
         self._key_events_bound: tuple[str, ...] = ()
 
     # ---- Per-layer color compute ---------------------------------------------
 
-    def _a2_cell_colors_at(self, level: int) -> NDArray[np.uint8]:
-        """RGB per A2_LINK at the requested abstraction level.
-
-        * Level 1 — uniform neutral.
-        * Level 2 — group palette across every row (mainline + interior
-          alike), so the user reads the SHP-level group structure.
-        * Level 3 — junction palette on interior rows; mainline rows fall
-          back to the neutral A2 fill so junctions stand out alone.
-        * Level 4 — road palette on mainline rows; interior rows fall back
-          to the neutral A2 fill so roads stand out alone.
-        """
-        seg = self.segmentation
+    def _a2_cell_colors(self) -> NDArray[np.uint8]:
+        """RGB per A2_LINK: one neutral color for raw link inspection."""
         n = len(self.a2.ids)
         neutral = np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8)
-        if level == _LEVEL_RAW:
-            return np.tile(neutral, (n, 1))
-        if level == _LEVEL_GROUP:
-            return np.asarray(self.group_palette[seg.group_id], dtype=np.uint8).copy()
-        if level == _LEVEL_JUNCTION:
-            rgb = np.tile(neutral, (n, 1))
-            interior = seg.junction_id >= 0
-            if interior.any():
-                rgb[interior] = self.junction_palette[seg.junction_id[interior]]
-            return rgb
-        if level == _LEVEL_ROAD:
-            rgb = np.tile(neutral, (n, 1))
-            mainline = seg.road_id_per_link >= 0
-            if mainline.any():
-                rgb[mainline] = self.road_palette[seg.road_id_per_link[mainline]]
-            return rgb
-        raise ValueError(level)
+        return np.tile(neutral, (n, 1))
 
-    def _b2_cell_colors_at(self, level: int) -> NDArray[np.uint8]:
-        """RGB per B2 row — always by paint code, at every abstraction level.
-
-        Segmentation no longer binds B2 rows to A2 groups / junctions /
-        roads, so B2 has no entity color to inherit. The paint code is the
-        natural NGII attribute for B2 and stays the right visualization
-        across all four levels; the ``level`` argument is accepted for
-        symmetry with :meth:`_a2_cell_colors_at` but does not change the
-        output.
-        """
-        del level  # B2 ignores the abstraction level.
+    def _b2_cell_colors(self) -> NDArray[np.uint8]:
+        """RGB per B2 row keyed off paint code."""
         cfg = self.viz_cfg
         n = len(self.b2.types)
         rgb = np.zeros((n, 3), dtype=np.uint8)
         for i, t in enumerate(self.b2.types):
             rgb[i] = cfg.b2_paint_rgb.get(t[:1], cfg.b2_paint_fallback_rgb)
         return rgb
-
-    def _a2_cell_colors(self) -> NDArray[np.uint8]:
-        """Initial-attach hook: A2 colors at the current abstraction level."""
-        return self._a2_cell_colors_at(self._abstraction_level)
-
-    def _b2_cell_colors(self) -> NDArray[np.uint8]:
-        """Initial-attach hook: B2 colors at the current abstraction level."""
-        return self._b2_cell_colors_at(self._abstraction_level)
 
     def _c3_cell_colors(self) -> NDArray[np.uint8]:
         """RGB per C3 row keyed off Type (facility class)."""
@@ -584,13 +483,9 @@ class HdMapViz:
             line_layer.attach(self.plotter)
         self.a1_layer.attach(self.plotter)
 
-        # A2 cell_data extras let pick consumers read group/junction/road off
-        # the PolyData if they prefer that over the segmentation arrays.
+        # A2 cell_data extra lets pick consumers read the source link id.
         a2_poly = self.line_layers[0].poly
         a2_poly.cell_data["link_id"] = self.a2.ids
-        a2_poly.cell_data["group_id"] = self.segmentation.group_id
-        a2_poly.cell_data["junction_id"] = self.segmentation.junction_id
-        a2_poly.cell_data["road_id"] = self.segmentation.road_id_per_link
 
         # Highlight overlay — added last so it draws on top of every base
         # mesh. Initial PolyData is empty, so nothing renders until a pick
@@ -655,26 +550,6 @@ class HdMapViz:
                     if poly_layer.name == name:
                         poly_layer.set_visible(on)
                         break
-        self.plotter.render()
-
-    def set_abstraction_level(self, level: int) -> None:
-        """Switch the A2 + B2 cell coloring to one of the four abstraction
-        levels (1 None / 2 Group / 3 Junction / 4 Road).
-
-        Idempotent: re-setting the current level is a no-op. C3 / A3 / A4 /
-        A1 layers stay on their natural NGII codes at every level.
-        """
-        if not _LEVEL_RAW <= level <= _LEVEL_ROAD:
-            raise ValueError(level)
-        if level == self._abstraction_level:
-            return
-        self._abstraction_level = level
-        a2_poly = self.line_layers[0].poly
-        a2_poly.cell_data["rgb"] = self._a2_cell_colors_at(level)
-        a2_poly.Modified()
-        b2_poly = self.line_layers[1].poly
-        b2_poly.cell_data["rgb"] = self._b2_cell_colors_at(level)
-        b2_poly.Modified()
         self.plotter.render()
 
     # ---- Shift-click dispatch ------------------------------------------------

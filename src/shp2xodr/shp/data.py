@@ -380,11 +380,11 @@ class A1Data(PointLayerData):
 class A2Data(LineLayerData):
     """A2_LINK (주행경로링크). Manual §9.4.2, tables 9.14-9.18.
 
-    Carries every column needed to drive segmentation: ``link_types`` (lane
-    role per :attr:`LINK_TYPE_LABEL`), ``from_node_ids`` / ``to_node_ids``
-    (A1 references), ``r_link_ids`` / ``l_link_ids`` (lateral neighbours,
-    empty when absent), plus road-classification metadata
-    (:attr:`ROAD_RANK_LABEL`, :attr:`ROAD_TYPE_LABEL`).
+    Carries raw link role and topology columns: ``link_types`` (lane role
+    per :attr:`LINK_TYPE_LABEL`), ``from_node_ids`` / ``to_node_ids`` (A1
+    references), ``r_link_ids`` / ``l_link_ids`` (lateral neighbours, empty
+    when absent), plus road-classification metadata (:attr:`ROAD_RANK_LABEL`,
+    :attr:`ROAD_TYPE_LABEL`).
     """
 
     SHP_FILENAME: ClassVar[str] = "A2_LINK.shp"

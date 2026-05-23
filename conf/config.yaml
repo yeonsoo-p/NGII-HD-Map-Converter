@@ -4,21 +4,6 @@
 # invocation cwd, not Hydra's run directory.
 shp_dir: examples/SEC001_군산공항입구교차로_외고삼거리/HDMap_UTM52N_타원체고
 
-segmentation:
-  # Planimetric distance (m) under which graph-disjoint junction components
-  # are fused into one. NGII sometimes leaves channelized turns and free-flow
-  # paths topologically separate from the rest of an intersection's
-  # connecting lanes; this merges them back. Set to 0 to disable.
-  junction_merge_dist_m: 10.0
-  # Max |Δz| (m) between two LinkType=1 interior polylines at their
-  # planimetric crossing point to count as the same physical intersection.
-  # Catches turn paths that cross in plan inside one large intersection
-  # without sharing an A1 endpoint. Typical overpass clearance is ~4.5 m,
-  # so 2.0 m comfortably separates floors without falsely splitting same-
-  # grade channelized turns whose digitized z values disagree by a few
-  # decimeters. Set to 0 to disable.
-  junction_crossing_z_tol_m: 2.0
-
 viz:
   # ---- Rendering geometry --------------------------------------------------
   node_point_size: 3.0
@@ -27,7 +12,7 @@ viz:
   # B2 lines render in front of coincident-Z fills.
   poly_depth_offset_factor: 2.0
   poly_depth_offset_units: 2.0
-  # Line widths — A2 thickest so segmentation coloring dominates over markings.
+  # Line widths — A2 thickest so raw links stay readable over markings.
   line_width_a2: 2.5
   line_width_b2: 1.4
   line_width_c3: 1.8
@@ -55,17 +40,8 @@ viz:
   # Magenta — wins against every base palette (B2 primaries, C3 neutrals,
   # A3/A4 cool fills, A2 random saturated range).
   highlight_rgb: [255, 30, 200]
-  # Uniform color for A2 at level 1, and B2/A2 fallback at levels 2-3 when
-  # the bound side is -1.
+  # Uniform color for raw A2 links.
   a2_uniform_rgb: [110, 110, 120]
-
-  # ---- Random palette seeds ------------------------------------------------
-  group_palette_seed: 42
-  junction_palette_seed: 137
-  road_palette_seed: 1729
-
-  # ---- Default abstraction level (1 None / 2 Group / 3 Junction / 4 Road) ----
-  default_abstraction_level: 4
 
   # ---- A3 RoadType → fill color (NGII manual table 9.23) -------------------
   a3_road_type_rgb:
@@ -111,9 +87,8 @@ viz:
   c3_type_fallback_rgb: [140, 140, 140]
 
 # Hydra's default job_logging file handler opens its .log file with the
-# platform encoding (cp1252 on Windows). Section names contain Hangul and
-# segmentation summaries contain Unicode arrows; force UTF-8 so the file
-# handler doesn't throw UnicodeEncodeError mid-log. The console handler
+# platform encoding (cp1252 on Windows). Section names contain Hangul; force
+# UTF-8 so the file handler doesn't throw UnicodeEncodeError mid-log. The console handler
 # already inherits the UTF-8 reconfigure of sys.stdout that __main__.py
 # applies before hydra.main runs.
 hydra:

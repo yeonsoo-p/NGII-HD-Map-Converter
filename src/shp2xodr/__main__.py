@@ -5,8 +5,7 @@ The window opens empty by default; pick a section directory via
 the CLI (or set it in ``conf/config.yaml``) to auto-load on startup.
 
 This module is the only place that knows about both Hydra/OmegaConf
-``DictConfig`` and the typed config dataclasses — every other module
-reads typed fields off :class:`SegmentationConfig` / :class:`VizConfig`.
+``DictConfig`` and the typed :class:`VizConfig`.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from omegaconf import DictConfig, OmegaConf
 from PySide6.QtWidgets import QApplication
 
 from shp2xodr.shp.gui import HdMapWindow
-from shp2xodr.shp.segmentation import SegmentationConfig
 from shp2xodr.shp.viz import VizConfig
 
 log = logging.getLogger(__name__)
@@ -38,13 +36,6 @@ def _rgb_float(v: list[float]) -> tuple[float, float, float]:
 
 def _rgb_int_dict(v: dict[str, list[int]]) -> dict[str, tuple[int, int, int]]:
     return {k: _rgb_int(c) for k, c in v.items()}
-
-
-def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
-    return SegmentationConfig(
-        junction_merge_dist_m=float(cfg.segmentation.junction_merge_dist_m),
-        junction_crossing_z_tol_m=float(cfg.segmentation.junction_crossing_z_tol_m),
-    )
 
 
 def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
@@ -68,10 +59,6 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         background_color=_rgb_float(raw["background_color"]),
         highlight_rgb=_rgb_int(raw["highlight_rgb"]),
         a2_uniform_rgb=_rgb_int(raw["a2_uniform_rgb"]),
-        group_palette_seed=int(raw["group_palette_seed"]),
-        junction_palette_seed=int(raw["junction_palette_seed"]),
-        road_palette_seed=int(raw["road_palette_seed"]),
-        default_abstraction_level=int(raw["default_abstraction_level"]),
         a3_road_type_rgb=_rgb_int_dict(raw["a3_road_type_rgb"]),
         a3_protected_rgb=_rgb_int(raw["a3_protected_rgb"]),
         a3_fallback_rgb=_rgb_int(raw["a3_fallback_rgb"]),
@@ -87,7 +74,7 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
 @hydra.main(version_base=None, config_path="../../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     app = QApplication.instance() or QApplication(sys.argv)
-    window = HdMapWindow(seg_cfg=_build_seg_cfg(cfg), viz_cfg=_build_viz_cfg(cfg))
+    window = HdMapWindow(viz_cfg=_build_viz_cfg(cfg))
     window.show()
     if cfg.shp_dir is not None:
         # to_absolute_path resolves against the invocation cwd, not Hydra's

@@ -10,12 +10,9 @@ The right-side dock has three sections:
 
 * **Data layers** — one checkbox per NGII layer (A1 / A2 / A3 / A4 / B2 /
   C3), toggling base-actor visibility.
-* **Abstraction** — three radio buttons selecting the A2 / B2 coloring
-  level: ``1`` None, ``2`` Group, ``3`` Road & Junction. C3 / A3 / A4 /
-  A1 colors stay on their natural NGII codes at every level.
 * **Picked** — a header line naming the picked layer + ID, and a key/value
-  table populated from the data class and segmentation results. Only one
-  feature can be picked at a time, so one panel is sufficient.
+  table populated from the data class. Only one feature can be picked at a
+  time, so one panel is sufficient.
 
 Dock widgets stay disabled until the first successful load.
 """
@@ -26,10 +23,9 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QButtonGroup,
     QCheckBox,
     QDockWidget,
     QFileDialog,
@@ -38,7 +34,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QRadioButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -47,7 +42,6 @@ from PySide6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from shp2xodr.shp.data import A1Data, A2Data, A3Data, A4Data, B2Data, C3Data
-from shp2xodr.shp.segmentation import SegmentationConfig
 from shp2xodr.shp.viz import HdMapViz, VizConfig
 
 log = logging.getLogger(__name__)
@@ -77,13 +71,6 @@ _LAYER_TITLE: dict[str, str] = {
 _PICK_PLACEHOLDER = "— open a folder to begin —"
 _PICK_PROMPT = "— shift-click a feature to inspect —"
 
-# Sentinel for the field-name slot that marks a section-header row in the
-# pick table. _on_pick spans both columns and bolds the row when it sees
-# this. The value slot carries the header text ("Segmentation").
-_SECTION_FIELD = "__section__"
-_SECTION_BG = QColor(230, 230, 235)
-
-
 def _coded(value: str, table: dict[str, str]) -> str:
     """Format a coded field as ``"<code> (<label>)"`` or ``"-"`` if empty."""
     if not value:
@@ -97,20 +84,14 @@ def _opt(value: str) -> str:
     return value if value else "-"
 
 
-def _id_set(ids: frozenset[int] | set[int]) -> str:
-    """Render a sorted comma-separated list of ids, or ``"-"`` if empty."""
-    return ", ".join(str(i) for i in sorted(ids)) if ids else "-"
-
-
 class HdMapWindow(QMainWindow):
     """Main window hosting the 3D scene and the inspector dock."""
 
-    def __init__(self, seg_cfg: SegmentationConfig, viz_cfg: VizConfig) -> None:
+    def __init__(self, viz_cfg: VizConfig) -> None:
         super().__init__()
         self.setWindowTitle("shp2xodr — (no folder)")
         self.resize(1500, 950)
 
-        self._seg_cfg = seg_cfg
         self._viz_cfg = viz_cfg
         self.viz: HdMapViz | None = None
 
@@ -122,10 +103,7 @@ class HdMapWindow(QMainWindow):
         # Widget handles — populated in _build_dock(); read in load_folder()
         # to carry user preferences forward into a freshly-attached viz.
         self._layer_cbs: dict[str, QCheckBox] = {}
-        self._level_buttons: dict[int, QRadioButton] = {}
-        self._abstraction_level: int = viz_cfg.default_abstraction_level
         self._data_group: QGroupBox
-        self._abstraction_group: QGroupBox
 
         self._build_menu()
         self._build_dock()
@@ -157,9 +135,7 @@ class HdMapWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
         self._data_group = self._build_data_group()
-        self._abstraction_group = self._build_abstraction_group()
         layout.addWidget(self._data_group)
-        layout.addWidget(self._abstraction_group)
         layout.addWidget(self._build_pick_panel(), stretch=1)
         dock.setWidget(container)
         dock.setMinimumWidth(360)
@@ -174,26 +150,6 @@ class HdMapWindow(QMainWindow):
             cb.toggled.connect(lambda on, n=name: self._on_layer_toggle(n, on))
             v.addWidget(cb)
             self._layer_cbs[name] = cb
-        return gb
-
-    def _build_abstraction_group(self) -> QGroupBox:
-        gb = QGroupBox("Abstraction")
-        v = QVBoxLayout(gb)
-        # QButtonGroup is mutually-exclusive by default and owns the buttons'
-        # ID assignment; we use level ints 1-4 directly as the button IDs.
-        self._level_button_group = QButtonGroup(gb)
-        for level, label in (
-            (1, "1  None\t(raw layer colors)"),
-            (2, "2  Group\t(A2 / B2 by SHP group)"),
-            (3, "3  Junction\t(A2 / B2 by OpenDRIVE junction)"),
-            (4, "4  Road\t(A2 / B2 by OpenDRIVE road)"),
-        ):
-            rb = QRadioButton(label)
-            rb.setChecked(level == self._abstraction_level)
-            self._level_button_group.addButton(rb, level)
-            v.addWidget(rb)
-            self._level_buttons[level] = rb
-        self._level_button_group.idToggled.connect(self._on_abstraction_changed)
         return gb
 
     def _build_pick_panel(self) -> QGroupBox:
@@ -220,23 +176,12 @@ class HdMapWindow(QMainWindow):
 
     def _set_dock_enabled(self, on: bool) -> None:
         self._data_group.setEnabled(on)
-        self._abstraction_group.setEnabled(on)
 
     # ---- Dock event handlers (no-op when no viz) -----------------------------
 
     def _on_layer_toggle(self, name: str, on: bool) -> None:
         if self.viz is not None:
             self.viz.set_layer_visible(name, on)
-
-    def _on_abstraction_changed(self, level: int, checked: bool) -> None:
-        # idToggled fires twice per click — once for the deselected button
-        # (checked=False) and once for the newly selected one (checked=True).
-        # We only care about the selection edge.
-        if not checked:
-            return
-        self._abstraction_level = level
-        if self.viz is not None:
-            self.viz.set_abstraction_level(level)
 
     # ---- Open-folder flow ----------------------------------------------------
 
@@ -261,7 +206,6 @@ class HdMapWindow(QMainWindow):
         try:
             viz = HdMapViz(
                 shp_dir,
-                seg_cfg=self._seg_cfg,
                 viz_cfg=self._viz_cfg,
                 plotter=self.qt_plotter,
                 on_pick=self._on_pick,
@@ -281,11 +225,9 @@ class HdMapWindow(QMainWindow):
             return
 
         self.viz = viz
-        # Carry dock state forward (the new viz defaults are all layers on
-        # and level 3; the user may have changed either).
+        # Carry layer visibility forward; a fresh viz defaults every layer on.
         for name, cb in self._layer_cbs.items():
             viz.set_layer_visible(name, cb.isChecked())
-        viz.set_abstraction_level(self._abstraction_level)
 
         self.qt_plotter.view_xy()
         self.qt_plotter.reset_camera()
@@ -312,18 +254,8 @@ class HdMapWindow(QMainWindow):
         self._pick_table.clearSpans()
         self._pick_table.setRowCount(len(fields))
         for r, (field, value) in enumerate(fields):
-            if field == _SECTION_FIELD:
-                item = QTableWidgetItem(value)
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-                item.setBackground(QBrush(_SECTION_BG))
-                item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
-                self._pick_table.setItem(r, 0, item)
-                self._pick_table.setSpan(r, 0, 1, 2)
-            else:
-                self._pick_table.setItem(r, 0, QTableWidgetItem(field))
-                self._pick_table.setItem(r, 1, QTableWidgetItem(value))
+            self._pick_table.setItem(r, 0, QTableWidgetItem(field))
+            self._pick_table.setItem(r, 1, QTableWidgetItem(value))
         log.info("picked %s[%d]", kind, idx)
 
     def _fields_for(self, kind: str, idx: int) -> list[tuple[str, str]]:
@@ -349,32 +281,19 @@ class HdMapWindow(QMainWindow):
 
     def _fields_a1(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.a1
-        seg = viz.segmentation
         x, y, z = d.points[idx]
-        jid = int(seg.node_junction_id[idx])
-        rows: list[tuple[str, str]] = [
+        return [
             ("ID", str(d.ids[idx])),
             ("NodeType", _coded(d.node_types[idx], A1Data.NODE_TYPE_LABEL)),
             ("ITS NodeID", _opt(d.its_node_ids[idx])),
             ("X (m)", f"{float(x):.3f}"),
             ("Y (m)", f"{float(y):.3f}"),
             ("Z (m)", f"{float(z):.3f}"),
-            (_SECTION_FIELD, "Segmentation"),
-            ("Junction", str(jid) if jid >= 0 else "-"),
         ]
-        if jid >= 0:
-            jn = seg.junctions[jid]
-            rows.append(("Junction interior groups", _id_set(jn.group_ids)))
-            rows.append(("Junction connected groups", _id_set(jn.connected_group_ids)))
-        return rows
 
     def _fields_a2(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.a2
-        seg = viz.segmentation
-        jid = int(seg.junction_id[idx])
-        rid = int(seg.road_id_per_link[idx])
-        uid = int(seg.u_turn_id_per_link[idx])
-        rows: list[tuple[str, str]] = [
+        return [
             ("ID", str(d.ids[idx])),
             ("RoadRank", _coded(d.road_ranks[idx], A2Data.ROAD_RANK_LABEL)),
             ("RoadType", _coded(d.road_types[idx], A2Data.ROAD_TYPE_LABEL)),
@@ -388,21 +307,7 @@ class HdMapWindow(QMainWindow):
             ("SectionID", _opt(d.section_ids[idx])),
             ("Length (m)", f"{float(d.lengths_m[idx]):.2f}"),
             ("ITS_LinkID", _opt(d.its_link_ids[idx])),
-            (_SECTION_FIELD, "Segmentation"),
-            ("Group", str(int(seg.group_id[idx]))),
-            ("Road", str(rid) if rid >= 0 else "-"),
-            ("Junction", str(jid) if jid >= 0 else "-"),
-            ("U-turn", str(uid) if uid >= 0 else "-"),
         ]
-        if jid >= 0:
-            jn = seg.junctions[jid]
-            rows.append(("Junction interior groups", _id_set(jn.group_ids)))
-            rows.append(("Junction connected groups", _id_set(jn.connected_group_ids)))
-        if uid >= 0:
-            ut = seg.u_turns[uid]
-            rows.append(("U-turn groups", _id_set(ut.group_ids)))
-            rows.append(("U-turn connected groups", _id_set(ut.connected_group_ids)))
-        return rows
 
     def _fields_a3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.a3
