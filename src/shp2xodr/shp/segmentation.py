@@ -24,6 +24,7 @@ from shp2xodr.shp.data import A2Data, B2Data
 log = logging.getLogger(__name__)
 
 _UTURN_LINK_TYPE = "6"
+_LATERAL_GROUP_LINK_TYPE = "6"
 _JUNCTION_LINK_TYPE = "1"
 _UTURN_MARKER_KIND = "502"
 
@@ -145,6 +146,21 @@ class Junction:
         return (
             SelectedField.scalar("Junction", self.id),
             SelectedField.list("Junction link ID", self.link_ids),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class LateralGroup:
+    """One lateral bundle of ordinary Type=6 A2 links."""
+
+    id: int
+    link_indices: tuple[int, ...]
+    link_ids: tuple[str, ...]
+
+    def selected_fields(self) -> tuple[SelectedField, ...]:
+        return (
+            SelectedField.scalar("Lateral group", self.id),
+            SelectedField.list("Lateral group link ID", self.link_ids),
         )
 
 
@@ -294,7 +310,59 @@ class JunctionStage(SegmentationStage):
         )
 
 
-SEGMENTATION_STAGES: tuple[type[SegmentationStage], ...] = (UTurnStage, JunctionStage)
+class LateralGroupStage(SegmentationStage):
+    """Group ordinary Type=6 A2 links by lateral R/L link references."""
+
+    id = "lateral_group"
+    label = "Lateral groups"
+    entity_label = "Lateral group"
+
+    def run(
+        self,
+        data: SegmentationInput,
+        previous_results: Mapping[str, StageResult],
+    ) -> StageResult:
+        entity_id_per_link = np.full(data.n_links, -1, dtype=np.int32)
+        candidate_rows = _lateral_group_candidate_rows(data, previous_results)
+        if not candidate_rows:
+            return StageResult(self.id, self.label, self.entity_label, (), entity_id_per_link)
+
+        row_to_candidate = {row_i: candidate_i for candidate_i, row_i in enumerate(candidate_rows)}
+        parent = np.arange(len(candidate_rows), dtype=np.int32)
+
+        _union_lateral_group_link_refs(data, candidate_rows, row_to_candidate, parent)
+
+        root_to_entity: dict[int, int] = {}
+        rows_by_entity: dict[int, list[int]] = {}
+        for row_i in candidate_rows:
+            root = _uf_find(parent, row_to_candidate[row_i])
+            entity_id = root_to_entity.get(root)
+            if entity_id is None:
+                entity_id = len(root_to_entity)
+                root_to_entity[root] = entity_id
+            entity_id_per_link[row_i] = np.int32(entity_id)
+            rows_by_entity.setdefault(entity_id, []).append(row_i)
+
+        entities = tuple(
+            LateralGroup(
+                id=entity_id,
+                link_indices=tuple(rows_by_entity[entity_id]),
+                link_ids=tuple(str(data.a2_ids[i]) for i in rows_by_entity[entity_id]),
+            )
+            for entity_id in range(len(rows_by_entity))
+        )
+        if entities:
+            log.info("LateralGroupStage: detected %d lateral group(s)", len(entities))
+        return StageResult(
+            self.id, self.label, self.entity_label, entities, entity_id_per_link
+        )
+
+
+SEGMENTATION_STAGES: tuple[type[SegmentationStage], ...] = (
+    UTurnStage,
+    JunctionStage,
+    LateralGroupStage,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -354,7 +422,42 @@ def _junction_candidate_rows(data: SegmentationInput) -> list[int]:
     ]
 
 
+def _lateral_group_candidate_rows(
+    data: SegmentationInput,
+    previous_results: Mapping[str, StageResult],
+) -> list[int]:
+    uturn_result = previous_results.get(UTurnStage.id)
+    uturn_entity_id_per_link = (
+        uturn_result.entity_id_per_link if uturn_result is not None else None
+    )
+    return [
+        i
+        for i, link_type in enumerate(data.a2_link_types)
+        if link_type == _LATERAL_GROUP_LINK_TYPE
+        and (
+            uturn_entity_id_per_link is None
+            or int(uturn_entity_id_per_link[i]) < 0
+        )
+    ]
+
+
 def _union_junction_link_refs(
+    data: SegmentationInput,
+    candidate_rows: list[int],
+    row_to_candidate: dict[int, int],
+    parent: NDArray[np.int32],
+) -> None:
+    id_to_row = {str(link_id): i for i, link_id in enumerate(data.a2_ids)}
+    for row_i in candidate_rows:
+        candidate_i = row_to_candidate[row_i]
+        for neighbour_id in (data.a2_r_link_ids[row_i], data.a2_l_link_ids[row_i]):
+            neighbour_row = id_to_row.get(str(neighbour_id))
+            if neighbour_row is None or neighbour_row not in row_to_candidate:
+                continue
+            _uf_union(parent, candidate_i, row_to_candidate[neighbour_row])
+
+
+def _union_lateral_group_link_refs(
     data: SegmentationInput,
     candidate_rows: list[int],
     row_to_candidate: dict[int, int],

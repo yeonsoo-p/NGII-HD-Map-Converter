@@ -46,6 +46,8 @@ code registry currently runs:
 - `JunctionStage`: connected components of Type 1 A2 links, joined by
   R/L_LinkID references, same-plane geometric intersections, or near same-plane
   component proximity within the configured gap distance.
+- `LateralGroupStage`: ordinary Type 6 A2 links grouped by R/L_LinkID lateral
+  references, excluding links already classified as U-turns.
 
 Adding or removing a stage is done in the code registry; the GUI selector is
 generated from that registry.

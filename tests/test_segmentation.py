@@ -3,15 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pyvista as pv
 from hydra import compose, initialize_config_dir
 from hydra.utils import to_absolute_path
 from numpy.typing import NDArray
 
-from shp2xodr.__main__ import _build_seg_cfg
+from shp2xodr.__main__ import _build_seg_cfg, _build_viz_cfg
 from shp2xodr.shp.data import A2Data, B2Data
 from shp2xodr.shp.gui import _field, _flatten_selected_sections, _raw_section, _SelectedTableRow
 from shp2xodr.shp.segmentation import (
     JunctionStage,
+    LateralGroupStage,
     Segmentation,
     SegmentationConfig,
     SegmentationInput,
@@ -20,6 +22,7 @@ from shp2xodr.shp.segmentation import (
     UTurnStage,
     segmentation_level_labels,
 )
+from shp2xodr.shp.viz import HdMapViz
 
 
 def _str_array(values: list[str]) -> NDArray[np.str_]:
@@ -226,14 +229,100 @@ def test_junction_stage_proximity_merge_respects_distance() -> None:
     assert len(result.entities) == 2
 
 
+def test_lateral_group_stage_unions_type6_links_through_r_linkid() -> None:
+    data = _input(
+        a2_ids=["a", "b"],
+        a2_link_types=["6", "6"],
+        a2_r_link_ids=["b", ""],
+        a2_polylines=[
+            _line([(0, 0, 0), (10, 0, 0)]),
+            _line([(0, 4, 0), (10, 4, 0)]),
+        ],
+    )
+
+    result = LateralGroupStage().run(data, {})
+
+    assert result.entity_id_per_link.tolist() == [0, 0]
+    assert len(result.entities) == 1
+    assert result.entities[0].link_ids == ("a", "b")
+
+
+def test_lateral_group_stage_unions_type6_links_through_l_linkid() -> None:
+    data = _input(
+        a2_ids=["a", "b"],
+        a2_link_types=["6", "6"],
+        a2_l_link_ids=["", "a"],
+        a2_polylines=[
+            _line([(0, 0, 0), (10, 0, 0)]),
+            _line([(0, 4, 0), (10, 4, 0)]),
+        ],
+    )
+
+    result = LateralGroupStage().run(data, {})
+
+    assert result.entity_id_per_link.tolist() == [0, 0]
+    assert len(result.entities) == 1
+    assert result.entities[0].selected_fields() == (
+        SelectedField.scalar("Lateral group", 0),
+        SelectedField.list("Lateral group link ID", ("a", "b")),
+    )
+
+
+def test_lateral_group_stage_ignores_non_candidates_and_bad_refs() -> None:
+    data = _input(
+        a2_ids=["type6", "type1", "solo"],
+        a2_link_types=["6", "1", "6"],
+        a2_r_link_ids=["type1", "type6", "missing"],
+        a2_l_link_ids=["missing", "", ""],
+        a2_polylines=[
+            _line([(0, 0, 0), (10, 0, 0)]),
+            _line([(0, 4, 0), (10, 4, 0)]),
+            _line([(0, 8, 0), (10, 8, 0)]),
+        ],
+    )
+
+    result = LateralGroupStage().run(data, {})
+
+    assert result.entity_id_per_link.tolist() == [0, -1, 1]
+    assert len(result.entities) == 2
+    assert result.entities[0].link_ids == ("type6",)
+    assert result.entities[1].link_ids == ("solo",)
+
+
+def test_lateral_group_stage_excludes_links_already_classified_as_uturns() -> None:
+    data = _input(
+        a2_ids=["uturn", "ordinary"],
+        a2_link_types=["6", "6"],
+        a2_r_link_ids=["ordinary", ""],
+        a2_polylines=[
+            _line([(0, 0, 0), (10, 0, 0)]),
+            _line([(0, 4, 0), (10, 4, 0)]),
+        ],
+        b2_ids=["marker"],
+        b2_kinds=["502"],
+        b2_polylines=[_line([(5, -1, 0), (5, 1, 0)])],
+    )
+    uturn_result = UTurnStage().run(data, {})
+
+    result = LateralGroupStage().run(data, {"uturn": uturn_result})
+
+    assert uturn_result.entity_id_per_link.tolist() == [0, -1]
+    assert result.entity_id_per_link.tolist() == [-1, 0]
+    assert len(result.entities) == 1
+    assert result.entities[0].link_ids == ("ordinary",)
+
+
 def test_stage_registry_and_selected_fields_are_incremental_contract() -> None:
     data = _input(
-        a2_ids=["uturn", "j1", "j2"],
-        a2_link_types=["6", "1", "1"],
+        a2_ids=["uturn", "j1", "j2", "g1", "g2"],
+        a2_link_types=["6", "1", "1", "6", "6"],
+        a2_r_link_ids=["", "", "", "g2", ""],
         a2_polylines=[
             _line([(0, 0, 0), (10, 0, 0)]),
             _line([(0, 10, 0), (10, 10, 0)]),
             _line([(5, 5, 0), (5, 15, 0)]),
+            _line([(0, 20, 0), (10, 20, 0)]),
+            _line([(0, 24, 0), (10, 24, 0)]),
         ],
         b2_ids=["marker"],
         b2_kinds=["502"],
@@ -241,12 +330,17 @@ def test_stage_registry_and_selected_fields_are_incremental_contract() -> None:
     )
     uturn_result = UTurnStage().run(data, {})
     junction_result = JunctionStage().run(data, {"uturn": uturn_result})
-    segmentation = Segmentation(stage_results=(uturn_result, junction_result))
+    lateral_result = LateralGroupStage().run(
+        data,
+        {"uturn": uturn_result, "junction": junction_result},
+    )
+    segmentation = Segmentation(stage_results=(uturn_result, junction_result, lateral_result))
 
-    assert segmentation_level_labels() == ("Raw", "U-turns", "Junctions")
-    assert [result.stage_id for result in segmentation.active_results(2)] == [
+    assert segmentation_level_labels() == ("Raw", "U-turns", "Junctions", "Lateral groups")
+    assert [result.stage_id for result in segmentation.active_results(3)] == [
         "uturn",
         "junction",
+        "lateral_group",
     ]
     assert segmentation.selected_fields_for_link(0) == (
         SelectedField.scalar("U-turn", 0),
@@ -255,6 +349,10 @@ def test_stage_registry_and_selected_fields_are_incremental_contract() -> None:
     assert segmentation.selected_fields_for_link(1) == (
         SelectedField.scalar("Junction", 0),
         SelectedField.list("Junction link ID", ("j1", "j2")),
+    )
+    assert segmentation.selected_fields_for_link(3) == (
+        SelectedField.scalar("Lateral group", 0),
+        SelectedField.list("Lateral group link ID", ("g1", "g2")),
     )
 
 
@@ -268,6 +366,7 @@ def test_selected_table_sections_and_list_values_flatten_to_multiple_rows() -> N
                     SelectedField.scalar("Junction", 0),
                     SelectedField.list("Junction link ID", ("j1", "j2")),
                     SelectedField.list("U-turn marker ID", ("m1", "m2")),
+                    SelectedField.list("Lateral group link ID", ("g1", "g2")),
                 ),
             ),
         )
@@ -283,6 +382,8 @@ def test_selected_table_sections_and_list_values_flatten_to_multiple_rows() -> N
         _SelectedTableRow("Junction link ID", "j2"),
         _SelectedTableRow("U-turn marker ID", "m1"),
         _SelectedTableRow("U-turn marker ID", "m2"),
+        _SelectedTableRow("Lateral group link ID", "g1"),
+        _SelectedTableRow("Lateral group link ID", "g2"),
     ]
 
 
@@ -301,6 +402,33 @@ def test_configured_section_edge_case_links_share_one_junction_entity() -> None:
 
     assert junction_ids == {next(iter(junction_ids))}
     assert next(iter(junction_ids)) >= 0
+
+
+def test_configured_section_headless_viz_adds_lateral_group_cell_data() -> None:
+    config_dir = str(Path("conf").resolve())
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        cfg = compose(config_name="config")
+    shp_dir = Path(to_absolute_path(str(cfg.shp_dir))).expanduser()
+    plotter = pv.Plotter(off_screen=True)
+    viz = HdMapViz(
+        shp_dir,
+        seg_cfg=_build_seg_cfg(cfg),
+        viz_cfg=_build_viz_cfg(cfg),
+        plotter=plotter,
+    )
+    try:
+        viz.attach()
+        viz.set_segmentation_level(3)
+        a2_cell_data = viz.line_layers[0].poly.cell_data
+
+        assert "link_id" in a2_cell_data
+        assert "uturn_id" in a2_cell_data
+        assert "junction_id" in a2_cell_data
+        assert "lateral_group_id" in a2_cell_data
+        assert np.any(a2_cell_data["lateral_group_id"] >= 0)
+    finally:
+        viz.detach()
+        plotter.close()
 
 
 def test_app_owned_select_naming_is_clean() -> None:
