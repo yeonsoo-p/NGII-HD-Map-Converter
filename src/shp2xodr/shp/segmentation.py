@@ -36,7 +36,7 @@ import numpy as np
 import shapely
 from numpy.typing import NDArray
 
-from shp2xodr.shp.data import A1Data, A2Data
+from shp2xodr.shp.data import A1Data, A2Data, B2Data
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,79 @@ _INTERIOR_LINK_TYPE = "1"
 # to junction-interior. Manual §9.4.2 documents the case explicitly under
 # "교차로 내 예외(일반주행차로)": a Type=6 lane traversing a 평면교차로.
 _PROMOTABLE_LINK_TYPE = "6"
+
+# NGII B2 Kind = "502": 유턴구역선 ("U-turn zone line"). Manual §9.4.7
+# Table 9.45. Drawn alongside the dotted-centerline section of every
+# legitimate U-turn lane; absent from ordinary plane/Y intersections.
+# Used by _detect_uturn_groups to flag U-turn groups so the within-
+# junction promotion rule (§9.4.2 exception case) doesn't mis-fire on
+# them.
+_UTURN_ZONE_B2_KIND = "502"
+
+
+@dataclass(slots=True, frozen=True)
+class Group:
+    """Lane bundle: a maximal set of A2 links sharing one lane-bundle.
+
+    ``link_indices`` are row indices into the A2_LINK data — parallel
+    to ``a2.ids[i]``. Base entity below :class:`Junction` / :class:`UTurn`
+    / :class:`Road` in the hierarchy.
+    """
+
+    id: int
+    link_indices: tuple[int, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class Junction:
+    """A junction component: a cluster of junction-role A1 nodes.
+
+    Same hierarchy level as :class:`UTurn`; a :class:`Group` cannot be
+    both junction-interior and U-turn simultaneously.
+
+    ``node_indices`` are A1_NODE row indices for the junction-role
+    nodes in this component. ``group_ids`` are the interior Groups
+    (``group_junction[b] == self.id``). ``connected_group_ids`` are
+    the mainline Groups whose from-side or to-side endpoint A1 nodes
+    lie in this junction — boundary roads attaching to the junction
+    from outside.
+    """
+
+    id: int
+    node_indices: tuple[int, ...]
+    group_ids: frozenset[int]
+    connected_group_ids: frozenset[int]
+
+
+@dataclass(slots=True, frozen=True)
+class UTurn:
+    """A U-turn entity. Same hierarchy level as :class:`Junction`.
+
+    ``group_ids`` are the U-turn-flagged Group(s) that constitute the
+    U-turn (typically size 1 — the half-circle lane bundle, per NGII
+    manual §9.4.2). ``connected_group_ids`` are the mainline Groups
+    bridged by the U-turn — typically the two parallel-opposite Groups
+    whose flows the U-turn reverses between.
+    """
+
+    id: int
+    group_ids: frozenset[int]
+    connected_group_ids: frozenset[int]
+
+
+@dataclass(slots=True, frozen=True)
+class Road:
+    """An aggregation of mainline Groups ("group of Groups").
+
+    Currently 1:1 with a mainline Group (each mainline Group becomes
+    one Road with ``len(group_ids) == 1``). The plural type is
+    intentional — future passes may aggregate multiple Groups into one
+    Road across lane-section breaks, bridges, or RoadNo-connected
+    chains across junctions.
+    """
+
+    id: int
+    group_ids: frozenset[int]
 
 
 @dataclass(slots=True, frozen=True)
@@ -109,8 +182,17 @@ class Segmentation:
 
     ``road_id_per_link`` carries a dense mainline-only id ``0..n_main-1`` on
     each mainline row and ``-1`` on interior rows — a flat projection of
-    ``group_id`` for the viz's road-palette layer. There is no object graph;
-    consumers that need typed entities build them from these arrays.
+    ``group_id`` for the viz's road-palette layer. ``u_turn_id_per_link``
+    is the same shape for U-turn-flagged groups (the B2 Kind=502 detection
+    result); ``-1`` on non-U-turn rows, dense id otherwise. UTurn and Road
+    live at different hierarchies, so a U-turn link carries both a
+    ``road_id_per_link >= 0`` (it remains mainline) and a
+    ``u_turn_id_per_link >= 0``.
+
+    ``groups`` / ``junctions`` / ``u_turns`` / ``roads`` are the typed
+    object views over the arrays — indexed by their respective dense ids.
+    :class:`Junction` and :class:`UTurn` each expose
+    ``connected_group_ids`` for graph navigation without recomputing.
     """
 
     group_id: NDArray[np.int32]
@@ -120,6 +202,11 @@ class Segmentation:
     group_pred_junctions: tuple[frozenset[int], ...]
     group_succ_junctions: tuple[frozenset[int], ...]
     road_id_per_link: NDArray[np.int32]
+    u_turn_id_per_link: NDArray[np.int32]
+    groups: tuple[Group, ...]
+    junctions: tuple[Junction, ...]
+    u_turns: tuple[UTurn, ...]
+    roads: tuple[Road, ...]
 
     # ---- Disjoint-set helpers -----------------------------------------------
     # Stateless: each caller owns its own ``parent = np.arange(n, np.int32)``.
@@ -162,9 +249,11 @@ class Segmentation:
         """
         a1 = A1Data(shp_dir)
         a2 = A2Data(shp_dir)
+        b2 = B2Data(shp_dir)
         node_role = cls._classify_nodes(a1, a2)
 
         group_id = cls._group_links(a2, node_role)
+        group_is_uturn = cls._detect_uturn_groups(a2, b2, group_id)
         junction_id, nid_to_jid = cls._cluster_junctions(
             a1,
             a2,
@@ -178,7 +267,13 @@ class Segmentation:
         )
         junction_id, group_junction, group_pred, group_succ = (
             cls._promote_within_junction_mainline_groups(
-                a2, group_id, junction_id, group_junction, group_pred, group_succ
+                a2,
+                group_id,
+                junction_id,
+                group_junction,
+                group_pred,
+                group_succ,
+                group_is_uturn,
             )
         )
 
@@ -194,7 +289,36 @@ class Segmentation:
             group_junction[group_id] == -1, group_to_road[group_id], -1
         ).astype(np.int32)
 
-        cls._log_summary(a2, group_id, road_id_per_link, node_junction_id, node_role)
+        # Dense U-turn id per link, parallel to road_id_per_link. UTurn lives
+        # at the Junction hierarchy level (not Road), so a U-turn link
+        # carries both a road id (it remains mainline) and a u_turn id.
+        # UTurn ⊥ Junction-interior at the Group level: any U-turn-flagged
+        # Group whose group_junction != -1 is dropped (these are LinkType=1
+        # interior paths whose polyline incidentally crossed a B2 502 marker).
+        group_is_uturn_main = group_is_uturn & (group_junction == -1)
+        group_to_uturn = np.full(n_groups, -1, dtype=np.int32)
+        uturn_groups = np.flatnonzero(group_is_uturn_main).astype(np.int32)
+        group_to_uturn[uturn_groups] = np.arange(len(uturn_groups), dtype=np.int32)
+        u_turn_id_per_link = np.where(
+            group_is_uturn_main[group_id], group_to_uturn[group_id], -1
+        ).astype(np.int32)
+
+        # Typed object graph over the arrays.
+        groups = cls._build_groups(group_id)
+        junctions = cls._build_junctions(
+            node_junction_id, group_junction, group_is_uturn_main, group_pred, group_succ
+        )
+        u_turns = cls._build_u_turns(a2, group_id, group_is_uturn, group_junction)
+        roads = cls._build_roads(road_id_per_link, group_id)
+
+        cls._log_summary(
+            a2,
+            group_id,
+            road_id_per_link,
+            node_junction_id,
+            u_turn_id_per_link,
+            node_role,
+        )
         return cls(
             group_id=group_id,
             junction_id=junction_id,
@@ -203,6 +327,11 @@ class Segmentation:
             group_pred_junctions=group_pred,
             group_succ_junctions=group_succ,
             road_id_per_link=road_id_per_link,
+            u_turn_id_per_link=u_turn_id_per_link,
+            groups=groups,
+            junctions=junctions,
+            u_turns=u_turns,
+            roads=roads,
         )
 
     # ---- Pipeline steps -------------------------------------------------------
@@ -300,6 +429,65 @@ class Segmentation:
                 root_to_bid[root] = bid
             group_ids[i] = bid
         return group_ids
+
+    @staticmethod
+    def _detect_uturn_groups(
+        a2: A2Data,
+        b2: B2Data,
+        group_id: NDArray[np.int32],
+    ) -> NDArray[np.bool_]:
+        """Per-group U-turn flag, keyed off the B2 유턴구역선 marker.
+
+        A group is a U-turn iff at least one of its A2 polylines
+        intersects (in XY plan) a B2 line tagged ``Kind = "502"``
+        (유턴구역선, NGII manual §9.4.7 Table 9.45). 502 is the spec-
+        defined marker for U-turn-allowed zones; the planar
+        ``intersects`` predicate is a threshold-free topological check
+        (the polylines either cross / touch or they don't). Sharp non-
+        U-turn Type=6 turns never receive a 502 marker, so they cannot
+        be falsely flagged.
+
+        Consumed by :meth:`_promote_within_junction_mainline_groups`
+        to short-circuit the §9.4.2 "교차로 내 예외(일반주행차로)"
+        promotion on real U-turns whose endpoint A1 nodes happen to
+        share a junction component (the common bug mode in NGII data
+        where both endpoint nodes are NodeType=99 with degree > 1).
+
+        Polylines with fewer than 2 vertices are skipped (degenerate
+        rows).
+        """
+        n_links = len(a2.ids)
+        n_groups = int(group_id.max()) + 1 if len(group_id) else 0
+        group_is_uturn = np.zeros(n_groups, dtype=bool)
+
+        zone_lines = [
+            shapely.LineString(b2.polylines[j][:, :2])
+            for j in range(len(b2.ids))
+            if b2.kinds[j] == _UTURN_ZONE_B2_KIND and len(b2.polylines[j]) >= 2
+        ]
+        if not zone_lines:
+            return group_is_uturn
+
+        tree = shapely.STRtree(zone_lines)
+        n_links_flagged = 0
+        for i in range(n_links):
+            poly = a2.polylines[i]
+            if len(poly) < 2:
+                continue
+            link_line = shapely.LineString(poly[:, :2])
+            if len(tree.query(link_line, predicate="intersects")) > 0:
+                group_is_uturn[int(group_id[i])] = True
+                n_links_flagged += 1
+
+        n_uturn_groups = int(group_is_uturn.sum())
+        if n_uturn_groups:
+            log.info(
+                "_detect_uturn_groups: %d A2 link(s) intersect a B2 502 "
+                "유턴구역선 -> %d U-turn group(s) flagged",
+                n_links_flagged,
+                n_uturn_groups,
+            )
+        return group_is_uturn
 
     @staticmethod
     def _cluster_junctions(
@@ -745,6 +933,7 @@ class Segmentation:
         group_junction: NDArray[np.int32],
         group_pred: tuple[frozenset[int], ...],
         group_succ: tuple[frozenset[int], ...],
+        group_is_uturn: NDArray[np.bool_],
     ) -> tuple[
         NDArray[np.int32],
         NDArray[np.int32],
@@ -766,6 +955,13 @@ class Segmentation:
         Only LinkType=6 rows are promoted; other LinkTypes (bus 4, variable
         5, toll 2/3, rest-area 7-12, ramp 13/14) carry domain semantics
         that would be silently erased by junction-interior reclassification.
+
+        Groups flagged ``group_is_uturn`` are skipped — a real U-turn lane
+        (manual §9.4.2 "유턴") has the same ``pred ∩ succ ≠ ∅`` signature
+        as the 예외 case in NGII data (its two endpoint A1 nodes are
+        NodeType=99 with degree > 1, get promoted to JUNCTION role, and
+        get unioned into the surrounding 평면교차로's junction component).
+        The §9.4.7 유턴구역선 (B2 Kind=502) marker distinguishes them.
 
         Returns the four arrays/tuples updated in place semantics:
         ``junction_id`` and ``group_junction`` gain the promoted ids;
@@ -791,7 +987,7 @@ class Segmentation:
             if not all(link_types[i] == _PROMOTABLE_LINK_TYPE for i in rows):
                 continue
             shared = pred_list[b] & succ_list[b]
-            if not shared:
+            if not shared or bool(group_is_uturn[b]):
                 continue
             j = min(shared)
             for i in rows:
@@ -828,24 +1024,183 @@ class Segmentation:
         return node_junction_id
 
     @staticmethod
+    def _build_groups(group_id: NDArray[np.int32]) -> tuple[Group, ...]:
+        """Per-group :class:`Group` view: id + A2 row indices it owns."""
+        n_groups = int(group_id.max()) + 1 if len(group_id) else 0
+        rows_by_group: dict[int, list[int]] = {}
+        for i, b in enumerate(group_id):
+            rows_by_group.setdefault(int(b), []).append(i)
+        return tuple(
+            Group(id=b, link_indices=tuple(rows_by_group.get(b, ()))) for b in range(n_groups)
+        )
+
+    @staticmethod
+    def _build_junctions(
+        node_junction_id: NDArray[np.int32],
+        group_junction: NDArray[np.int32],
+        group_is_uturn_main: NDArray[np.bool_],
+        group_pred: tuple[frozenset[int], ...],
+        group_succ: tuple[frozenset[int], ...],
+    ) -> tuple[Junction, ...]:
+        """Per-junction :class:`Junction` view: nodes, interior groups,
+        connected mainline groups (boundary).
+
+        UTurn lives at the same hierarchy level as Junction, so U-turn
+        Groups are excluded from ``connected_group_ids`` even though
+        their ``group_junction == -1`` — a U-turn that bridges two
+        mainline Groups across a junction is not itself a "boundary
+        road" attaching to the junction.
+        """
+        n_junctions = int(node_junction_id.max()) + 1 if len(node_junction_id) else 0
+        if n_junctions == 0:
+            return ()
+
+        nodes_by_j: dict[int, list[int]] = {}
+        for i, jid in enumerate(node_junction_id):
+            j = int(jid)
+            if j >= 0:
+                nodes_by_j.setdefault(j, []).append(i)
+
+        interior_by_j: dict[int, set[int]] = {}
+        for b, jid in enumerate(group_junction):
+            j = int(jid)
+            if j >= 0:
+                interior_by_j.setdefault(j, set()).add(b)
+
+        connected_by_j: dict[int, set[int]] = {}
+        for b in range(len(group_junction)):
+            if int(group_junction[b]) != -1 or bool(group_is_uturn_main[b]):
+                continue
+            for j in group_pred[b] | group_succ[b]:
+                connected_by_j.setdefault(int(j), set()).add(b)
+
+        return tuple(
+            Junction(
+                id=j,
+                node_indices=tuple(nodes_by_j.get(j, ())),
+                group_ids=frozenset(interior_by_j.get(j, set())),
+                connected_group_ids=frozenset(connected_by_j.get(j, set())),
+            )
+            for j in range(n_junctions)
+        )
+
+    @staticmethod
+    def _build_u_turns(
+        a2: A2Data,
+        group_id: NDArray[np.int32],
+        group_is_uturn: NDArray[np.bool_],
+        group_junction: NDArray[np.int32],
+    ) -> tuple[UTurn, ...]:
+        """Per-U-turn :class:`UTurn` view: underlying Group(s) + the
+        parallel-opposite mainline Groups bridged by the U-turn.
+
+        UTurn and Junction-interior are mutually exclusive at the Group
+        level, so any U-turn-flagged Group with ``group_junction != -1``
+        is dropped here (these arise as harmless false positives from
+        the B2 502 detection — LinkType=1 interior paths whose polyline
+        crosses a 유턴구역선 marker).
+
+        For each surviving U-turn Group ``b_u``, the "connected" Groups
+        are found by scanning the A2 rows in ``b_u``: their from-node
+        ids point at OTHER A2 links terminating there (whose group is
+        the U-turn's pred-side mainline group), and their to-node ids
+        point at OTHER A2 links originating there (the succ-side
+        mainline group). Only mainline Groups (``group_junction == -1``)
+        other than ``b_u`` itself qualify as connected.
+        """
+        uturn_group_ids = [
+            int(b)
+            for b in np.flatnonzero(group_is_uturn).astype(np.int32)
+            if int(group_junction[int(b)]) == -1
+        ]
+        if not uturn_group_ids:
+            return ()
+
+        # nid -> list of A2 row indices terminating at / originating from it.
+        to_by_nid: dict[str, list[int]] = {}
+        from_by_nid: dict[str, list[int]] = {}
+        for i in range(len(a2.ids)):
+            to_by_nid.setdefault(str(a2.to_node_ids[i]), []).append(i)
+            from_by_nid.setdefault(str(a2.from_node_ids[i]), []).append(i)
+
+        rows_by_group: dict[int, list[int]] = {}
+        for i, b in enumerate(group_id):
+            rows_by_group.setdefault(int(b), []).append(i)
+
+        u_turns: list[UTurn] = []
+        for uid, b_u in enumerate(uturn_group_ids):
+            connected: set[int] = set()
+            for i in rows_by_group.get(b_u, ()):
+                from_nid = str(a2.from_node_ids[i])
+                to_nid = str(a2.to_node_ids[i])
+                # Mainline links arriving at the U-turn's from-node:
+                for j in to_by_nid.get(from_nid, ()):
+                    other_b = int(group_id[j])
+                    if other_b == b_u:
+                        continue
+                    if int(group_junction[other_b]) == -1:
+                        connected.add(other_b)
+                # Mainline links departing from the U-turn's to-node:
+                for j in from_by_nid.get(to_nid, ()):
+                    other_b = int(group_id[j])
+                    if other_b == b_u:
+                        continue
+                    if int(group_junction[other_b]) == -1:
+                        connected.add(other_b)
+            u_turns.append(
+                UTurn(
+                    id=uid,
+                    group_ids=frozenset({b_u}),
+                    connected_group_ids=frozenset(connected),
+                )
+            )
+        return tuple(u_turns)
+
+    @staticmethod
+    def _build_roads(
+        road_id_per_link: NDArray[np.int32],
+        group_id: NDArray[np.int32],
+    ) -> tuple[Road, ...]:
+        """Per-road :class:`Road` view: the Group(s) carrying this road id.
+
+        Currently each Road has exactly one Group (1:1 mapping built in
+        :meth:`from_shp_dir`). The plural ``group_ids`` field reserves
+        room for future Road = chain-of-Groups semantics.
+        """
+        if not (road_id_per_link >= 0).any():
+            return ()
+        n_roads = int(road_id_per_link.max()) + 1
+        groups_by_road: dict[int, set[int]] = {}
+        for i, rid in enumerate(road_id_per_link):
+            r = int(rid)
+            if r >= 0:
+                groups_by_road.setdefault(r, set()).add(int(group_id[i]))
+        return tuple(
+            Road(id=r, group_ids=frozenset(groups_by_road.get(r, set()))) for r in range(n_roads)
+        )
+
+    @staticmethod
     def _log_summary(
         a2: A2Data,
         group_id: NDArray[np.int32],
         road_id_per_link: NDArray[np.int32],
         node_junction_id: NDArray[np.int32],
+        u_turn_id_per_link: NDArray[np.int32],
         node_role: dict[str, NodeRole],
     ) -> None:
         n_a2 = len(a2.ids)
         n_groups = int(group_id.max()) + 1 if len(group_id) else 0
         n_mainline_groups = int(road_id_per_link.max()) + 1 if (road_id_per_link >= 0).any() else 0
         n_junctions = int(node_junction_id.max()) + 1 if len(node_junction_id) else 0
+        n_uturn_groups = int(u_turn_id_per_link.max()) + 1 if (u_turn_id_per_link >= 0).any() else 0
         n_cuts = sum(1 for r in node_role.values() if r is NodeRole.JUNCTION)
         log.info(
-            "segmentation: %d links -> %d groups (%d mainline), %d junctions "
+            "segmentation: %d links -> %d groups (%d mainline, %d uturn), %d junctions "
             "(cut at %d / %d nodes)",
             n_a2,
             n_groups,
             n_mainline_groups,
+            n_uturn_groups,
             n_junctions,
             n_cuts,
             len(node_role),

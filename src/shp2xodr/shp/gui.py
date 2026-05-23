@@ -97,6 +97,11 @@ def _opt(value: str) -> str:
     return value if value else "-"
 
 
+def _id_set(ids: frozenset[int] | set[int]) -> str:
+    """Render a sorted comma-separated list of ids, or ``"-"`` if empty."""
+    return ", ".join(str(i) for i in sorted(ids)) if ids else "-"
+
+
 class HdMapWindow(QMainWindow):
     """Main window hosting the 3D scene and the inspector dock."""
 
@@ -347,7 +352,7 @@ class HdMapWindow(QMainWindow):
         seg = viz.segmentation
         x, y, z = d.points[idx]
         jid = int(seg.node_junction_id[idx])
-        return [
+        rows: list[tuple[str, str]] = [
             ("ID", str(d.ids[idx])),
             ("NodeType", _coded(d.node_types[idx], A1Data.NODE_TYPE_LABEL)),
             ("ITS NodeID", _opt(d.its_node_ids[idx])),
@@ -357,13 +362,19 @@ class HdMapWindow(QMainWindow):
             (_SECTION_FIELD, "Segmentation"),
             ("Junction", str(jid) if jid >= 0 else "-"),
         ]
+        if jid >= 0:
+            jn = seg.junctions[jid]
+            rows.append(("Junction interior groups", _id_set(jn.group_ids)))
+            rows.append(("Junction connected groups", _id_set(jn.connected_group_ids)))
+        return rows
 
     def _fields_a2(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.a2
         seg = viz.segmentation
         jid = int(seg.junction_id[idx])
         rid = int(seg.road_id_per_link[idx])
-        return [
+        uid = int(seg.u_turn_id_per_link[idx])
+        rows: list[tuple[str, str]] = [
             ("ID", str(d.ids[idx])),
             ("RoadRank", _coded(d.road_ranks[idx], A2Data.ROAD_RANK_LABEL)),
             ("RoadType", _coded(d.road_types[idx], A2Data.ROAD_TYPE_LABEL)),
@@ -381,7 +392,17 @@ class HdMapWindow(QMainWindow):
             ("Group", str(int(seg.group_id[idx]))),
             ("Road", str(rid) if rid >= 0 else "-"),
             ("Junction", str(jid) if jid >= 0 else "-"),
+            ("U-turn", str(uid) if uid >= 0 else "-"),
         ]
+        if jid >= 0:
+            jn = seg.junctions[jid]
+            rows.append(("Junction interior groups", _id_set(jn.group_ids)))
+            rows.append(("Junction connected groups", _id_set(jn.connected_group_ids)))
+        if uid >= 0:
+            ut = seg.u_turns[uid]
+            rows.append(("U-turn groups", _id_set(ut.group_ids)))
+            rows.append(("U-turn connected groups", _id_set(ut.connected_group_ids)))
+        return rows
 
     def _fields_a3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.a3

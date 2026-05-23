@@ -63,6 +63,6 @@ reads. The steps run in this order:
 6. **Promote within-junction mainline groups**
    ([`_promote_within_junction_mainline_groups`](src/shp2xodr/shp/segmentation.py)) —
    any `LinkType=6 일반주행차로` group whose pred and succ both touch the
-   *same* junction is the NGII "exception lane" case (manual §9.4.2,
+   *same* group is the NGII "exception lane" case (manual §9.4.2,
    "교차로 내 예외(일반주행차로)"). Reclassify it as interior of that
-   junction instead of letting it split the intersection into two roads.
+   junction instead.
