@@ -413,29 +413,15 @@ class HdMapWindow(QMainWindow):
 
     def _fields_b2(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:
         d = viz.b2
-        seg = viz.segmentation
         type_code = str(d.types[idx])
         color_label = B2Data.TYPE_COLOR_LABEL.get(type_code[:1], "")
         type_text = f"{type_code} ({color_label})" if color_label else type_code
-        r_grp = int(seg.b2_r_group[idx])
-        l_grp = int(seg.b2_l_group[idx])
-        r_road = int(seg.b2_r_road[idx])
-        l_road = int(seg.b2_l_road[idx])
-        r_jct = int(seg.b2_r_junction[idx])
-        l_jct = int(seg.b2_l_junction[idx])
         return [
             ("ID", str(d.ids[idx])),
             ("Type", type_text),
             ("Kind", _coded(d.kinds[idx], B2Data.KIND_LABEL)),
             ("R_LinkID", _opt(d.r_link_ids[idx])),
             ("L_LinkID", _opt(d.l_link_ids[idx])),
-            (_SECTION_FIELD, "Segmentation"),
-            ("R Group", str(r_grp) if r_grp >= 0 else "-"),
-            ("R Road", str(r_road) if r_road >= 0 else "-"),
-            ("R Junction", str(r_jct) if r_jct >= 0 else "-"),
-            ("L Group", str(l_grp) if l_grp >= 0 else "-"),
-            ("L Road", str(l_road) if l_road >= 0 else "-"),
-            ("L Junction", str(l_jct) if l_jct >= 0 else "-"),
         ]
 
     def _fields_c3(self, viz: HdMapViz, idx: int) -> list[tuple[str, str]]:

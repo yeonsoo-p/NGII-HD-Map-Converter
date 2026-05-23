@@ -15,16 +15,16 @@ methods so the GUI can wire them to dock widgets:
 
 Abstraction levels (passed to :meth:`set_abstraction_level`):
 
-* ``1`` — None. A2 uniform neutral; B2 by paint color; everything else
-  by natural NGII codes.
+* ``1`` — None. A2 uniform neutral; everything else by natural NGII codes.
 * ``2`` — Group. A2 colored per SHP group (lateral lane cluster within a
-  road segment); B2 inherits its bound group's color (paint code ignored).
-* ``3`` — Junction. Only junction-interior A2 cells and junction-bound B2
-  cells carry a palette color; mainline-only cells fall back to the
-  neutral A2 fill.
-* ``4`` — Road. Only mainline A2 cells and road-bound B2 cells carry a
-  palette color; junction-interior cells fall back to the neutral A2
-  fill.
+  road segment).
+* ``3`` — Junction. Junction-interior A2 cells carry the junction
+  palette; mainline cells fall back to the neutral A2 fill.
+* ``4`` — Road. Mainline A2 cells carry the road palette; junction-
+  interior cells fall back to the neutral A2 fill.
+
+B2 always renders by paint color regardless of level — segmentation no
+longer binds B2 rows to A2 entities, so the level only affects A2.
 """
 
 from __future__ import annotations
@@ -374,9 +374,12 @@ class HdMapViz:
             int(self.segmentation.node_junction_id.max()) + 1,
             seed=viz_cfg.junction_palette_seed,
         )
-        self.road_palette = _random_palette(
-            len(self.segmentation.roads), seed=viz_cfg.road_palette_seed
+        n_roads = (
+            int(self.segmentation.road_id_per_link.max()) + 1
+            if (self.segmentation.road_id_per_link >= 0).any()
+            else 0
         )
+        self.road_palette = _random_palette(n_roads, seed=viz_cfg.road_palette_seed)
 
         # Pickable layer wrappers. Order in the line-layer tuple is also the
         # shift-click priority order (first match wins).
@@ -490,53 +493,22 @@ class HdMapViz:
         raise ValueError(level)
 
     def _b2_cell_colors_at(self, level: int) -> NDArray[np.uint8]:
-        """RGB per B2 row at the requested abstraction level.
+        """RGB per B2 row — always by paint code, at every abstraction level.
 
-        * Level 1 — paint code (current B2 palette).
-        * Level 2 — bound group's color; R side wins, falls back to L; both
-          unbound rows fall back to ``viz_cfg.a2_uniform_rgb``.
-        * Level 3 — bound junction's color (R wins, L is fallback); rows
-          bound only to mainline cells stay neutral. ``b2_*_junction`` is
-          ``-1`` for mainline-bound sides by construction, so the mask
-          naturally skips them.
-        * Level 4 — bound road's color (R wins, L is fallback); rows bound
-          only to junction-interior cells stay neutral. A centerline
-          between two bidirectionally-merged groups paints the same color
-          as the road, which is by design: the visual merge signals one
-          OpenDRIVE road.
+        Segmentation no longer binds B2 rows to A2 groups / junctions /
+        roads, so B2 has no entity color to inherit. The paint code is the
+        natural NGII attribute for B2 and stays the right visualization
+        across all four levels; the ``level`` argument is accepted for
+        symmetry with :meth:`_a2_cell_colors_at` but does not change the
+        output.
         """
-        seg = self.segmentation
+        del level  # B2 ignores the abstraction level.
         cfg = self.viz_cfg
         n = len(self.b2.types)
-        neutral = np.asarray(cfg.a2_uniform_rgb, dtype=np.uint8)
-        if level == _LEVEL_RAW:
-            rgb = np.zeros((n, 3), dtype=np.uint8)
-            for i, t in enumerate(self.b2.types):
-                rgb[i] = cfg.b2_paint_rgb.get(t[:1], cfg.b2_paint_fallback_rgb)
-            return rgb
-        if level == _LEVEL_GROUP:
-            rgb = np.tile(neutral, (n, 1))
-            r_bound = seg.b2_r_group >= 0
-            rgb[r_bound] = self.group_palette[seg.b2_r_group[r_bound]]
-            # L-side as fallback for rows where R is unbound but L is bound.
-            l_only = (seg.b2_r_group < 0) & (seg.b2_l_group >= 0)
-            rgb[l_only] = self.group_palette[seg.b2_l_group[l_only]]
-            return rgb
-        if level == _LEVEL_JUNCTION:
-            rgb = np.tile(neutral, (n, 1))
-            r_junction = seg.b2_r_junction >= 0
-            rgb[r_junction] = self.junction_palette[seg.b2_r_junction[r_junction]]
-            l_only = (~r_junction) & (seg.b2_l_junction >= 0)
-            rgb[l_only] = self.junction_palette[seg.b2_l_junction[l_only]]
-            return rgb
-        if level == _LEVEL_ROAD:
-            rgb = np.tile(neutral, (n, 1))
-            r_road = seg.b2_r_road >= 0
-            rgb[r_road] = self.road_palette[seg.b2_r_road[r_road]]
-            l_only = (~r_road) & (seg.b2_l_road >= 0)
-            rgb[l_only] = self.road_palette[seg.b2_l_road[l_only]]
-            return rgb
-        raise ValueError(level)
+        rgb = np.zeros((n, 3), dtype=np.uint8)
+        for i, t in enumerate(self.b2.types):
+            rgb[i] = cfg.b2_paint_rgb.get(t[:1], cfg.b2_paint_fallback_rgb)
+        return rgb
 
     def _a2_cell_colors(self) -> NDArray[np.uint8]:
         """Initial-attach hook: A2 colors at the current abstraction level."""

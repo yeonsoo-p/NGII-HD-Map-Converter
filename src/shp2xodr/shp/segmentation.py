@@ -1,41 +1,26 @@
-"""Group A2_LINK records into road groups, cluster A1_NODE records into
-junction components, bidirectionally merge opposite-direction groups across
-B2 중앙선 markings, and bind every B2 line onto the resulting graph.
+"""Group A2_LINK records into lane-bundles and cluster A1_NODE records into
+junction components.
 
 Entry point: :meth:`Segmentation.from_shp_dir`. The pipeline lives as
 private classmethods on :class:`Segmentation` itself - that's where the
 result lives, so that's where the construction logic lives. All steps
-consume typed :class:`A1Data` / :class:`A2Data` / :class:`B2Data` records
-(no raw GeoDataFrame column access here).
+consume typed :class:`A1Data` / :class:`A2Data` records (no raw
+GeoDataFrame column access here).
 
-A *group* is a maximal set of A2_LINK lanes that should become one OpenDRIVE
-``<road>`` side. Same-direction lanes are joined laterally via ``R_LinkID`` /
-``L_LinkID``; longitudinal continuations are joined through any A1_NODE that
-is *not* a segmentation cut.
+A *group* is a maximal set of A2_LINK lanes that share the same lane-
+bundle. Same-direction lanes are joined laterally via ``R_LinkID`` /
+``L_LinkID``; longitudinal continuations are joined through any A1_NODE
+that is *not* a segmentation cut.
 
 A *junction component* is a maximal connected set of JUNCTION-role A1
 nodes reachable through ``LinkType=1`` interior links - including via
 lateral adjacency, so two interior links that are R/L_LinkID neighbours
 belong to one component even when no single link joins their endpoints.
-Each component becomes one OpenDRIVE :class:`Junction`; each mainline
-*road* (one or more groups merged across a centerline) becomes a
-:class:`Road`. The two are stored both as object tuples with mutual refs
-and as flat per-link arrays for fast viz coloring.
 
-Bidirectional merging runs after the junction pass: for every B2
-centerline-like (``Kind=501`` 중앙선 or ``Kind=503`` 주행선) row whose R
-and L sides both bind mainline groups, the two groups are unioned
-(same-row pass); a second pass unions mainline groups that face each
-other across a median via paired centerlines within
-``bidirectional_merge_max_separation_m``. 503 lane-stripes are included
-because a divided road that lacks a painted 501 still has two parallel
-503 stripes on the opposing carriageways' inner edges, close enough for
-Pass B to pair. Junction-interior groups are always skipped.
-
-Each B2_SURFACELINEMARK row resolves its R/L_LinkID references to four
-ids: the A2 group, the road (mainline), and the junction (interior) on
-each side. A centerline between two merged groups therefore has
-``b2_r_road == b2_l_road``.
+The result is a flat set of per-A2-link, per-A1-node, and per-group
+arrays. Mainline groups are assigned dense "road" ids via
+``road_id_per_link`` for fast viz coloring; no object graph is built
+here.
 """
 
 from __future__ import annotations
@@ -51,7 +36,7 @@ import numpy as np
 import shapely
 from numpy.typing import NDArray
 
-from shp2xodr.shp.data import A1Data, A2Data, B2Data
+from shp2xodr.shp.data import A1Data, A2Data
 
 log = logging.getLogger(__name__)
 
@@ -88,18 +73,6 @@ _INTERIOR_LINK_TYPE = "1"
 # "교차로 내 예외(일반주행차로)": a Type=6 lane traversing a 평면교차로.
 _PROMOTABLE_LINK_TYPE = "6"
 
-# NGII B2_SURFACELINEMARK.Kind values that drive the bidirectional group
-# merge:
-#   501 = 중앙선 (yellow centerline between opposing directions) — the
-#         explicit divider.
-#   503 = 주행선 (white lane line within a direction) — included as a
-#         centerline proxy. On a divided road with no painted 501, the
-#         outermost 503 stripes of each carriageway sit close enough to
-#         each other to be paired by Pass B's proximity rule.
-# 5011 (가변차선) is a variable-direction lane and 502 (유턴구역선) is a
-# local U-turn pocket — neither is a sustained divider.
-_CENTERLINE_B2_KINDS: frozenset[str] = frozenset({"501", "503"})
-
 
 @dataclass(slots=True, frozen=True)
 class SegmentationConfig:
@@ -112,58 +85,20 @@ class SegmentationConfig:
 
     junction_merge_dist_m: float
     junction_crossing_z_tol_m: float
-    bidirectional_merge_max_separation_m: float
-
-
-@dataclass(slots=True, frozen=True)
-class Junction:
-    """One OpenDRIVE-level intersection.
-
-    A maximal cluster of JUNCTION-role A1 nodes wired together through
-    ``LinkType=1`` interior links (and proximity-merged if configured). The
-    ``roads`` tuple is populated in a second pass via ``object.__setattr__``
-    after every Road has been constructed — same pattern as the typed
-    NGII layer records in ``shp2xodr.shp.data``.
-    """
-
-    id: int
-    node_ids: tuple[str, ...]
-    link_indices: NDArray[np.int32]
-    roads: tuple[Road, ...]
-    xy_center: NDArray[np.float64]
-
-
-@dataclass(slots=True, frozen=True)
-class Road:
-    """One OpenDRIVE-level mainline road.
-
-    Spans one or more A2 groups. Multi-group roads arise from bidirectional
-    merging when two opposite-direction groups share a B2 centerline-like
-    row (Kind=501 중앙선 or Kind=503 주행선) or sit between paired centerlines
-    across a median. ``junctions`` is the
-    unordered tuple of intersections this road touches (typically 0-2);
-    "predecessor vs successor" per direction is resolved at OpenDRIVE emit
-    time, where direction is meaningful.
-    """
-
-    id: int
-    group_ids: tuple[int, ...]
-    link_indices: NDArray[np.int32]
-    junctions: tuple[Junction, ...]
 
 
 @dataclass(slots=True, frozen=True)
 class Segmentation:
-    """Groups, junction topology, and B2 line bindings for one section.
+    """Per-row and per-group arrays for one section.
 
     Build one with :meth:`from_shp_dir`. Arrays carry different lengths
     depending on what they index:
 
-    * ``group_id`` / ``junction_id`` — parallel to the A2_LINK input row order.
+    * ``group_id`` / ``junction_id`` / ``road_id_per_link`` — parallel to
+      the A2_LINK input row order.
     * ``node_junction_id`` — parallel to the A1_NODE input row order.
     * ``group_junction`` / ``group_pred_junctions`` / ``group_succ_junctions``
       — indexed by group id ``0..n_groups-1``.
-    * ``b2_*`` — parallel to the B2_SURFACELINEMARK input row order.
 
     A *mainline* group has ``group_junction[b] == -1`` and connects on each
     side to the set of junctions reachable through its boundary nodes (empty
@@ -172,19 +107,10 @@ class Segmentation:
     as a set rather than a single id. Interior groups have empty pred/succ
     sets (their connectivity is implied by ``group_junction``).
 
-    The ``b2_*`` arrays carry ``-1`` on a side when that B2 row has no A2
-    reference in the loaded section. For non-centerline B2 lines, the two
-    sides resolve to the same group; outer edge lines have one side ``-1``.
-    Centerline-like rows (중앙선 Kind=501 or 주행선 Kind=503) bind two
-    opposite-direction groups whose ``b2_r_group != b2_l_group``, and
-    those two groups are subsequently merged into one ``Road`` — so
-    ``b2_r_road == b2_l_road`` for the same rows.
-
-    OpenDRIVE-level entities — ``Road`` and ``Junction`` — are exposed both
-    as object tuples (``roads`` / ``junctions``, navigable via direct refs)
-    and as flat per-link arrays (``road_id_per_link``, ``junction_id``) for
-    fast per-cell coloring in the viz. The two views are consistent by
-    construction.
+    ``road_id_per_link`` carries a dense mainline-only id ``0..n_main-1`` on
+    each mainline row and ``-1`` on interior rows — a flat projection of
+    ``group_id`` for the viz's road-palette layer. There is no object graph;
+    consumers that need typed entities build them from these arrays.
     """
 
     group_id: NDArray[np.int32]
@@ -193,24 +119,13 @@ class Segmentation:
     group_junction: NDArray[np.int32]
     group_pred_junctions: tuple[frozenset[int], ...]
     group_succ_junctions: tuple[frozenset[int], ...]
-    b2_r_link_idx: NDArray[np.int32]
-    b2_l_link_idx: NDArray[np.int32]
-    b2_r_group: NDArray[np.int32]
-    b2_l_group: NDArray[np.int32]
-    roads: tuple[Road, ...]
-    junctions: tuple[Junction, ...]
     road_id_per_link: NDArray[np.int32]
-    group_road: NDArray[np.int32]
-    b2_r_road: NDArray[np.int32]
-    b2_l_road: NDArray[np.int32]
-    b2_r_junction: NDArray[np.int32]
-    b2_l_junction: NDArray[np.int32]
 
     # ---- Disjoint-set helpers -----------------------------------------------
     # Stateless: each caller owns its own ``parent = np.arange(n, np.int32)``.
     # Path-compressing find + arbitrary-root union. Used by every pass that
     # builds connected components (link grouping, junction clustering,
-    # proximity merge, bidirectional centerline merge).
+    # proximity merge, crossing-link union).
 
     @staticmethod
     def _uf_find(parent: NDArray[np.int32], x: int) -> int:
@@ -232,7 +147,7 @@ class Segmentation:
 
     @classmethod
     def from_shp_dir(cls, shp_dir: Path, cfg: SegmentationConfig) -> Self:
-        """Build a :class:`Segmentation` from one section's raw SHP layers.
+        """Build a :class:`Segmentation` from one section's A1/A2 layers.
 
         ``cfg.junction_merge_dist_m`` controls a final spatial pass that
         fuses graph-disjoint junction components whose nodes are closer
@@ -244,21 +159,9 @@ class Segmentation:
         treated as belonging to one physical intersection. Different floors
         of an overpass keep their distinct junctions because the z gap at
         the planar crossing exceeds the tolerance.
-
-        ``cfg.bidirectional_merge_max_separation_m`` controls the
-        divided-road pairing step: two B2 centerline-like (Kind=501
-        중앙선 or Kind=503 주행선) rows whose ``LineString``s come within
-        this planimetric distance are treated as the two centerlines of
-        one divided road, and the mainline groups they each bind are
-        merged into one :class:`Road`.
-
-        NGII makes B2_SURFACELINEMARK a mandatory layer for every section,
-        so the B2 resolution always runs alongside the A2 pass; there is no
-        A2-only mode.
         """
         a1 = A1Data(shp_dir)
         a2 = A2Data(shp_dir)
-        b2 = B2Data(shp_dir)
         node_role = cls._classify_nodes(a1, a2)
 
         group_id = cls._group_links(a2, node_role)
@@ -280,37 +183,18 @@ class Segmentation:
         )
 
         node_junction_id = cls._node_junction_array(a1, nid_to_jid)
-        b2_r_link, b2_l_link, b2_r_group, b2_l_group = cls._resolve_b2_to_groups(a2, b2, group_id)
 
-        junction_connected_pairs = cls._junction_connected_main_group_pairs(
-            a2, group_id, group_junction
-        )
-        group_road = cls._merge_groups_bidirectional(
-            b2,
-            b2_r_group,
-            b2_l_group,
-            group_junction,
-            junction_connected_pairs,
-            max_separation_m=cfg.bidirectional_merge_max_separation_m,
-        )
-        b2_r_road, b2_l_road, b2_r_junction, b2_l_junction = cls._resolve_b2_to_roads(
-            b2_r_group, b2_l_group, b2_r_link, b2_l_link, group_road, junction_id
-        )
-        roads, junctions, road_id_per_link = cls._build_graph(
-            a1, group_id, group_road, junction_id, node_junction_id, group_pred, group_succ
-        )
+        # Dense mainline-only "road" id per link: each mainline group gets
+        # 0..n_main-1 in ascending group-id order; interior rows stay at -1.
+        n_groups = len(group_junction)
+        group_to_road = np.full(n_groups, -1, dtype=np.int32)
+        mainline_groups = np.flatnonzero(group_junction == -1).astype(np.int32)
+        group_to_road[mainline_groups] = np.arange(len(mainline_groups), dtype=np.int32)
+        road_id_per_link = np.where(
+            group_junction[group_id] == -1, group_to_road[group_id], -1
+        ).astype(np.int32)
 
-        cls._log_summary(
-            a2,
-            group_id,
-            group_road,
-            node_junction_id,
-            node_role,
-            b2_r_link,
-            b2_l_link,
-            b2,
-            roads,
-        )
+        cls._log_summary(a2, group_id, road_id_per_link, node_junction_id, node_role)
         return cls(
             group_id=group_id,
             junction_id=junction_id,
@@ -318,41 +202,8 @@ class Segmentation:
             group_junction=group_junction,
             group_pred_junctions=group_pred,
             group_succ_junctions=group_succ,
-            b2_r_link_idx=b2_r_link,
-            b2_l_link_idx=b2_l_link,
-            b2_r_group=b2_r_group,
-            b2_l_group=b2_l_group,
-            roads=roads,
-            junctions=junctions,
             road_id_per_link=road_id_per_link,
-            group_road=group_road,
-            b2_r_road=b2_r_road,
-            b2_l_road=b2_l_road,
-            b2_r_junction=b2_r_junction,
-            b2_l_junction=b2_l_junction,
         )
-
-    # ---- Object-graph lookup -------------------------------------------------
-
-    def road(self, rid: int) -> Road:
-        """Return the :class:`Road` with id ``rid``. Raises ``IndexError`` if
-        ``rid`` is out of range — caller's contract to pass a valid id.
-
-        ``roads[rid].id == rid`` by construction in :meth:`_build_graph`.
-        """
-        if rid < 0:
-            raise IndexError(rid)
-        # Natural IndexError on rid >= len(self.roads).
-        return self.roads[rid]
-
-    def junction(self, jid: int) -> Junction:
-        """Return the :class:`Junction` with id ``jid``.
-
-        ``junctions[jid].id == jid`` by construction in :meth:`_build_graph`.
-        """
-        if jid < 0:
-            raise IndexError(jid)
-        return self.junctions[jid]
 
     # ---- Pipeline steps -------------------------------------------------------
 
@@ -977,380 +828,25 @@ class Segmentation:
         return node_junction_id
 
     @staticmethod
-    def _resolve_b2_to_groups(
-        a2: A2Data,
-        b2: B2Data,
-        group_id: NDArray[np.int32],
-    ) -> tuple[
-        NDArray[np.int32],
-        NDArray[np.int32],
-        NDArray[np.int32],
-        NDArray[np.int32],
-    ]:
-        """Resolve each B2 row's R/L_LinkID into A2 row indices and group ids.
-
-        Empty / unknown A2 references yield ``-1`` on that side. Pure look-up:
-        group topology is already fixed by the A2 pass.
-        """
-        a2_id_to_idx = {lid: i for i, lid in enumerate(a2.ids)}
-        r_ids = b2.r_link_ids
-        l_ids = b2.l_link_ids
-        n = len(b2.ids)
-        r_link = np.full(n, -1, dtype=np.int32)
-        l_link = np.full(n, -1, dtype=np.int32)
-        for i in range(n):
-            ri = a2_id_to_idx.get(r_ids[i])
-            li = a2_id_to_idx.get(l_ids[i])
-            if ri is not None:
-                r_link[i] = np.int32(ri)
-            if li is not None:
-                l_link[i] = np.int32(li)
-        r_group = np.where(r_link >= 0, group_id[r_link], -1).astype(np.int32)
-        l_group = np.where(l_link >= 0, group_id[l_link], -1).astype(np.int32)
-        return r_link, l_link, r_group, l_group
-
-    @staticmethod
-    def _junction_connected_main_group_pairs(
-        a2: A2Data,
-        group_id: NDArray[np.int32],
-        group_junction: NDArray[np.int32],
-    ) -> frozenset[tuple[int, int]]:
-        """Pairs of mainline groups directly bridged by a single LinkType=1
-        interior link via its FromNodeID / ToNodeID boundary.
-
-        For each interior row, the mainline group that *ends* at its
-        FromNodeID and the mainline group that *starts* at its ToNodeID are
-        two distinct roads connected through the junction's interior path.
-        They must not be merged by the bidirectional pass.
-
-        The broader "any shared junction in pred/succ" predicate this
-        replaces also caught legitimate opposing carriageways of every
-        divided road that touches an intersection — both carriageways
-        border that junction on the same side. The single-interior-link
-        formulation is tight: opposing carriageways have no interior link
-        going "northbound's terminus → southbound's start" at a normal
-        intersection, so they fall out of this set and merge correctly.
-        """
-        link_types = a2.link_types
-        from_ids = a2.from_node_ids
-        to_ids = a2.to_node_ids
-        n_links = len(a2.ids)
-
-        # For each A1 node id, the mainline groups whose rows end / start
-        # there. Skip junction-interior groups — their endpoints are inside
-        # the intersection, not on a mainline boundary.
-        main_ends_at: dict[str, set[int]] = {}
-        main_starts_at: dict[str, set[int]] = {}
-        for i in range(n_links):
-            if link_types[i] == _INTERIOR_LINK_TYPE:
-                continue
-            b = int(group_id[i])
-            if int(group_junction[b]) != -1:
-                continue
-            main_ends_at.setdefault(str(to_ids[i]), set()).add(b)
-            main_starts_at.setdefault(str(from_ids[i]), set()).add(b)
-
-        pairs: set[tuple[int, int]] = set()
-        for i in range(n_links):
-            if link_types[i] != _INTERIOR_LINK_TYPE:
-                continue
-            incoming = main_ends_at.get(str(from_ids[i]), ())
-            outgoing = main_starts_at.get(str(to_ids[i]), ())
-            for g_in in incoming:
-                for g_out in outgoing:
-                    if g_in == g_out:
-                        continue
-                    pairs.add((g_in, g_out) if g_in < g_out else (g_out, g_in))
-        return frozenset(pairs)
-
-    @staticmethod
-    def _merge_groups_bidirectional(
-        b2: B2Data,
-        b2_r_group: NDArray[np.int32],
-        b2_l_group: NDArray[np.int32],
-        group_junction: NDArray[np.int32],
-        junction_connected_pairs: frozenset[tuple[int, int]],
-        max_separation_m: float,
-    ) -> NDArray[np.int32]:
-        """Bidirectional merge of mainline groups across B2 centerline-like rows.
-
-        "Centerline-like" = ``Kind=501`` 중앙선 (the canonical opposing-
-        traffic divider) *or* ``Kind=503`` 주행선 (a within-direction lane
-        line, used as a centerline proxy when no painted 501 exists between
-        the two carriageways).
-
-        Two passes, both gated to mainline groups (``group_junction[b] == -1``):
-
-        * **Pass A** — same-row pairing. For every centerline-like B2 row
-          whose R and L sides both bind to mainline groups, union those two
-          groups. This covers the typical undivided road: one painted
-          centerline, two adjacent opposing lanes.
-
-        * **Pass B** — cross-row geometric pairing. For every pair of
-          distinct centerline-like B2 rows that each bind one mainline
-          group and lie within ``max_separation_m`` planimetric distance,
-          union the two bound groups. This covers divided roads where each
-          direction carries its own centerline along the inner edge of its
-          leftmost lane (no single B2 row spans both directions).
-
-        Both passes additionally skip the union when the two groups appear
-        in ``junction_connected_pairs`` — i.e., some single LinkType=1
-        interior link directly bridges one group's terminus to the other's
-        start. Those are two distinct roads meeting at one intersection,
-        not opposing carriageways. Opposing carriageways of a divided road
-        meeting an intersection do *not* appear in this set, so the merge
-        proceeds for the typical divided-road case.
-
-        Returns ``group_road``: dense road id per mainline group; ``-1`` for
-        junction-interior groups.
-        """
-        n_groups = len(group_junction)
-        parent = np.arange(n_groups, dtype=np.int32)
-
-        def is_main(g: int) -> bool:
-            return g >= 0 and int(group_junction[g]) == -1
-
-        def junction_connected(g1: int, g2: int) -> bool:
-            a, b = (g1, g2) if g1 < g2 else (g2, g1)
-            return (a, b) in junction_connected_pairs
-
-        centerline_idxs: NDArray[np.intp] = np.flatnonzero(
-            np.isin(b2.kinds, list(_CENTERLINE_B2_KINDS))
-        )
-
-        # Pass A: same-row pairing
-        for i in centerline_idxs:
-            rg, lg = int(b2_r_group[i]), int(b2_l_group[i])
-            if not (is_main(rg) and is_main(lg)):
-                continue
-            if junction_connected(rg, lg):
-                continue
-            Segmentation._uf_union(parent, rg, lg)
-
-        # Pass B: cross-row geometric pairing
-        if len(centerline_idxs) >= 2:
-            geoms = [shapely.LineString(b2.polylines[int(i)][:, :2]) for i in centerline_idxs]
-            tree = shapely.STRtree(geoms)
-
-            def bound_main_group(b2_idx: int) -> int:
-                rg = int(b2_r_group[b2_idx])
-                lg = int(b2_l_group[b2_idx])
-                if is_main(rg):
-                    return rg
-                if is_main(lg):
-                    return lg
-                return -1
-
-            bound_groups = [bound_main_group(int(i)) for i in centerline_idxs]
-            for a in range(len(centerline_idxs)):
-                ga = bound_groups[a]
-                if ga < 0:
-                    continue
-                candidates = tree.query(geoms[a], predicate="dwithin", distance=max_separation_m)
-                for b in candidates:
-                    if int(b) <= a:
-                        continue
-                    gb = bound_groups[int(b)]
-                    if gb < 0:
-                        continue
-                    if Segmentation._uf_find(parent, ga) == Segmentation._uf_find(parent, gb):
-                        continue
-                    if junction_connected(ga, gb):
-                        continue
-                    Segmentation._uf_union(parent, ga, gb)
-
-        return Segmentation._densify_road_ids(parent, group_junction)
-
-    @staticmethod
-    def _densify_road_ids(
-        parent: NDArray[np.int32], group_junction: NDArray[np.int32]
-    ) -> NDArray[np.int32]:
-        """Pack union-find roots of mainline groups into dense ``[0, n_roads)`` ids;
-        junction-interior groups stay at ``-1``.
-        """
-        n_groups = len(group_junction)
-        group_road = np.full(n_groups, -1, dtype=np.int32)
-        roots: dict[int, int] = {}
-        for b in range(n_groups):
-            if int(group_junction[b]) >= 0:
-                continue
-            root = Segmentation._uf_find(parent, b)
-            rid = roots.get(root)
-            if rid is None:
-                rid = len(roots)
-                roots[root] = rid
-            group_road[b] = np.int32(rid)
-        return group_road
-
-    @staticmethod
-    def _resolve_b2_to_roads(
-        b2_r_group: NDArray[np.int32],
-        b2_l_group: NDArray[np.int32],
-        b2_r_link: NDArray[np.int32],
-        b2_l_link: NDArray[np.int32],
-        group_road: NDArray[np.int32],
-        junction_id: NDArray[np.int32],
-    ) -> tuple[
-        NDArray[np.int32],
-        NDArray[np.int32],
-        NDArray[np.int32],
-        NDArray[np.int32],
-    ]:
-        """Resolve each B2 row's R/L sides to their owning road and junction.
-
-        The two pairs of arrays are siblings — the viz uses ``b2_*_road`` for
-        mainline-bound B2 cells (level-3 road palette) and falls back to
-        ``b2_*_junction`` for cells whose A2 reference happens to be a
-        junction-interior link. Both default to ``-1`` when the side is
-        unbound or doesn't apply.
-        """
-
-        def project(src: NDArray[np.int32], idx: NDArray[np.int32]) -> NDArray[np.int32]:
-            # Allocate -1; project src[idx] only where idx is valid; preserve
-            # the source's own -1 sentinel in the output. No clip on -1 idx.
-            out = np.full(idx.shape, -1, dtype=np.int32)
-            valid = idx >= 0
-            out[valid] = src[idx[valid]]
-            return out
-
-        return (
-            project(group_road, b2_r_group),
-            project(group_road, b2_l_group),
-            project(junction_id, b2_r_link),
-            project(junction_id, b2_l_link),
-        )
-
-    @staticmethod
-    def _build_graph(
-        a1: A1Data,
-        group_id: NDArray[np.int32],
-        group_road: NDArray[np.int32],
-        junction_id: NDArray[np.int32],
-        node_junction_id: NDArray[np.int32],
-        group_pred: tuple[frozenset[int], ...],
-        group_succ: tuple[frozenset[int], ...],
-    ) -> tuple[tuple[Road, ...], tuple[Junction, ...], NDArray[np.int32]]:
-        """Build the ``Road`` / ``Junction`` object graph.
-
-        Two passes: instantiate both with empty cross-ref tuples first, then
-        back-patch ``Road.junctions`` and ``Junction.roads`` via
-        ``object.__setattr__`` — same pattern used by ``_populate`` on the
-        typed layer records in :mod:`shp2xodr.shp.data`.
-        """
-        n_roads = int(group_road.max()) + 1 if (group_road >= 0).any() else 0
-        n_junctions = int(node_junction_id.max()) + 1 if len(node_junction_id) else 0
-        n_groups = len(group_pred)
-
-        # group_id is parallel to A2 input; road_id_per_link is the same with
-        # mainline rows projected through group_road, interior rows kept as -1.
-        road_id_per_link = np.where(
-            group_road[group_id] >= 0,
-            group_road[group_id],
-            np.int32(-1),
-        ).astype(np.int32)
-
-        # ---- Pass A: instantiate with empty cross-refs ------------------
-        # Per-road group list. One sorted-bucket pass over road_id_per_link
-        # builds every road's link-index list without re-scanning per road.
-        groups_by_road: list[list[int]] = [[] for _ in range(n_roads)]
-        for b in range(n_groups):
-            r = int(group_road[b])
-            if r >= 0:
-                groups_by_road[r].append(b)
-
-        # Sort link rows by road id; mainline rids are contiguous after the
-        # leading -1 run. searchsorted locates each road's slice in O(log n).
-        order = np.argsort(road_id_per_link, kind="stable")
-        sorted_rids = road_id_per_link[order]
-        rid_range = np.arange(n_roads, dtype=np.int32)
-        starts = np.searchsorted(sorted_rids, rid_range)
-        ends = np.searchsorted(sorted_rids, rid_range, side="right")
-
-        road_junction_ids: list[frozenset[int]] = []
-        roads: list[Road] = []
-        for rid in range(n_roads):
-            gids = tuple(sorted(groups_by_road[rid]))
-            link_indices = np.sort(order[starts[rid] : ends[rid]]).astype(np.int32)
-            jids: frozenset[int] = frozenset()
-            for b in gids:
-                jids = jids | group_pred[b] | group_succ[b]
-            road_junction_ids.append(jids)
-            roads.append(Road(id=rid, group_ids=gids, link_indices=link_indices, junctions=()))
-
-        # Per-junction node ids and interior link indices.
-        nodes_by_junction: list[list[str]] = [[] for _ in range(n_junctions)]
-        for i, nid in enumerate(a1.ids):
-            jid = int(node_junction_id[i])
-            if jid >= 0:
-                nodes_by_junction[jid].append(str(nid))
-
-        a1_xy_by_id: dict[str, NDArray[np.float64]] = {
-            str(nid): a1.points[i, :2] for i, nid in enumerate(a1.ids)
-        }
-
-        junctions: list[Junction] = []
-        for jid in range(n_junctions):
-            nids = tuple(nodes_by_junction[jid])
-            link_indices = np.sort(np.flatnonzero(junction_id == jid)).astype(np.int32)
-            xy = np.vstack([a1_xy_by_id[nid] for nid in nids]) if nids else np.zeros((0, 2))
-            xy_center = xy.mean(axis=0) if len(xy) else np.zeros(2, dtype=np.float64)
-            junctions.append(
-                Junction(
-                    id=jid,
-                    node_ids=nids,
-                    link_indices=link_indices,
-                    roads=(),
-                    xy_center=np.asarray(xy_center, dtype=np.float64),
-                )
-            )
-
-        # ---- Pass B: back-patch cross-refs ------------------------------
-        for rid, road in enumerate(roads):
-            jids_sorted = tuple(sorted(road_junction_ids[rid]))
-            object.__setattr__(road, "junctions", tuple(junctions[jid] for jid in jids_sorted))
-
-        roads_by_junction: list[list[Road]] = [[] for _ in range(n_junctions)]
-        for road in roads:
-            for junction in road.junctions:
-                roads_by_junction[junction.id].append(road)
-        for junction, road_list in zip(junctions, roads_by_junction, strict=True):
-            object.__setattr__(
-                junction,
-                "roads",
-                tuple(sorted(road_list, key=lambda r: r.id)),
-            )
-
-        return tuple(roads), tuple(junctions), road_id_per_link
-
-    @staticmethod
     def _log_summary(
         a2: A2Data,
         group_id: NDArray[np.int32],
-        group_road: NDArray[np.int32],
+        road_id_per_link: NDArray[np.int32],
         node_junction_id: NDArray[np.int32],
         node_role: dict[str, NodeRole],
-        b2_r_link: NDArray[np.int32],
-        b2_l_link: NDArray[np.int32],
-        b2: B2Data,
-        roads: tuple[Road, ...],
     ) -> None:
         n_a2 = len(a2.ids)
-        n_b2 = len(b2.ids)
         n_groups = int(group_id.max()) + 1 if len(group_id) else 0
-        n_mainline_groups = int((group_road >= 0).sum())
+        n_mainline_groups = int(road_id_per_link.max()) + 1 if (road_id_per_link >= 0).any() else 0
         n_junctions = int(node_junction_id.max()) + 1 if len(node_junction_id) else 0
         n_cuts = sum(1 for r in node_role.values() if r is NodeRole.JUNCTION)
-        n_b2_bound = int(((b2_r_link >= 0) | (b2_l_link >= 0)).sum())
         log.info(
-            "segmentation: %d links → %d groups, %d junctions (cut at %d / %d nodes); "
-            "%d / %d B2 lines bound; bidirectional merge: %d mainline groups → %d roads",
+            "segmentation: %d links -> %d groups (%d mainline), %d junctions "
+            "(cut at %d / %d nodes)",
             n_a2,
             n_groups,
+            n_mainline_groups,
             n_junctions,
             n_cuts,
             len(node_role),
-            n_b2_bound,
-            n_b2,
-            n_mainline_groups,
-            len(roads),
         )

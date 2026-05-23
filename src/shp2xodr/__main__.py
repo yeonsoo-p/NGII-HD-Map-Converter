@@ -44,9 +44,6 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
     return SegmentationConfig(
         junction_merge_dist_m=float(cfg.segmentation.junction_merge_dist_m),
         junction_crossing_z_tol_m=float(cfg.segmentation.junction_crossing_z_tol_m),
-        bidirectional_merge_max_separation_m=float(
-            cfg.segmentation.bidirectional_merge_max_separation_m
-        ),
     )
 
 

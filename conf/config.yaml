@@ -2,7 +2,7 @@
 # a folder via File → Open SHP folder…. Override on the CLI with
 # ``shp_dir=/path/to/section``. Relative paths resolve against the
 # invocation cwd, not Hydra's run directory.
-shp_dir: examples/SEC001_제주첨단과학기술단지/HDMap_UTM52N_타원체고
+shp_dir: examples/SEC001_군산공항입구교차로_외고삼거리/HDMap_UTM52N_타원체고
 
 segmentation:
   # Planimetric distance (m) under which graph-disjoint junction components
@@ -18,12 +18,6 @@ segmentation:
   # grade channelized turns whose digitized z values disagree by a few
   # decimeters. Set to 0 to disable.
   junction_crossing_z_tol_m: 2.0
-  # Max XY closest-point distance (m) between two B2 Kind=501 (중앙선) rows
-  # to treat as a divided-road pair — each row painted along the inner edge
-  # of its own direction's leftmost lane, separated by a median. Korea's
-  # median widths run 1-12 m for typical urban/national roads; the default
-  # leaves headroom for wider expressway medians.
-  bidirectional_merge_max_separation_m: 15.0
 
 viz:
   # ---- Rendering geometry --------------------------------------------------
