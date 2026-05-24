@@ -63,35 +63,19 @@ class SelectedSection:
 
 @dataclass(slots=True, frozen=True)
 class SegmentationInput:
-    """Raw arrays needed by segmentation stages."""
+    """Layer data and config needed by segmentation stages."""
 
-    a2_ids: NDArray[np.str_]
-    a2_link_types: NDArray[np.str_]
-    a2_r_link_ids: NDArray[np.str_]
-    a2_l_link_ids: NDArray[np.str_]
-    a2_polylines: tuple[NDArray[np.float64], ...]
-    b2_ids: NDArray[np.str_]
-    b2_kinds: NDArray[np.str_]
-    b2_polylines: tuple[NDArray[np.float64], ...]
+    a2: A2Data
+    b2: B2Data
     cfg: SegmentationConfig
 
     @classmethod
     def from_layers(cls, a2: A2Data, b2: B2Data, cfg: SegmentationConfig) -> Self:
-        return cls(
-            a2_ids=a2.ids,
-            a2_link_types=a2.link_types,
-            a2_r_link_ids=a2.r_link_ids,
-            a2_l_link_ids=a2.l_link_ids,
-            a2_polylines=tuple(a2.polylines),
-            b2_ids=b2.ids,
-            b2_kinds=b2.kinds,
-            b2_polylines=tuple(b2.polylines),
-            cfg=cfg,
-        )
+        return cls(a2=a2, b2=b2, cfg=cfg)
 
     @property
     def n_links(self) -> int:
-        return len(self.a2_ids)
+        return len(self.a2.ids)
 
 
 class SegmentEntity(Protocol):
@@ -135,12 +119,49 @@ class UTurn:
 
 
 @dataclass(slots=True, frozen=True)
+class JunctionCache:
+    """Derived geometry cache for one provisional or final junction."""
+
+    representative_link_index: int
+    lines: tuple[shapely.LineString, ...]
+    geom: shapely.Geometry
+
+
+@dataclass(slots=True, frozen=True)
 class Junction:
-    """One junction entity: a connected component of Type=1 A2 links."""
+    """One junction entity: a connected component of Type=1 A2 links.
+
+    ``id`` is ``-1`` while the junction is provisional during staging and is
+    assigned a non-negative final value before being exposed in ``StageResult``.
+    """
 
     id: int
     link_indices: tuple[int, ...]
     link_ids: tuple[str, ...]
+    cache: JunctionCache
+
+    @classmethod
+    def from_link_indices(
+        cls,
+        *,
+        entity_id: int,
+        link_indices: tuple[int, ...],
+        a2: A2Data,
+    ) -> Self:
+        sorted_indices = tuple(sorted(link_indices))
+        lines = tuple(a2.xy_lines[i] for i in sorted_indices if _can_make_line(a2.polylines[i]))
+        geom = shapely.unary_union(lines) if lines else shapely.LineString()
+        representative_link_index = min(sorted_indices) if sorted_indices else -1
+        return cls(
+            id=entity_id,
+            link_indices=sorted_indices,
+            link_ids=tuple(str(a2.ids[i]) for i in sorted_indices),
+            cache=JunctionCache(
+                representative_link_index=representative_link_index,
+                lines=lines,
+                geom=geom,
+            ),
+        )
 
     def selected_fields(self) -> tuple[SelectedField, ...]:
         return (
@@ -212,27 +233,29 @@ class UTurnStage(SegmentationStage):
         entity_id_per_link = np.full(data.n_links, -1, dtype=np.int32)
         marker_rows = [
             i
-            for i, kind in enumerate(data.b2_kinds)
-            if kind == _UTURN_MARKER_KIND and _can_make_line(data.b2_polylines[i])
+            for i, kind in enumerate(data.b2.kinds)
+            if kind == _UTURN_MARKER_KIND and _can_make_line(data.b2.polylines[i])
         ]
         if not marker_rows:
             return StageResult(self.id, self.label, self.entity_label, (), entity_id_per_link)
 
-        marker_lines = [_line_xy(data.b2_polylines[i]) for i in marker_rows]
+        marker_lines = [data.b2.xy_lines[i] for i in marker_rows]
         tree = shapely.STRtree(marker_lines)
         entities: list[UTurn] = []
 
-        for link_i, link_type in enumerate(data.a2_link_types):
-            if link_type != _UTURN_LINK_TYPE or not _can_make_line(data.a2_polylines[link_i]):
+        for link_i, link_type in enumerate(data.a2.link_types):
+            if link_type != _UTURN_LINK_TYPE or not _can_make_line(data.a2.polylines[link_i]):
                 continue
-            link_line = _line_xy(data.a2_polylines[link_i])
+            link_line = data.a2.xy_lines[link_i]
             matched_marker_rows: list[int] = []
             for marker_pos_raw in tree.query(link_line, predicate="intersects"):
                 marker_pos = int(marker_pos_raw)
                 marker_i = marker_rows[marker_pos]
                 if _intersects_within_z_tol(
-                    data.a2_polylines[link_i],
-                    data.b2_polylines[marker_i],
+                    data.a2.polylines[link_i],
+                    link_line,
+                    data.b2.polylines[marker_i],
+                    marker_lines[marker_pos],
                     data.cfg.z_intersection_tol_m,
                 ):
                     matched_marker_rows.append(marker_i)
@@ -245,9 +268,9 @@ class UTurnStage(SegmentationStage):
                 UTurn(
                     id=entity_id,
                     link_index=link_i,
-                    link_id=str(data.a2_ids[link_i]),
+                    link_id=str(data.a2.ids[link_i]),
                     marker_indices=marker_indices,
-                    marker_ids=tuple(str(data.b2_ids[i]) for i in marker_indices),
+                    marker_ids=tuple(str(data.b2.ids[i]) for i in marker_indices),
                 )
             )
 
@@ -282,32 +305,21 @@ class JunctionStage(SegmentationStage):
         _union_junction_link_refs(data, candidate_rows, row_to_candidate, parent)
         _union_junction_intersections(data, candidate_rows, row_to_candidate, parent)
         if data.cfg.junction_proximity_merge_dist_m > 0.0:
-            _union_junction_components_by_proximity(data, candidate_rows, row_to_candidate, parent)
-
-        root_to_entity: dict[int, int] = {}
-        rows_by_entity: dict[int, list[int]] = {}
-        for row_i in candidate_rows:
-            root = _uf_find(parent, row_to_candidate[row_i])
-            entity_id = root_to_entity.get(root)
-            if entity_id is None:
-                entity_id = len(root_to_entity)
-                root_to_entity[root] = entity_id
-            entity_id_per_link[row_i] = np.int32(entity_id)
-            rows_by_entity.setdefault(entity_id, []).append(row_i)
-
-        entities = tuple(
-            Junction(
-                id=entity_id,
-                link_indices=tuple(rows_by_entity[entity_id]),
-                link_ids=tuple(str(data.a2_ids[i]) for i in rows_by_entity[entity_id]),
+            provisional_junctions = _junctions_from_parent(
+                data, candidate_rows, row_to_candidate, parent
             )
-            for entity_id in range(len(rows_by_entity))
+            _union_junctions_by_proximity(data, provisional_junctions, row_to_candidate, parent)
+
+        entities = _junctions_from_parent(
+            data,
+            candidate_rows,
+            row_to_candidate,
+            parent,
+            entity_id_per_link=entity_id_per_link,
         )
         if entities:
             log.info("JunctionStage: detected %d junction component(s)", len(entities))
-        return StageResult(
-            self.id, self.label, self.entity_label, entities, entity_id_per_link
-        )
+        return StageResult(self.id, self.label, self.entity_label, entities, entity_id_per_link)
 
 
 class LateralGroupStage(SegmentationStage):
@@ -347,15 +359,13 @@ class LateralGroupStage(SegmentationStage):
             LateralGroup(
                 id=entity_id,
                 link_indices=tuple(rows_by_entity[entity_id]),
-                link_ids=tuple(str(data.a2_ids[i]) for i in rows_by_entity[entity_id]),
+                link_ids=tuple(str(data.a2.ids[i]) for i in rows_by_entity[entity_id]),
             )
             for entity_id in range(len(rows_by_entity))
         )
         if entities:
             log.info("LateralGroupStage: detected %d lateral group(s)", len(entities))
-        return StageResult(
-            self.id, self.label, self.entity_label, entities, entity_id_per_link
-        )
+        return StageResult(self.id, self.label, self.entity_label, entities, entity_id_per_link)
 
 
 SEGMENTATION_STAGES: tuple[type[SegmentationStage], ...] = (
@@ -417,9 +427,7 @@ def _can_make_line(polyline: NDArray[np.float64]) -> bool:
 
 
 def _junction_candidate_rows(data: SegmentationInput) -> list[int]:
-    return [
-        i for i, link_type in enumerate(data.a2_link_types) if link_type == _JUNCTION_LINK_TYPE
-    ]
+    return [i for i, link_type in enumerate(data.a2.link_types) if link_type == _JUNCTION_LINK_TYPE]
 
 
 def _lateral_group_candidate_rows(
@@ -427,17 +435,12 @@ def _lateral_group_candidate_rows(
     previous_results: Mapping[str, StageResult],
 ) -> list[int]:
     uturn_result = previous_results.get(UTurnStage.id)
-    uturn_entity_id_per_link = (
-        uturn_result.entity_id_per_link if uturn_result is not None else None
-    )
+    uturn_entity_id_per_link = uturn_result.entity_id_per_link if uturn_result is not None else None
     return [
         i
-        for i, link_type in enumerate(data.a2_link_types)
+        for i, link_type in enumerate(data.a2.link_types)
         if link_type == _LATERAL_GROUP_LINK_TYPE
-        and (
-            uturn_entity_id_per_link is None
-            or int(uturn_entity_id_per_link[i]) < 0
-        )
+        and (uturn_entity_id_per_link is None or int(uturn_entity_id_per_link[i]) < 0)
     ]
 
 
@@ -447,11 +450,10 @@ def _union_junction_link_refs(
     row_to_candidate: dict[int, int],
     parent: NDArray[np.int32],
 ) -> None:
-    id_to_row = {str(link_id): i for i, link_id in enumerate(data.a2_ids)}
     for row_i in candidate_rows:
         candidate_i = row_to_candidate[row_i]
-        for neighbour_id in (data.a2_r_link_ids[row_i], data.a2_l_link_ids[row_i]):
-            neighbour_row = id_to_row.get(str(neighbour_id))
+        for neighbour_id in (data.a2.r_link_ids[row_i], data.a2.l_link_ids[row_i]):
+            neighbour_row = data.a2.id_to_index.get(str(neighbour_id))
             if neighbour_row is None or neighbour_row not in row_to_candidate:
                 continue
             _uf_union(parent, candidate_i, row_to_candidate[neighbour_row])
@@ -463,11 +465,10 @@ def _union_lateral_group_link_refs(
     row_to_candidate: dict[int, int],
     parent: NDArray[np.int32],
 ) -> None:
-    id_to_row = {str(link_id): i for i, link_id in enumerate(data.a2_ids)}
     for row_i in candidate_rows:
         candidate_i = row_to_candidate[row_i]
-        for neighbour_id in (data.a2_r_link_ids[row_i], data.a2_l_link_ids[row_i]):
-            neighbour_row = id_to_row.get(str(neighbour_id))
+        for neighbour_id in (data.a2.r_link_ids[row_i], data.a2.l_link_ids[row_i]):
+            neighbour_row = data.a2.id_to_index.get(str(neighbour_id))
             if neighbour_row is None or neighbour_row not in row_to_candidate:
                 continue
             _uf_union(parent, candidate_i, row_to_candidate[neighbour_row])
@@ -479,13 +480,11 @@ def _union_junction_intersections(
     row_to_candidate: dict[int, int],
     parent: NDArray[np.int32],
 ) -> None:
-    geometry_rows = [
-        row_i for row_i in candidate_rows if _can_make_line(data.a2_polylines[row_i])
-    ]
+    geometry_rows = [row_i for row_i in candidate_rows if _can_make_line(data.a2.polylines[row_i])]
     if len(geometry_rows) < 2:
         return
 
-    lines = [_line_xy(data.a2_polylines[row_i]) for row_i in geometry_rows]
+    lines = [data.a2.xy_lines[row_i] for row_i in geometry_rows]
     tree = shapely.STRtree(lines)
     for a_pos, line in enumerate(lines):
         a_row = geometry_rows[a_pos]
@@ -495,26 +494,24 @@ def _union_junction_intersections(
                 continue
             b_row = geometry_rows[b_pos]
             if _intersects_within_z_tol(
-                data.a2_polylines[a_row],
-                data.a2_polylines[b_row],
+                data.a2.polylines[a_row],
+                line,
+                data.a2.polylines[b_row],
+                lines[b_pos],
                 data.cfg.z_intersection_tol_m,
             ):
                 _uf_union(parent, row_to_candidate[a_row], row_to_candidate[b_row])
 
 
-def _line_xy(polyline: NDArray[np.float64]) -> shapely.LineString:
-    return shapely.LineString(polyline[:, :2])
-
-
 def _intersects_within_z_tol(
     poly_a: NDArray[np.float64],
+    line_a: shapely.LineString,
     poly_b: NDArray[np.float64],
+    line_b: shapely.LineString,
     z_tol_m: float,
 ) -> bool:
     if not _can_make_line(poly_a) or not _can_make_line(poly_b):
         return False
-    line_a = _line_xy(poly_a)
-    line_b = _line_xy(poly_b)
     if not line_a.intersects(line_b):
         return False
     intersection = line_a.intersection(line_b)
@@ -526,48 +523,74 @@ def _intersects_within_z_tol(
     return False
 
 
-def _union_junction_components_by_proximity(
+def _junctions_from_parent(
     data: SegmentationInput,
     candidate_rows: list[int],
     row_to_candidate: dict[int, int],
     parent: NDArray[np.int32],
-) -> None:
-    rows_by_root: dict[int, list[int]] = {}
+    *,
+    entity_id_per_link: NDArray[np.int32] | None = None,
+) -> tuple[Junction, ...]:
+    root_to_entity: dict[int, int] = {}
+    rows_by_entity: dict[int, list[int]] = {}
     for row_i in candidate_rows:
         root = _uf_find(parent, row_to_candidate[row_i])
-        rows_by_root.setdefault(root, []).append(row_i)
+        entity_id = root_to_entity.get(root)
+        if entity_id is None:
+            entity_id = len(root_to_entity)
+            root_to_entity[root] = entity_id
+        if entity_id_per_link is not None:
+            entity_id_per_link[row_i] = np.int32(entity_id)
+        rows_by_entity.setdefault(entity_id, []).append(row_i)
 
-    components: list[tuple[int, list[int], tuple[NDArray[np.float64], ...], shapely.Geometry]] = []
-    for root, rows in rows_by_root.items():
-        polylines = tuple(
-            data.a2_polylines[row_i]
-            for row_i in rows
-            if _can_make_line(data.a2_polylines[row_i])
+    final_ids = entity_id_per_link is not None
+    return tuple(
+        Junction.from_link_indices(
+            entity_id=entity_id if final_ids else -1,
+            link_indices=tuple(rows_by_entity[entity_id]),
+            a2=data.a2,
         )
-        if not polylines:
-            continue
-        geom = shapely.unary_union([_line_xy(polyline) for polyline in polylines])
-        components.append((root, rows, polylines, geom))
+        for entity_id in range(len(rows_by_entity))
+    )
+
+
+def _union_junctions_by_proximity(
+    data: SegmentationInput,
+    junctions: tuple[Junction, ...],
+    row_to_candidate: dict[int, int],
+    parent: NDArray[np.int32],
+) -> None:
+    merge_candidates = tuple(junction for junction in junctions if not junction.cache.geom.is_empty)
 
     max_distance = data.cfg.junction_proximity_merge_dist_m
+    if len(merge_candidates) < 2:
+        return
+
+    tree = shapely.STRtree([junction.cache.geom for junction in merge_candidates])
     n_unioned = 0
-    for i, (root_a, rows_a, polylines_a, geom_a) in enumerate(components):
-        for root_b, rows_b, polylines_b, geom_b in components[i + 1 :]:
-            if _uf_find(parent, row_to_candidate[rows_a[0]]) == _uf_find(
-                parent, row_to_candidate[rows_b[0]]
+    for a_pos, junction_a in enumerate(merge_candidates):
+        for b_pos_raw in tree.query(junction_a.cache.geom.buffer(max_distance)):
+            b_pos = int(b_pos_raw)
+            if b_pos <= a_pos:
+                continue
+            junction_b = merge_candidates[b_pos]
+            candidate_a = row_to_candidate[junction_a.cache.representative_link_index]
+            candidate_b = row_to_candidate[junction_b.cache.representative_link_index]
+            if _uf_find(parent, candidate_a) == _uf_find(
+                parent,
+                candidate_b,
             ):
                 continue
-            if geom_a.distance(geom_b) > max_distance:
+            if junction_a.cache.geom.distance(junction_b.cache.geom) > max_distance:
                 continue
             if not _nearest_points_within_z_tol(
-                polylines_a,
-                geom_a,
-                polylines_b,
-                geom_b,
+                data,
+                junction_a,
+                junction_b,
                 data.cfg.z_intersection_tol_m,
             ):
                 continue
-            _uf_union(parent, root_a, root_b)
+            _uf_union(parent, candidate_a, candidate_b)
             n_unioned += 1
     if n_unioned:
         log.info(
@@ -578,24 +601,27 @@ def _union_junction_components_by_proximity(
 
 
 def _nearest_points_within_z_tol(
-    polylines_a: tuple[NDArray[np.float64], ...],
-    geom_a: shapely.Geometry,
-    polylines_b: tuple[NDArray[np.float64], ...],
-    geom_b: shapely.Geometry,
+    data: SegmentationInput,
+    junction_a: Junction,
+    junction_b: Junction,
     z_tol_m: float,
 ) -> bool:
-    point_a, point_b = nearest_points(geom_a, geom_b)
-    z_a = _z_at_nearest_polyline(polylines_a, point_a)
-    z_b = _z_at_nearest_polyline(polylines_b, point_b)
+    point_a, point_b = nearest_points(junction_a.cache.geom, junction_b.cache.geom)
+    z_a = _z_at_nearest_junction_link(data.a2, junction_a, point_a)
+    z_b = _z_at_nearest_junction_link(data.a2, junction_b, point_b)
     return abs(z_a - z_b) <= z_tol_m
 
 
-def _z_at_nearest_polyline(
-    polylines: tuple[NDArray[np.float64], ...],
+def _z_at_nearest_junction_link(
+    a2: A2Data,
+    junction: Junction,
     point: shapely.Point,
 ) -> float:
-    best_polyline = min(polylines, key=lambda polyline: _line_xy(polyline).distance(point))
-    return _z_at_xy(best_polyline, point.x, point.y)
+    valid_link_indices = tuple(
+        link_i for link_i in junction.link_indices if _can_make_line(a2.polylines[link_i])
+    )
+    best_link_i = min(valid_link_indices, key=lambda link_i: a2.xy_lines[link_i].distance(point))
+    return _z_at_xy(a2.polylines[best_link_i], point.x, point.y)
 
 
 def _sample_intersection_points(geometry: object) -> list[shapely.Point]:

@@ -351,7 +351,7 @@ class HdMapViz:
             point_size=viz_cfg.node_point_size,
             selector_tolerance=viz_cfg.selector_tol_a1,
         )
-        line_specs: list[_LineLayer] = [
+        self.line_layers: tuple[_LineLayer, ...] = (
             _LineLayer(
                 "A2",
                 self.a2,
@@ -366,17 +366,14 @@ class HdMapViz:
                 line_width=viz_cfg.line_width_b2,
                 selector_tolerance=viz_cfg.selector_tol_thin,
             ),
-        ]
-        line_specs.append(
             _LineLayer(
                 "C3",
                 self.c3,
                 self._c3_cell_colors,
                 line_width=viz_cfg.line_width_c3,
                 selector_tolerance=viz_cfg.selector_tol_thin,
-            )
+            ),
         )
-        self.line_layers: tuple[_LineLayer, ...] = tuple(line_specs)
 
         # A3 / A4 share one polygon selector — dispatch is by actor identity.
         self.poly_selector = vtk.vtkCellPicker()

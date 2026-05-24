@@ -154,6 +154,12 @@ def _polylines_from_gdf(gdf: gpd.GeoDataFrame) -> list[NDArray[np.float64]]:
     ]
 
 
+def _line_xy_from_polyline(polyline: NDArray[np.float64]) -> shapely.LineString:
+    if len(polyline) < 2:
+        return shapely.LineString()
+    return shapely.LineString(polyline[:, :2])
+
+
 def _outer_rings_from_gdf(gdf: gpd.GeoDataFrame) -> list[NDArray[np.float64]]:
     ids = gdf["ID"].astype(str).to_numpy()
     return [
@@ -290,6 +296,8 @@ class LineLayerData:
     SHP_FILENAME: ClassVar[str]
     ids: NDArray[np.str_]
     polylines: list[NDArray[np.float64]]
+    id_to_index: dict[str, int]
+    xy_lines: tuple[shapely.LineString, ...]
 
     def __init__(self, shp_dir: Path) -> None:
         if not shp_dir.is_dir():
@@ -304,8 +312,20 @@ class LineLayerData:
         return cls(shp_dir)
 
     def _populate(self, gdf: gpd.GeoDataFrame) -> None:
-        object.__setattr__(self, "ids", _ids(gdf))
-        object.__setattr__(self, "polylines", _polylines_from_gdf(gdf))
+        ids = _ids(gdf)
+        polylines = _polylines_from_gdf(gdf)
+        object.__setattr__(self, "ids", ids)
+        object.__setattr__(self, "polylines", polylines)
+        object.__setattr__(
+            self,
+            "id_to_index",
+            {str(link_id): i for i, link_id in enumerate(ids)},
+        )
+        object.__setattr__(
+            self,
+            "xy_lines",
+            tuple(_line_xy_from_polyline(polyline) for polyline in polylines),
+        )
 
 
 @dataclass(slots=True, frozen=True, init=False)

@@ -22,6 +22,7 @@ Dock widgets stay disabled until the first successful load.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -351,15 +352,22 @@ class HdMapWindow(QMainWindow):
         viz = self.viz
         if viz is None:
             return ()
-        fn = {
-            "A1": self._fields_a1,
-            "A2": self._fields_a2,
-            "A3": self._fields_a3,
-            "A4": self._fields_a4,
-            "B2": self._fields_b2,
-            "C3": self._fields_c3,
-        }.get(kind)
-        return fn(viz, idx) if fn is not None else ()
+        builder: Callable[[HdMapViz, int], tuple[SelectedSection, ...]]
+        if kind == "A1":
+            builder = self._fields_a1
+        elif kind == "A2":
+            builder = self._fields_a2
+        elif kind == "A3":
+            builder = self._fields_a3
+        elif kind == "A4":
+            builder = self._fields_a4
+        elif kind == "B2":
+            builder = self._fields_b2
+        elif kind == "C3":
+            builder = self._fields_c3
+        else:
+            return ()
+        return builder(viz, idx)
 
     def _fields_a1(self, viz: HdMapViz, idx: int) -> tuple[SelectedSection, ...]:
         d = viz.a1
