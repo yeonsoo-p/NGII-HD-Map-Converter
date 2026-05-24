@@ -43,6 +43,9 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
     return SegmentationConfig(
         z_intersection_tol_m=float(cfg.segmentation.z_intersection_tol_m),
         junction_proximity_merge_dist_m=float(cfg.segmentation.junction_proximity_merge_dist_m),
+        junction_connection_node_merge_dist_m=float(
+            cfg.segmentation.junction_connection_node_merge_dist_m
+        ),
     )
 
 
@@ -59,7 +62,6 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         line_width_a2=float(raw["line_width_a2"]),
         line_width_b2=float(raw["line_width_b2"]),
         line_width_c3=float(raw["line_width_c3"]),
-        line_width_highlight=float(raw["line_width_highlight"]),
         selector_tol_a1=float(raw["selector_tol_a1"]),
         selector_tol_a2=float(raw["selector_tol_a2"]),
         selector_tol_thin=float(raw["selector_tol_thin"]),

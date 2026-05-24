@@ -260,6 +260,7 @@ class PointLayerData:
     SHP_FILENAME: ClassVar[str]
     ids: NDArray[np.str_]
     points: NDArray[np.float64]
+    id_to_index: dict[str, int]
 
     def __init__(self, shp_dir: Path) -> None:
         if not shp_dir.is_dir():
@@ -282,8 +283,14 @@ class PointLayerData:
         # Subclasses override and call PointLayerData._populate(self, gdf)
         # explicitly first - super() is broken under @dataclass(slots=True)
         # inheritance because the decorator rebuilds the class object.
-        object.__setattr__(self, "ids", _ids(gdf))
+        ids = _ids(gdf)
+        object.__setattr__(self, "ids", ids)
         object.__setattr__(self, "points", _points_from_gdf(gdf))
+        object.__setattr__(
+            self,
+            "id_to_index",
+            {str(point_id): i for i, point_id in enumerate(ids)},
+        )
 
 
 @dataclass(slots=True, frozen=True, init=False)

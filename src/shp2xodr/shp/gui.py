@@ -372,18 +372,20 @@ class HdMapWindow(QMainWindow):
     def _fields_a1(self, viz: HdMapViz, idx: int) -> tuple[SelectedSection, ...]:
         d = viz.a1
         x, y, z = d.points[idx]
-        return (
-            _raw_section(
-                (
-                    _field("ID", str(d.ids[idx])),
-                    _field("NodeType", _coded(d.node_types[idx], A1Data.NODE_TYPE_LABEL)),
-                    _field("ITS NodeID", _opt(d.its_node_ids[idx])),
-                    _field("X (m)", f"{float(x):.3f}"),
-                    _field("Y (m)", f"{float(y):.3f}"),
-                    _field("Z (m)", f"{float(z):.3f}"),
-                )
-            ),
+        raw = _raw_section(
+            (
+                _field("ID", str(d.ids[idx])),
+                _field("NodeType", _coded(d.node_types[idx], A1Data.NODE_TYPE_LABEL)),
+                _field("ITS NodeID", _opt(d.its_node_ids[idx])),
+                _field("X (m)", f"{float(x):.3f}"),
+                _field("Y (m)", f"{float(y):.3f}"),
+                _field("Z (m)", f"{float(z):.3f}"),
+            )
         )
+        segmentation_rows = viz.segmentation.selected_fields_for_node(idx)
+        if not segmentation_rows:
+            return (raw,)
+        return (raw, SelectedSection("Segmentation", segmentation_rows))
 
     def _fields_a2(self, viz: HdMapViz, idx: int) -> tuple[SelectedSection, ...]:
         d = viz.a2

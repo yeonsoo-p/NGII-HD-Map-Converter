@@ -15,6 +15,10 @@ segmentation:
   # digitization gaps inside one physical junction while staying narrower
   # than a broad intersection-wide proximity merge.
   junction_proximity_merge_dist_m: 5.0
+  # Max planimetric distance (m) for grouping A1 NodeType=1 lateral endpoint
+  # node groups into one bidirectional junction connection. Direct A2
+  # connectivity between node groups blocks this merge.
+  junction_connection_node_merge_dist_m: 10.0
 
 viz:
   # ---- Rendering geometry --------------------------------------------------
@@ -28,10 +32,6 @@ viz:
   line_width_a2: 2.5
   line_width_b2: 1.4
   line_width_c3: 1.8
-  # Highlight overlay - fatter than every base layer so it always reads as
-  # "the selected line" even when multiple base cells share XY (단선 중앙선).
-  line_width_highlight: 4.5
-
   # ---- Selector tolerances (fraction of screen) ------------------------------
   # A1 dots are small (point selector); A2 has tight tol since the lines are
   # thick. B2 / C3 are slimmer lines that pass over A3 / A4 polygons whose

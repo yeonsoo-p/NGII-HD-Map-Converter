@@ -48,11 +48,6 @@ log = logging.getLogger(__name__)
 # relative offsets only take effect once this is on.
 vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 
-# The highlight overlay starts empty (no selects yet). PyVista 0.43+ refuses
-# empty meshes by default; flipping this global theme bit lets us attach the
-# actor up-front and swap geometry in on the first select.
-pv.global_theme.allow_empty_mesh = True
-
 
 # ---- Select callback type --------------------------------------------------------
 
@@ -85,7 +80,6 @@ class VizConfig:
     line_width_a2: float
     line_width_b2: float
     line_width_c3: float
-    line_width_highlight: float
     # Selector tolerances (fraction of screen)
     selector_tol_a1: float
     selector_tol_a2: float
@@ -186,10 +180,13 @@ class _PointLayer:
 
     name: str
     data: PointLayerData
+    color_fn: Callable[[], NDArray[np.uint8]]
     point_size: float
     selector_tolerance: float
+    selected_rgb: tuple[int, int, int]
     poly: pv.PolyData = field(init=False)
     actor: vtk.vtkActor | None = field(default=None, init=False)
+    selected_index: int | None = field(default=None, init=False)
     selector: vtk.vtkPointPicker = field(init=False)
 
     def __post_init__(self) -> None:
@@ -201,11 +198,14 @@ class _PointLayer:
     def attach(self, plotter: pv.Plotter) -> None:
         if self.poly.n_points == 0:
             return
+        self.refresh_colors()
         self.actor = plotter.add_mesh(
             self.poly,
-            color="black",
+            scalars="rgb",
+            rgb=True,
             point_size=self.point_size,
             render_points_as_spheres=True,
+            show_scalar_bar=False,
         )
         self.selector.AddPickList(self.actor)
 
@@ -213,16 +213,27 @@ class _PointLayer:
         if self.actor is not None:
             self.actor.SetVisibility(int(on))
 
+    def set_selected(self, index: int | None) -> None:
+        self.selected_index = index
+        self.refresh_colors()
+
+    def refresh_colors(self) -> None:
+        if self.poly.n_points == 0:
+            return
+        self.poly.point_data["rgb"] = self._display_colors()
+        self.poly.Modified()
+
+    def _display_colors(self) -> NDArray[np.uint8]:
+        rgb = np.array(self.color_fn(), dtype=np.uint8, copy=True)
+        if self.selected_index is not None and 0 <= self.selected_index < len(rgb):
+            rgb[self.selected_index] = np.asarray(self.selected_rgb, dtype=np.uint8)
+        return rgb
+
 
 @dataclass(slots=True)
 class _LineLayer:
     """One selectable line layer (A2 / B2 / C3) wrapping a
     :class:`LineLayerData` record plus its render-time selector / actor.
-
-    ``color_fn`` produces the per-cell baseline colors used at attach time.
-    Highlight on select is delivered via a dedicated overlay on :class:`HdMapViz`,
-    not by mutating this layer's per-cell RGB, so the same highlight is
-    visible even when two base cells share geometry (단선 중앙선).
     """
 
     name: str
@@ -230,8 +241,10 @@ class _LineLayer:
     color_fn: Callable[[], NDArray[np.uint8]]
     line_width: float
     selector_tolerance: float
+    selected_rgb: tuple[int, int, int]
     poly: pv.PolyData = field(init=False)
     actor: vtk.vtkActor | None = field(default=None, init=False)
+    selected_index: int | None = field(default=None, init=False)
     selector: vtk.vtkCellPicker = field(init=False)
 
     def __post_init__(self) -> None:
@@ -243,7 +256,7 @@ class _LineLayer:
     def attach(self, plotter: pv.Plotter) -> None:
         if self.poly.n_cells == 0:
             return
-        self.poly.cell_data["rgb"] = self.color_fn()
+        self.refresh_colors()
         self.actor = plotter.add_mesh(
             self.poly,
             scalars="rgb",
@@ -256,6 +269,22 @@ class _LineLayer:
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
             self.actor.SetVisibility(int(on))
+
+    def set_selected(self, index: int | None) -> None:
+        self.selected_index = index
+        self.refresh_colors()
+
+    def refresh_colors(self) -> None:
+        if self.poly.n_cells == 0:
+            return
+        self.poly.cell_data["rgb"] = self._display_colors()
+        self.poly.Modified()
+
+    def _display_colors(self) -> NDArray[np.uint8]:
+        rgb = np.array(self.color_fn(), dtype=np.uint8, copy=True)
+        if self.selected_index is not None and 0 <= self.selected_index < len(rgb):
+            rgb[self.selected_index] = np.asarray(self.selected_rgb, dtype=np.uint8)
+        return rgb
 
 
 @dataclass(slots=True)
@@ -271,8 +300,10 @@ class _PolygonLayer:
     opacity: float
     depth_offset_factor: float
     depth_offset_units: float
+    selected_rgb: tuple[int, int, int]
     poly: pv.PolyData = field(init=False)
     actor: vtk.vtkActor | None = field(default=None, init=False)
+    selected_index: int | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.poly = _polygon_polydata(self.data.rings)
@@ -280,9 +311,7 @@ class _PolygonLayer:
     def attach(self, plotter: pv.Plotter, selector: vtk.vtkCellPicker) -> None:
         if self.poly.n_cells == 0:
             return
-        face_rgb = self.face_rgb_fn()
-        per_tri_rgb = face_rgb[self.poly.cell_data["poly_idx"]]
-        self.poly.cell_data["rgb"] = per_tri_rgb
+        self.refresh_colors()
         self.actor = plotter.add_mesh(
             self.poly,
             scalars="rgb",
@@ -300,6 +329,24 @@ class _PolygonLayer:
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
             self.actor.SetVisibility(int(on))
+
+    def set_selected(self, index: int | None) -> None:
+        self.selected_index = index
+        self.refresh_colors()
+
+    def refresh_colors(self) -> None:
+        if self.poly.n_cells == 0:
+            return
+        self.poly.cell_data["rgb"] = self._display_colors()
+        self.poly.Modified()
+
+    def _display_colors(self) -> NDArray[np.uint8]:
+        face_rgb = self.face_rgb_fn()
+        poly_idx = np.asarray(self.poly.cell_data["poly_idx"])
+        rgb = np.array(face_rgb[poly_idx], dtype=np.uint8, copy=True)
+        if self.selected_index is not None:
+            rgb[poly_idx == self.selected_index] = np.asarray(self.selected_rgb, dtype=np.uint8)
+        return rgb
 
 
 # ---- Main viz class ------------------------------------------------------------
@@ -336,7 +383,7 @@ class HdMapViz:
         self.c3 = C3Data(shp_dir)
         self.a3: A3Data | None = A3Data.try_load(shp_dir)
         self.a4: A4Data | None = A4Data.try_load(shp_dir)
-        self.segmentation = Segmentation.from_layers(self.a2, self.b2, seg_cfg)
+        self.segmentation = Segmentation.from_layers(self.a1, self.a2, self.b2, seg_cfg)
         self.segmentation_palettes = {
             result.stage_id: _random_palette(len(result.entities), seed=10_001 + 997 * i)
             for i, result in enumerate(self.segmentation.stage_results)
@@ -348,8 +395,10 @@ class HdMapViz:
         self.a1_layer = _PointLayer(
             "A1",
             self.a1,
+            self._a1_point_colors,
             point_size=viz_cfg.node_point_size,
             selector_tolerance=viz_cfg.selector_tol_a1,
+            selected_rgb=viz_cfg.highlight_rgb,
         )
         self.line_layers: tuple[_LineLayer, ...] = (
             _LineLayer(
@@ -358,6 +407,7 @@ class HdMapViz:
                 self._a2_cell_colors,
                 line_width=viz_cfg.line_width_a2,
                 selector_tolerance=viz_cfg.selector_tol_a2,
+                selected_rgb=viz_cfg.highlight_rgb,
             ),
             _LineLayer(
                 "B2",
@@ -365,6 +415,7 @@ class HdMapViz:
                 self._b2_cell_colors,
                 line_width=viz_cfg.line_width_b2,
                 selector_tolerance=viz_cfg.selector_tol_thin,
+                selected_rgb=viz_cfg.highlight_rgb,
             ),
             _LineLayer(
                 "C3",
@@ -372,6 +423,7 @@ class HdMapViz:
                 self._c3_cell_colors,
                 line_width=viz_cfg.line_width_c3,
                 selector_tolerance=viz_cfg.selector_tol_thin,
+                selected_rgb=viz_cfg.highlight_rgb,
             ),
         )
 
@@ -389,6 +441,7 @@ class HdMapViz:
                     opacity=viz_cfg.poly_opacity,
                     depth_offset_factor=viz_cfg.poly_depth_offset_factor,
                     depth_offset_units=viz_cfg.poly_depth_offset_units,
+                    selected_rgb=viz_cfg.highlight_rgb,
                 )
             )
         if self.a4 is not None:
@@ -400,20 +453,36 @@ class HdMapViz:
                     opacity=viz_cfg.poly_opacity,
                     depth_offset_factor=viz_cfg.poly_depth_offset_factor,
                     depth_offset_units=viz_cfg.poly_depth_offset_units,
+                    selected_rgb=viz_cfg.highlight_rgb,
                 )
             )
         self.polygon_layers: tuple[_PolygonLayer, ...] = tuple(poly_specs)
 
-        # Highlight overlay — starts empty so PyVista's allow_empty_mesh
-        # covers it; geometry is swapped in on the first select.
-        self.highlight_poly = pv.PolyData()
-        self.highlight_actor: vtk.vtkActor | None = None
+        # One selected source row at a time, rendered by mutating its owning mesh.
+        self._selected: tuple[str, int] | None = None
 
         # Teardown handles - populated in attach(), consumed by detach().
         self._left_press_tag: int | None = None
         self._key_events_bound: tuple[str, ...] = ()
 
     # ---- Per-layer color compute ---------------------------------------------
+
+    def _a1_point_colors(self) -> NDArray[np.uint8]:
+        """RGB per A1_NODE at the current cumulative segmentation level."""
+        return self._a1_point_colors_at(self._segmentation_level)
+
+    def _a1_point_colors_at(self, level: int) -> NDArray[np.uint8]:
+        n = len(self.a1.ids)
+        rgb = np.zeros((n, 3), dtype=np.uint8)
+        for result in self.segmentation.active_results(level):
+            if result.target_layer != "A1" or result.entity_id_per_node is None:
+                continue
+            palette = self.segmentation_palettes[result.stage_id]
+            entity_ids = result.entity_id_per_node
+            mask = entity_ids >= 0
+            if mask.any():
+                rgb[mask] = palette[entity_ids[mask]]
+        return rgb
 
     def _a2_cell_colors(self) -> NDArray[np.uint8]:
         """RGB per A2_LINK at the current cumulative segmentation level."""
@@ -423,6 +492,8 @@ class HdMapViz:
         n = len(self.a2.ids)
         rgb = np.tile(np.asarray(self.viz_cfg.a2_uniform_rgb, dtype=np.uint8), (n, 1))
         for result in self.segmentation.active_results(level):
+            if result.target_layer != "A2":
+                continue
             palette = self.segmentation_palettes[result.stage_id]
             entity_ids = result.entity_id_per_link
             mask = entity_ids >= 0
@@ -505,22 +576,18 @@ class HdMapViz:
             line_layer.attach(self.plotter)
         self.a1_layer.attach(self.plotter)
 
+        a1_poly = self.a1_layer.poly
+        a1_poly.point_data["node_id"] = self.a1.ids
+        for result in self.segmentation.stage_results:
+            if result.entity_id_per_node is not None:
+                a1_poly.point_data[f"{result.stage_id}_id"] = result.entity_id_per_node
+
         # A2 cell_data extra lets select consumers read the source link id.
         a2_poly = self.line_layers[0].poly
         a2_poly.cell_data["link_id"] = self.a2.ids
         for result in self.segmentation.stage_results:
-            a2_poly.cell_data[f"{result.stage_id}_id"] = result.entity_id_per_link
-
-        # Highlight overlay — added last so it draws on top of every base
-        # mesh. Initial PolyData is empty, so nothing renders until a select
-        # populates it. pickable=False keeps the overlay out of VTK picking.
-        self.highlight_actor = self.plotter.add_mesh(
-            self.highlight_poly,
-            color=self.viz_cfg.highlight_rgb,
-            line_width=self.viz_cfg.line_width_highlight,
-            show_scalar_bar=False,
-            pickable=False,
-        )
+            if result.target_layer == "A2":
+                a2_poly.cell_data[f"{result.stage_id}_id"] = result.entity_id_per_link
 
         self.plotter.add_axes()
         self._add_view_keys()
@@ -544,7 +611,6 @@ class HdMapViz:
             self.a1_layer.actor,
             *(line.actor for line in self.line_layers),
             *(poly.actor for poly in self.polygon_layers),
-            self.highlight_actor,
         ):
             if actor is not None:
                 self.plotter.remove_actor(actor)
@@ -577,19 +643,17 @@ class HdMapViz:
         self.plotter.render()
 
     def set_segmentation_level(self, level: int) -> None:
-        """Switch cumulative A2 segmentation coloring level.
+        """Switch cumulative segmentation coloring level.
 
-        Level 0 is raw neutral A2; level N applies the first N registered
-        segmentation stages in order.
+        Level 0 is raw neutral A2/A1. Later levels recolor the owning meshes.
         """
         if level < 0 or level > len(self.segmentation.stage_results):
             raise ValueError(level)
         if level == self._segmentation_level:
             return
         self._segmentation_level = level
-        a2_poly = self.line_layers[0].poly
-        a2_poly.cell_data["rgb"] = self._a2_cell_colors_at(level)
-        a2_poly.Modified()
+        self.a1_layer.refresh_colors()
+        self.line_layers[0].refresh_colors()
         self.plotter.render()
 
     # ---- Shift-click dispatch ------------------------------------------------
@@ -613,24 +677,18 @@ class HdMapViz:
         pid = layer.selector.GetPointId()
         if pid < 0:
             return False
+        self._set_selected(layer.name, pid)
         self._emit_select(layer.name, pid)
         return True
 
     def _try_line_select(self, layer: _LineLayer, x: int, y: int, renderer: Any) -> bool:
-        """Hit-test ``layer.selector``; on hit, swap the highlight overlay's
-        geometry to the selected cell's polyline.
-
-        The overlay is a separate PolyData rendered last with a fat stroke,
-        which means the highlight stays visible even when multiple base
-        cells share the same XY (단선 중앙선: two B2 rows draw on top of
-        each other per NGII manual §9.4.7).
-        """
+        """Hit-test ``layer.selector`` and mark the owning layer row selected."""
         if layer.actor is None or not layer.selector.Pick(x, y, 0, renderer):
             return False
         cid = layer.selector.GetCellId()
         if cid < 0:
             return False
-        self._set_highlight(layer.data.polylines[cid])
+        self._set_selected(layer.name, cid)
         self._emit_select(layer.name, cid)
         return True
 
@@ -644,20 +702,17 @@ class HdMapViz:
         for layer in self.polygon_layers:
             if layer.actor is actor:
                 pi = int(layer.poly.cell_data["poly_idx"][cid])
+                self._set_selected(layer.name, pi)
                 self._emit_select(layer.name, pi)
                 return
 
-    def _set_highlight(self, polyline: NDArray[np.float64]) -> None:
-        """Swap the highlight overlay's geometry to one polyline in place.
-
-        Uses the same ``self.highlight_poly`` reference the actor was bound
-        to in :meth:`attach`, so VTK keeps the existing mapper.
-        """
-        n = len(polyline)
-        cells = np.concatenate(([n], np.arange(n, dtype=np.int64)))
-        new_poly = pv.PolyData(polyline, lines=cells)
-        self.highlight_poly.points = new_poly.points
-        self.highlight_poly.lines = new_poly.lines
+    def _set_selected(self, kind: str, idx: int) -> None:
+        self._selected = (kind, idx)
+        self.a1_layer.set_selected(idx if kind == self.a1_layer.name else None)
+        for line_layer in self.line_layers:
+            line_layer.set_selected(idx if kind == line_layer.name else None)
+        for polygon_layer in self.polygon_layers:
+            polygon_layer.set_selected(idx if kind == polygon_layer.name else None)
         self.plotter.render()
 
     def _emit_select(self, kind: str, idx: int) -> None:
