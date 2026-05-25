@@ -19,6 +19,10 @@ segmentation:
   # node groups into one bidirectional junction connection. Direct A2
   # connectivity between node groups blocks this merge.
   junction_connection_node_merge_dist_m: 10.0
+  # Half-length (m) of the lateral perpendicular line drawn at each
+  # JunctionConnection's outermost A1 node by ConnectionPerpendicularStage.
+  # Total rendered line length is twice this value.
+  connection_perpendicular_half_length_m: 5.0
 
 viz:
   # ---- Rendering geometry --------------------------------------------------
@@ -97,6 +101,27 @@ viz:
     "7": [220, 130, 30]
     "8": [90, 90, 90]
   c3_type_fallback_rgb: [140, 140, 140]
+
+  # ---- Connection-reference arrow glyph ------------------------------------
+  # ConnectionReferenceStage draws one arrow per JunctionConnection, anchored
+  # at the representative A2 link's endpoint where it touches the
+  # connection and oriented along the polyline's native (FromNode → ToNode)
+  # direction. Inbound legs point toward the junction; outbound legs point
+  # away.
+  connection_reference_arrow_length_m: 5.0
+  connection_reference_arrow_rgb: [255, 200, 30]
+
+  # ---- Connection-perpendicular line ---------------------------------------
+  # ConnectionPerpendicularStage draws one line per JunctionConnection at its
+  # outermost A1 node, perpendicular to the reference-line direction.
+  connection_perpendicular_rgb: [30, 200, 230]
+  connection_perpendicular_line_width: 3.0
+
+  # ---- Enlarged JunctionConnection A1 nodes --------------------------------
+  # Larger sphere size for A1 nodes that participate in a JunctionConnection.
+  # Rendered as a separate overlay on top of the base A1 layer (base layer
+  # uses node_point_size; the overlay covers JC nodes with bigger spheres).
+  junction_connection_node_point_size: 9.0
 
 # Hydra's default job_logging file handler opens its .log file with the
 # platform encoding (cp1252 on Windows). Section names contain Hangul; force

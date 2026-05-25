@@ -46,6 +46,9 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
         junction_connection_node_merge_dist_m=float(
             cfg.segmentation.junction_connection_node_merge_dist_m
         ),
+        connection_perpendicular_half_length_m=float(
+            cfg.segmentation.connection_perpendicular_half_length_m
+        ),
     )
 
 
@@ -78,6 +81,11 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         b2_paint_fallback_rgb=_rgb_int(raw["b2_paint_fallback_rgb"]),
         c3_type_rgb=_rgb_int_dict(raw["c3_type_rgb"]),
         c3_type_fallback_rgb=_rgb_int(raw["c3_type_fallback_rgb"]),
+        connection_reference_arrow_length_m=float(raw["connection_reference_arrow_length_m"]),
+        connection_reference_arrow_rgb=_rgb_int(raw["connection_reference_arrow_rgb"]),
+        connection_perpendicular_rgb=_rgb_int(raw["connection_perpendicular_rgb"]),
+        connection_perpendicular_line_width=float(raw["connection_perpendicular_line_width"]),
+        junction_connection_node_point_size=float(raw["junction_connection_node_point_size"]),
     )
 
 

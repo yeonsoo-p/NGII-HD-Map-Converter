@@ -40,7 +40,15 @@ from shp2xodr.shp.data import (
     PointLayerData,
     PolygonLayerData,
 )
-from shp2xodr.shp.segmentation import Segmentation, SegmentationConfig
+from shp2xodr.shp.segmentation import (
+    ConnectionPerpendicular,
+    ConnectionPerpendicularStage,
+    ConnectionReference,
+    ConnectionReferenceStage,
+    JunctionConnectionStage,
+    Segmentation,
+    SegmentationConfig,
+)
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +107,14 @@ class VizConfig:
     b2_paint_fallback_rgb: tuple[int, int, int]
     c3_type_rgb: dict[str, tuple[int, int, int]]
     c3_type_fallback_rgb: tuple[int, int, int]
+    # Connection-reference arrow glyph (drawn by ConnectionReferenceStage).
+    connection_reference_arrow_length_m: float
+    connection_reference_arrow_rgb: tuple[int, int, int]
+    # Connection-perpendicular line segments (drawn by ConnectionPerpendicularStage).
+    connection_perpendicular_rgb: tuple[int, int, int]
+    connection_perpendicular_line_width: float
+    # Larger sphere overlay for A1 nodes that participate in a JunctionConnection.
+    junction_connection_node_point_size: float
 
 
 # ---- Generic helpers -----------------------------------------------------------
@@ -349,6 +365,121 @@ class _PolygonLayer:
         return rgb
 
 
+@dataclass(slots=True)
+class _ArrowOverlay:
+    """Static arrow glyphs for one segmentation stage.
+
+    ``centers`` and ``directions`` are precomputed at construction time;
+    the actor is created in :meth:`attach` and shown only when the GUI's
+    cumulative segmentation level reaches ``visible_at_level`` (the 1-based
+    index of the owning stage in ``SEGMENTATION_STAGES``).
+    """
+
+    name: str
+    centers: NDArray[np.float64]
+    directions: NDArray[np.float64]
+    arrow_length_m: float
+    rgb: tuple[int, int, int]
+    visible_at_level: int
+    actor: vtk.vtkActor | None = field(default=None, init=False)
+
+    def attach(self, plotter: pv.Plotter, current_level: int) -> None:
+        if len(self.centers) == 0:
+            return
+        self.actor = plotter.add_arrows(
+            self.centers,
+            self.directions,
+            mag=self.arrow_length_m,
+            color=self.rgb,
+            show_scalar_bar=False,
+        )
+        self.actor.SetVisibility(int(current_level >= self.visible_at_level))
+
+    def detach(self, plotter: pv.Plotter) -> None:
+        if self.actor is not None:
+            plotter.remove_actor(self.actor)
+            self.actor = None
+
+    def set_level(self, current_level: int) -> None:
+        if self.actor is not None:
+            self.actor.SetVisibility(int(current_level >= self.visible_at_level))
+
+
+@dataclass(slots=True)
+class _LineSegmentOverlay:
+    """Static line segments for one segmentation stage.
+
+    ``poly`` is pre-built with 2N points + N two-point line cells; the actor
+    is created in :meth:`attach` and shown only when the GUI's cumulative
+    segmentation level reaches ``visible_at_level``.
+    """
+
+    name: str
+    poly: pv.PolyData
+    line_width: float
+    rgb: tuple[int, int, int]
+    visible_at_level: int
+    actor: vtk.vtkActor | None = field(default=None, init=False)
+
+    def attach(self, plotter: pv.Plotter, current_level: int) -> None:
+        if self.poly.n_cells == 0:
+            return
+        self.actor = plotter.add_mesh(
+            self.poly,
+            color=self.rgb,
+            line_width=self.line_width,
+            show_scalar_bar=False,
+        )
+        self.actor.SetVisibility(int(current_level >= self.visible_at_level))
+
+    def detach(self, plotter: pv.Plotter) -> None:
+        if self.actor is not None:
+            plotter.remove_actor(self.actor)
+            self.actor = None
+
+    def set_level(self, current_level: int) -> None:
+        if self.actor is not None:
+            self.actor.SetVisibility(int(current_level >= self.visible_at_level))
+
+
+@dataclass(slots=True)
+class _PointOverlay:
+    """Enlarged-point overlay for a subset of A1 nodes.
+
+    ``poly`` carries the subset's XYZ points and a precomputed per-point
+    ``rgb`` array. Renders on top of the base A1 layer (larger spheres at
+    the same positions occlude the base dots).
+    """
+
+    name: str
+    poly: pv.PolyData
+    point_size: float
+    visible_at_level: int
+    actor: vtk.vtkActor | None = field(default=None, init=False)
+
+    def attach(self, plotter: pv.Plotter, current_level: int) -> None:
+        if self.poly.n_points == 0:
+            return
+        self.actor = plotter.add_mesh(
+            self.poly,
+            scalars="rgb",
+            rgb=True,
+            point_size=self.point_size,
+            render_points_as_spheres=True,
+            show_scalar_bar=False,
+        )
+        self.actor.SetVisibility(int(current_level >= self.visible_at_level))
+
+    def detach(self, plotter: pv.Plotter) -> None:
+        if self.actor is not None:
+            plotter.remove_actor(self.actor)
+            self.actor = None
+
+    def set_level(self, current_level: int) -> None:
+        if self.actor is not None:
+            self.actor.SetVisibility(int(current_level >= self.visible_at_level))
+
+
 # ---- Main viz class ------------------------------------------------------------
 
 
@@ -458,6 +589,10 @@ class HdMapViz:
             )
         self.polygon_layers: tuple[_PolygonLayer, ...] = tuple(poly_specs)
 
+        self._connection_reference_overlay = self._build_connection_reference_overlay()
+        self._connection_perpendicular_overlay = self._build_connection_perpendicular_overlay()
+        self._junction_connection_point_overlay = self._build_junction_connection_point_overlay()
+
         # One selected source row at a time, rendered by mutating its owning mesh.
         self._selected: tuple[str, int] | None = None
 
@@ -546,6 +681,118 @@ class HdMapViz:
             rgb[i] = cfg.a4_subtype_rgb.get(st, cfg.a4_fallback_rgb)
         return rgb
 
+    # ---- Connection-reference arrow overlay ---------------------------------
+
+    def _build_connection_reference_overlay(self) -> _ArrowOverlay:
+        result = self.segmentation.result(ConnectionReferenceStage.id)
+        visible_at_level = next(
+            i + 1
+            for i, stage_result in enumerate(self.segmentation.stage_results)
+            if stage_result.stage_id == ConnectionReferenceStage.id
+        )
+        references = tuple(
+            entity for entity in result.entities if isinstance(entity, ConnectionReference)
+        )
+        if not references:
+            empty_xyz = np.empty((0, 3), dtype=np.float64)
+            return _ArrowOverlay(
+                name="connection_reference",
+                centers=empty_xyz,
+                directions=empty_xyz,
+                arrow_length_m=self.viz_cfg.connection_reference_arrow_length_m,
+                rgb=self.viz_cfg.connection_reference_arrow_rgb,
+                visible_at_level=visible_at_level,
+            )
+        centers = np.asarray([ref.anchor_xyz for ref in references], dtype=np.float64)
+        directions = np.zeros((len(references), 3), dtype=np.float64)
+        for i, ref in enumerate(references):
+            directions[i, 0] = ref.tangent_xy[0]
+            directions[i, 1] = ref.tangent_xy[1]
+        return _ArrowOverlay(
+            name="connection_reference",
+            centers=centers,
+            directions=directions,
+            arrow_length_m=self.viz_cfg.connection_reference_arrow_length_m,
+            rgb=self.viz_cfg.connection_reference_arrow_rgb,
+            visible_at_level=visible_at_level,
+        )
+
+    # ---- Connection-perpendicular line overlay -------------------------------
+
+    def _build_connection_perpendicular_overlay(self) -> _LineSegmentOverlay:
+        result = self.segmentation.result(ConnectionPerpendicularStage.id)
+        visible_at_level = next(
+            i + 1
+            for i, stage_result in enumerate(self.segmentation.stage_results)
+            if stage_result.stage_id == ConnectionPerpendicularStage.id
+        )
+        perpendiculars = tuple(
+            entity for entity in result.entities if isinstance(entity, ConnectionPerpendicular)
+        )
+        segments: list[NDArray[np.float64]] = []
+        for entity in perpendiculars:
+            half_dx = entity.half_length_m * entity.perpendicular_xy[0]
+            half_dy = entity.half_length_m * entity.perpendicular_xy[1]
+            anchor = entity.anchor_xyz
+            segments.append(
+                np.asarray(
+                    [
+                        [anchor[0] - half_dx, anchor[1] - half_dy, anchor[2]],
+                        [anchor[0] + half_dx, anchor[1] + half_dy, anchor[2]],
+                    ],
+                    dtype=np.float64,
+                )
+            )
+        return _LineSegmentOverlay(
+            name="connection_perpendicular",
+            poly=_polyline_polydata(segments),
+            line_width=self.viz_cfg.connection_perpendicular_line_width,
+            rgb=self.viz_cfg.connection_perpendicular_rgb,
+            visible_at_level=visible_at_level,
+        )
+
+    # ---- Enlarged JunctionConnection A1 node overlay ------------------------
+
+    def _build_junction_connection_point_overlay(self) -> _PointOverlay:
+        result = self.segmentation.result(JunctionConnectionStage.id)
+        visible_at_level = next(
+            i + 1
+            for i, stage_result in enumerate(self.segmentation.stage_results)
+            if stage_result.stage_id == JunctionConnectionStage.id
+        )
+        entity_ids_per_node = result.entity_ids_per_node
+        if entity_ids_per_node is None:
+            empty_xyz = np.empty((0, 3), dtype=np.float64)
+            return _PointOverlay(
+                name="junction_connection_points",
+                poly=pv.PolyData(empty_xyz),
+                point_size=self.viz_cfg.junction_connection_node_point_size,
+                visible_at_level=visible_at_level,
+            )
+        palette = self.segmentation_palettes[JunctionConnectionStage.id]
+        node_indices = [i for i, ids in enumerate(entity_ids_per_node) if ids]
+        if not node_indices:
+            empty_xyz = np.empty((0, 3), dtype=np.float64)
+            return _PointOverlay(
+                name="junction_connection_points",
+                poly=pv.PolyData(empty_xyz),
+                point_size=self.viz_cfg.junction_connection_node_point_size,
+                visible_at_level=visible_at_level,
+            )
+        xyz = np.asarray(self.a1.points[node_indices], dtype=np.float64)
+        rgb = np.asarray(
+            [palette[entity_ids_per_node[node_i][0]] for node_i in node_indices],
+            dtype=np.uint8,
+        )
+        poly = pv.PolyData(xyz)
+        poly.point_data["rgb"] = rgb
+        return _PointOverlay(
+            name="junction_connection_points",
+            poly=poly,
+            point_size=self.viz_cfg.junction_connection_node_point_size,
+            visible_at_level=visible_at_level,
+        )
+
     # ---- View keys -----------------------------------------------------------
 
     def _add_view_keys(self) -> None:
@@ -575,6 +822,9 @@ class HdMapViz:
         for line_layer in reversed(self.line_layers):
             line_layer.attach(self.plotter)
         self.a1_layer.attach(self.plotter)
+        self._junction_connection_point_overlay.attach(self.plotter, self._segmentation_level)
+        self._connection_reference_overlay.attach(self.plotter, self._segmentation_level)
+        self._connection_perpendicular_overlay.attach(self.plotter, self._segmentation_level)
 
         a1_poly = self.a1_layer.poly
         a1_poly.point_data["node_id"] = self.a1.ids
@@ -614,6 +864,9 @@ class HdMapViz:
         ):
             if actor is not None:
                 self.plotter.remove_actor(actor)
+        self._junction_connection_point_overlay.detach(self.plotter)
+        self._connection_reference_overlay.detach(self.plotter)
+        self._connection_perpendicular_overlay.detach(self.plotter)
         if self._left_press_tag is not None:
             self.plotter.iren.remove_observer(self._left_press_tag)
             self._left_press_tag = None
@@ -654,6 +907,9 @@ class HdMapViz:
         self._segmentation_level = level
         self.a1_layer.refresh_colors()
         self.line_layers[0].refresh_colors()
+        self._junction_connection_point_overlay.set_level(level)
+        self._connection_reference_overlay.set_level(level)
+        self._connection_perpendicular_overlay.set_level(level)
         self.plotter.render()
 
     # ---- Shift-click dispatch ------------------------------------------------

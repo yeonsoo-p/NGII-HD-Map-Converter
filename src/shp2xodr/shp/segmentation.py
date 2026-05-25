@@ -39,6 +39,7 @@ class SegmentationConfig:
     z_intersection_tol_m: float
     junction_proximity_merge_dist_m: float
     junction_connection_node_merge_dist_m: float
+    connection_perpendicular_half_length_m: float
 
 
 @dataclass(slots=True, frozen=True)
@@ -207,6 +208,70 @@ class JunctionConnection:
                 "Connection lateral group",
                 tuple(str(group_id) for group_id in self.lateral_group_ids),
             ),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class ConnectionReference:
+    """OpenDRIVE-style reference line for one JunctionConnection.
+
+    The representative link is the leftmost-priority link
+    (per :func:`_connection_endpoint_leftmost_key`) across every lateral
+    group attached to the connection. ``tangent_xy`` is the polyline's
+    native (``from_node → to_node``) direction at the endpoint touching
+    the connection, so its orientation distinguishes inbound vs outbound
+    legs at the junction.
+    """
+
+    id: int
+    junction_connection_id: int
+    junction_id: int
+    lateral_group_id: int
+    representative_link_index: int
+    representative_link_id: str
+    representative_node_index: int
+    representative_node_id: str
+    anchor_xyz: tuple[float, float, float]
+    tangent_xy: tuple[float, float]
+
+    def selected_fields(self) -> tuple[SelectedField, ...]:
+        return (
+            SelectedField.scalar("Connection reference", self.id),
+            SelectedField.scalar("Reference connection", self.junction_connection_id),
+            SelectedField.scalar("Reference junction", self.junction_id),
+            SelectedField.scalar("Reference lateral group", self.lateral_group_id),
+            SelectedField.scalar("Reference link ID", self.representative_link_id),
+            SelectedField.scalar("Reference node ID", self.representative_node_id),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class ConnectionPerpendicular:
+    """Lateral cross-section line at a JunctionConnection's outermost A1 node.
+
+    The chosen node is the JC member whose signed projection along the
+    away-from-junction direction (along the reference-line axis) is
+    maximal — i.e., the node deepest into the lateral group. The
+    perpendicular line is centered at the node and extends
+    ``half_length_m`` on each side along ``perpendicular_xy``.
+    """
+
+    id: int
+    junction_connection_id: int
+    connection_reference_id: int
+    junction_id: int
+    farthest_node_index: int
+    farthest_node_id: str
+    anchor_xyz: tuple[float, float, float]
+    perpendicular_xy: tuple[float, float]
+    half_length_m: float
+
+    def selected_fields(self) -> tuple[SelectedField, ...]:
+        return (
+            SelectedField.scalar("Connection perpendicular", self.id),
+            SelectedField.scalar("Perpendicular connection", self.junction_connection_id),
+            SelectedField.scalar("Perpendicular junction", self.junction_id),
+            SelectedField.scalar("Perpendicular node ID", self.farthest_node_id),
         )
 
 
@@ -499,11 +564,133 @@ class JunctionConnectionStage(SegmentationStage):
         )
 
 
+class ConnectionReferenceStage(SegmentationStage):
+    """Derive the OpenDRIVE-style reference line for each JunctionConnection.
+
+    For every :class:`JunctionConnection`, picks the single leftmost-priority
+    endpoint across all its lateral groups (using the same key as
+    :class:`JunctionConnectionStage`'s per-group representative) and emits
+    one :class:`ConnectionReference` carrying the anchor XYZ and unit
+    tangent. ``entity_id_per_link`` marks only the representative link, so
+    the existing A2 color loop highlights it; the GUI also draws an arrow
+    glyph at ``anchor_xyz`` along ``tangent_xy``.
+    """
+
+    id = "connection_reference"
+    label = "Connection references"
+    entity_label = "Connection reference"
+
+    def run(
+        self,
+        data: SegmentationInput,
+        previous_results: Mapping[str, StageResult],
+    ) -> StageResult:
+        entity_id_per_link = np.full(data.n_links, -1, dtype=np.int32)
+        connection_result = previous_results.get(JunctionConnectionStage.id)
+        lateral_result = previous_results.get(LateralGroupStage.id)
+        if connection_result is None or lateral_result is None:
+            return StageResult(self.id, self.label, self.entity_label, (), entity_id_per_link)
+
+        lateral_groups_by_id = _lateral_groups_by_id(lateral_result)
+        entities: list[ConnectionReference] = []
+        for connection in connection_result.entities:
+            if not isinstance(connection, JunctionConnection):
+                continue
+            entity = _connection_reference_for(
+                data, connection, lateral_groups_by_id, entity_id=len(entities)
+            )
+            if entity is None:
+                continue
+            entity_id_per_link[entity.representative_link_index] = np.int32(entity.id)
+            entities.append(entity)
+
+        if entities:
+            log.info("ConnectionReferenceStage: derived %d reference line(s)", len(entities))
+        return StageResult(
+            self.id, self.label, self.entity_label, tuple(entities), entity_id_per_link
+        )
+
+
+class ConnectionPerpendicularStage(SegmentationStage):
+    """Emit one lateral cross-section line per JunctionConnection.
+
+    For each :class:`JunctionConnection` that has a :class:`ConnectionReference`,
+    pick the JC A1 node deepest into the lateral group (the one with the
+    largest signed projection along the away-from-junction direction taken
+    along the reference axis) and emit a :class:`ConnectionPerpendicular`
+    centered there. The GUI draws a line segment of total length
+    ``2 * half_length_m`` perpendicular to the reference tangent.
+    """
+
+    id = "connection_perpendicular"
+    label = "Connection perpendiculars"
+    entity_label = "Connection perpendicular"
+
+    def run(
+        self,
+        data: SegmentationInput,
+        previous_results: Mapping[str, StageResult],
+    ) -> StageResult:
+        entity_id_per_link = np.full(data.n_links, -1, dtype=np.int32)
+        entity_id_per_node = np.full(data.n_nodes, -1, dtype=np.int32)
+        connection_result = previous_results.get(JunctionConnectionStage.id)
+        reference_result = previous_results.get(ConnectionReferenceStage.id)
+        junction_result = previous_results.get(JunctionStage.id)
+        if connection_result is None or reference_result is None or junction_result is None:
+            return StageResult(
+                self.id,
+                self.label,
+                self.entity_label,
+                (),
+                entity_id_per_link,
+                target_layer="A1",
+                entity_id_per_node=entity_id_per_node,
+            )
+
+        references_by_connection_id = _references_by_connection_id(reference_result)
+        junctions_by_id = _junctions_by_id(junction_result)
+        half_length_m = data.cfg.connection_perpendicular_half_length_m
+
+        entities: list[ConnectionPerpendicular] = []
+        for connection in connection_result.entities:
+            if not isinstance(connection, JunctionConnection):
+                continue
+            entity = _connection_perpendicular_for(
+                data,
+                connection,
+                references_by_connection_id,
+                junctions_by_id,
+                half_length_m=half_length_m,
+                entity_id=len(entities),
+            )
+            if entity is None:
+                continue
+            entity_id_per_node[entity.farthest_node_index] = np.int32(entity.id)
+            entities.append(entity)
+
+        if entities:
+            log.info(
+                "ConnectionPerpendicularStage: derived %d perpendicular line(s)",
+                len(entities),
+            )
+        return StageResult(
+            self.id,
+            self.label,
+            self.entity_label,
+            tuple(entities),
+            entity_id_per_link,
+            target_layer="A1",
+            entity_id_per_node=entity_id_per_node,
+        )
+
+
 SEGMENTATION_STAGES: tuple[type[SegmentationStage], ...] = (
     UTurnStage,
     LateralGroupStage,
     JunctionStage,
     JunctionConnectionStage,
+    ConnectionReferenceStage,
+    ConnectionPerpendicularStage,
 )
 
 
@@ -840,6 +1027,208 @@ def _junction_connections_from_parent(
         )
 
     return tuple(entities), tuple(tuple(entity_ids) for entity_ids in node_entity_lists)
+
+
+def _lateral_groups_by_id(lateral_result: StageResult) -> dict[int, LateralGroup]:
+    return {
+        entity.id: entity for entity in lateral_result.entities if isinstance(entity, LateralGroup)
+    }
+
+
+def _link_endpoint_a1_node_indices(data: SegmentationInput, link_i: int) -> tuple[int, ...]:
+    return tuple(
+        data.a1.id_to_index[node_id]
+        for node_id in _link_endpoint_type1_node_ids(data, link_i)
+        if node_id in data.a1.id_to_index
+    )
+
+
+def _polyline_endpoint_for_node(
+    polyline_xyz: NDArray[np.float64],
+    node_xy: tuple[float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float]] | None:
+    """Return ``(anchor_xyz, unit_tangent_xy)`` for the polyline endpoint
+    closest to ``node_xy``.
+
+    Tangent is the adjacent segment in the polyline's native order
+    (``from_node → to_node``): outbound at ``polyline[0]`` (``p1 - p0``)
+    and inbound at ``polyline[-1]`` (``p[-1] - p[-2]``). Returns ``None``
+    if the polyline is shorter than two points or the adjacent segment is
+    zero-length.
+    """
+    if len(polyline_xyz) < 2:
+        return None
+    start_xyz = polyline_xyz[0]
+    end_xyz = polyline_xyz[-1]
+    dx_start = float(start_xyz[0]) - node_xy[0]
+    dy_start = float(start_xyz[1]) - node_xy[1]
+    dx_end = float(end_xyz[0]) - node_xy[0]
+    dy_end = float(end_xyz[1]) - node_xy[1]
+    if dx_start * dx_start + dy_start * dy_start <= dx_end * dx_end + dy_end * dy_end:
+        anchor = start_xyz
+        tangent_vec = polyline_xyz[1, :2] - polyline_xyz[0, :2]
+    else:
+        anchor = end_xyz
+        tangent_vec = polyline_xyz[-1, :2] - polyline_xyz[-2, :2]
+    norm = float(np.hypot(tangent_vec[0], tangent_vec[1]))
+    if norm <= 0.0:
+        return None
+    return (
+        (float(anchor[0]), float(anchor[1]), float(anchor[2])),
+        (float(tangent_vec[0]) / norm, float(tangent_vec[1]) / norm),
+    )
+
+
+def _connection_reference_for(
+    data: SegmentationInput,
+    connection: JunctionConnection,
+    lateral_groups_by_id: dict[int, LateralGroup],
+    *,
+    entity_id: int,
+) -> ConnectionReference | None:
+    """Return a :class:`ConnectionReference` for ``connection`` or ``None``
+    if no valid representative + tangent can be derived.
+    """
+    connection_node_indices = frozenset(connection.node_indices)
+    candidates: list[tuple[int, _ConnectionEndpoint]] = []
+    for lateral_group_id in connection.lateral_group_ids:
+        lateral_group = lateral_groups_by_id.get(lateral_group_id)
+        if lateral_group is None:
+            continue
+        for link_i in lateral_group.link_indices:
+            lane_no = int(data.a2.lane_nos[link_i])
+            for node_i in _link_endpoint_a1_node_indices(data, link_i):
+                if node_i not in connection_node_indices:
+                    continue
+                candidates.append(
+                    (
+                        lateral_group_id,
+                        _ConnectionEndpoint(
+                            node_index=node_i,
+                            node_id=str(data.a1.ids[node_i]),
+                            link_index=link_i,
+                            lane_no=lane_no,
+                        ),
+                    )
+                )
+    if not candidates:
+        return None
+    representative_lateral_group_id, representative = min(
+        candidates, key=lambda pair: _connection_endpoint_leftmost_key(pair[1])
+    )
+    polyline_xyz = data.a2.polylines[representative.link_index]
+    node_xy = (
+        float(data.a1.points[representative.node_index, 0]),
+        float(data.a1.points[representative.node_index, 1]),
+    )
+    anchor_tangent = _polyline_endpoint_for_node(polyline_xyz, node_xy)
+    if anchor_tangent is None:
+        return None
+    anchor_xyz, tangent_xy = anchor_tangent
+    return ConnectionReference(
+        id=entity_id,
+        junction_connection_id=connection.id,
+        junction_id=connection.junction_id,
+        lateral_group_id=representative_lateral_group_id,
+        representative_link_index=representative.link_index,
+        representative_link_id=str(data.a2.ids[representative.link_index]),
+        representative_node_index=representative.node_index,
+        representative_node_id=representative.node_id,
+        anchor_xyz=anchor_xyz,
+        tangent_xy=tangent_xy,
+    )
+
+
+def _references_by_connection_id(
+    reference_result: StageResult,
+) -> dict[int, ConnectionReference]:
+    return {
+        entity.junction_connection_id: entity
+        for entity in reference_result.entities
+        if isinstance(entity, ConnectionReference)
+    }
+
+
+def _junctions_by_id(junction_result: StageResult) -> dict[int, Junction]:
+    return {
+        entity.id: entity for entity in junction_result.entities if isinstance(entity, Junction)
+    }
+
+
+def _lateral_direction_from_reference(
+    reference: ConnectionReference,
+    junction_centroid_xy: tuple[float, float],
+) -> tuple[float, float]:
+    """Sign-correct ``reference.tangent_xy`` so it points away from the junction.
+
+    The reference tangent points along the polyline's native direction at the
+    representative endpoint, which is either inbound or outbound depending on
+    whether the endpoint is the link's start or end. Flipping when the dot
+    product with ``(anchor - centroid)`` is negative guarantees the result
+    points from the junction outward into the lateral group.
+    """
+    tx, ty = reference.tangent_xy
+    ax = reference.anchor_xyz[0] - junction_centroid_xy[0]
+    ay = reference.anchor_xyz[1] - junction_centroid_xy[1]
+    return (tx, ty) if (tx * ax + ty * ay) >= 0.0 else (-tx, -ty)
+
+
+def _farthest_node_along(
+    a1_points: NDArray[np.float64],
+    node_indices: tuple[int, ...],
+    anchor_xy: tuple[float, float],
+    direction_xy: tuple[float, float],
+) -> int:
+    best_proj = -np.inf
+    best_node = node_indices[0]
+    for node_i in node_indices:
+        dx = float(a1_points[node_i, 0]) - anchor_xy[0]
+        dy = float(a1_points[node_i, 1]) - anchor_xy[1]
+        proj = dx * direction_xy[0] + dy * direction_xy[1]
+        if proj > best_proj or (proj == best_proj and node_i < best_node):
+            best_proj = proj
+            best_node = node_i
+    return best_node
+
+
+def _connection_perpendicular_for(
+    data: SegmentationInput,
+    connection: JunctionConnection,
+    references_by_connection_id: dict[int, ConnectionReference],
+    junctions_by_id: dict[int, Junction],
+    *,
+    half_length_m: float,
+    entity_id: int,
+) -> ConnectionPerpendicular | None:
+    reference = references_by_connection_id.get(connection.id)
+    if reference is None:
+        return None
+    junction = junctions_by_id.get(connection.junction_id)
+    if junction is None or junction.cache.geom.is_empty:
+        return None
+    centroid = junction.cache.geom.centroid
+    junction_centroid_xy = (float(centroid.x), float(centroid.y))
+    anchor_xy = (reference.anchor_xyz[0], reference.anchor_xyz[1])
+    lateral_direction = _lateral_direction_from_reference(reference, junction_centroid_xy)
+    farthest_node_index = _farthest_node_along(
+        data.a1.points, connection.node_indices, anchor_xy, lateral_direction
+    )
+    tx, ty = reference.tangent_xy
+    return ConnectionPerpendicular(
+        id=entity_id,
+        junction_connection_id=connection.id,
+        connection_reference_id=reference.id,
+        junction_id=connection.junction_id,
+        farthest_node_index=farthest_node_index,
+        farthest_node_id=str(data.a1.ids[farthest_node_index]),
+        anchor_xyz=(
+            float(data.a1.points[farthest_node_index, 0]),
+            float(data.a1.points[farthest_node_index, 1]),
+            float(data.a1.points[farthest_node_index, 2]),
+        ),
+        perpendicular_xy=(-ty, tx),
+        half_length_m=half_length_m,
+    )
 
 
 def _union_junction_link_refs(
