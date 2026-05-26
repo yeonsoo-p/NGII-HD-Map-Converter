@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    PointOrPolygonFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2023.features import V2023PointOrPolygonFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class B1_SAFETYSIGN(PointOrPolygonFeature):
+class B1_SAFETYSIGN(V2023PointOrPolygonFeature):
     """Safety sign geometry.
 
     The 2023 manual declares B1 as PolygonZ, but real deliverables include

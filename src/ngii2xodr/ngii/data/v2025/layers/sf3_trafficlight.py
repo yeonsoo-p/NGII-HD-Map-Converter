@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PointFeature, common_kwargs
+from ngii2xodr.ngii.data.features import FeatureRecord
+from ngii2xodr.ngii.data.v2025.features import V2025PointFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class SF3_TRAFFICLIGHT(PointFeature):
+class SF3_TRAFFICLIGHT(V2025PointFeature):
     layer_name: ClassVar[str] = "SF3_TRAFFICLIGHT"
     LIGHT_TYPE_LABEL: ClassVar[dict[str, str]] = {
         "100": "차량가로형-삼색등",

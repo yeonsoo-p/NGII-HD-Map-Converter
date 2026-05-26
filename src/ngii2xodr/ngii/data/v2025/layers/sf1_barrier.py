@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
+from ngii2xodr.ngii.data.features import FeatureRecord
+from ngii2xodr.ngii.data.v2025.features import V2025LineFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class SF1_BARRIER(LineFeature):
+class SF1_BARRIER(V2025LineFeature):
     layer_name: ClassVar[str] = "SF1_BARRIER"
     BARR_TYPE_LABEL: ClassVar[dict[str, str]] = {
         "100": "콘크리트방호벽",

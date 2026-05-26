@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    PolygonFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2023.features import V2023PolygonFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class C4_SPEEDBUMP(PolygonFeature):
+class C4_SPEEDBUMP(V2023PolygonFeature):
     layer_name: ClassVar[str] = "C4_SPEEDBUMP"
     TYPE_LABEL: ClassVar[dict[str, str]] = {
         "1": "높이있는방지턱",

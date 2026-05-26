@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PointFeature, common_kwargs
+from ngii2xodr.ngii.data.features import FeatureRecord
+from ngii2xodr.ngii.data.v2025.features import V2025PointFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class SF4_SUPPORTPOST(PointFeature):
+class SF4_SUPPORTPOST(V2025PointFeature):
     layer_name: ClassVar[str] = "SF4_SUPPORTPOST"
     POST_TYPE_LABEL: ClassVar[dict[str, str]] = {
         "100": "교통 및 보행 신호기 지주",

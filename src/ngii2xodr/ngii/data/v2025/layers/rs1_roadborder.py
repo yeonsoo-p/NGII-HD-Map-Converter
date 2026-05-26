@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
+from ngii2xodr.ngii.data.features import FeatureRecord
+from ngii2xodr.ngii.data.v2025.features import V2025LineFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class RS1_ROADBORDER(LineFeature):
+class RS1_ROADBORDER(V2025LineFeature):
     layer_name: ClassVar[str] = "RS1_ROADBORDER"
     BINARY_LABEL: ClassVar[dict[str, str]] = {"0": "아님", "1": "해당"}
 

@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    LineFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2023.features import V2023LineFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class B2_SURFACELINEMARK(LineFeature):
+class B2_SURFACELINEMARK(V2023LineFeature):
     layer_name: ClassVar[str] = "B2_SURFACELINEMARK"
     TYPE_LABEL: ClassVar[dict[str, str]] = {
         "111": "황색-단선-실선",

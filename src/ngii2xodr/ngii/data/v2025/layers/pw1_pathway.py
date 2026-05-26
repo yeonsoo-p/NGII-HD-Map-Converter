@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PolygonFeature, common_kwargs
+from ngii2xodr.ngii.data.features import FeatureRecord
+from ngii2xodr.ngii.data.v2025.features import V2025PolygonFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class PW1_PATHWAY(PolygonFeature):
+class PW1_PATHWAY(V2025PolygonFeature):
     layer_name: ClassVar[str] = "PW1_PATHWAY"
     PATH_TYPE_LABEL: ClassVar[dict[str, str]] = {"100": "보도", "200": "자전거도로"}
     BINARY_LABEL: ClassVar[dict[str, str]] = {"0": "아님", "1": "해당"}

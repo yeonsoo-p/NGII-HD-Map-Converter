@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, override
 
@@ -560,38 +560,37 @@ def _detail_rows(viz: HdMapViz, ref: FeatureRef, feature: NGIIFeature) -> list[_
             _DetailRow("Source", f"{feature.source_path.name}:{feature.source_row}"),
         )
     )
-    rows.extend(_dataclass_rows(viz, feature))
+    rows.extend(_schema_field_rows(viz, feature))
     rows.extend(_geometry_rows(feature))
     rows.extend(_segmentation_rows(viz.segmentation.selected_fields_for_ref(ref)))
     return rows
 
 
-def _dataclass_rows(viz: HdMapViz, feature: NGIIFeature) -> list[_DetailRow]:
-    skipped = {
-        "id",
-        "source_path",
-        "source_row",
-        "_dataset",
-        "point",
-        "polyline",
-        "ring",
-    }
-    relationships = {
-        relationship.source_attr: relationship
-        for relationship in _feature_relationships(viz, feature)
-    }
+def _schema_field_rows(viz: HdMapViz, feature: NGIIFeature) -> list[_DetailRow]:
+    spec = viz.dataset.schema.spec_for_layer_name(feature.layer_name)
+    if spec is None:
+        return []
+    relationships = {relationship.source_attr: relationship for relationship in spec.relationships}
+    seen_attrs: set[str] = set()
     rows = [_DetailRow("Fields", "", True)]
-    for field in fields(feature):
-        if field.name in skipped:
+    for rule in spec.field_rules:
+        if rule.name == "ID":
             continue
-        value = getattr(feature, field.name)
-        relationship = relationships.get(field.name)
+        attr_name = rule.attr
+        seen_attrs.add(attr_name)
+        value = getattr(feature, attr_name, "")
+        relationship = relationships.get(attr_name)
         if relationship is None:
             rows.append(
-                _DetailRow(_display_name(field.name), _decoded_value(feature, field.name, value))
+                _DetailRow(_display_name(attr_name), _decoded_value(feature, attr_name, value))
             )
         else:
-            rows.append(_relationship_detail_row(viz, relationship, field.name, value))
+            rows.append(_relationship_detail_row(viz, relationship, attr_name, value))
+    for relationship in spec.relationships:
+        if relationship.source_attr in seen_attrs:
+            continue
+        value = getattr(feature, relationship.source_attr, "")
+        rows.append(_relationship_detail_row(viz, relationship, relationship.source_attr, value))
     return rows if len(rows) > 1 else []
 
 

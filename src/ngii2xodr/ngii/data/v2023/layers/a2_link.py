@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    LineFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2023.features import V2023LineFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class A2_LINK(LineFeature):
+class A2_LINK(V2023LineFeature):
     layer_name: ClassVar[str] = "A2_LINK"
     ROAD_RANK_LABEL: ClassVar[dict[str, str]] = {
         "1": "고속도로",

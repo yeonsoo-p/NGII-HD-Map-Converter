@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    LineFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2025.features import V2025LineFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class NT2_LINK(LineFeature):
+class NT2_LINK(V2025LineFeature):
     layer_name: ClassVar[str] = "NT2_LINK"
     ROAD_RANK_LABEL: ClassVar[dict[str, str]] = {
         "100": "고속도로",
@@ -47,6 +43,7 @@ class NT2_LINK(LineFeature):
     }
     TURN_LABEL: ClassVar[dict[str, str]] = {"1": "좌회전", "2": "우회전", "3": "유턴"}
 
+    admin_code: str
     road_rank: str
     road_no: str
     road_name: str
@@ -78,6 +75,7 @@ def make_feature(record: FeatureRecord) -> NT2_LINK:
     return NT2_LINK(
         **common_kwargs(record),
         polyline=record.geometry,
+        admin_code=record.text("AdminCode"),
         road_rank=record.text("RoadRank"),
         road_no=record.text("RoadNo"),
         road_name=record.text("RoadName"),

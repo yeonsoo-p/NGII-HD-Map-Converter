@@ -47,14 +47,6 @@ class FeatureRecord:
 @dataclass(slots=True)
 class NGIIFeature:
     id: str
-    admin_code: str
-    maker: str
-    update_date: str
-    survey_date: str
-    version: str
-    remark: str
-    hist_type: str
-    hist_remark: str
     source_path: Path = field(compare=False)
     source_row: int = field(compare=False)
     layer_name: ClassVar[str]
@@ -158,17 +150,9 @@ class PointOrPolygonFeature(NGIIFeature):
         raise ValueError(msg)
 
 
-def common_kwargs(record: FeatureRecord) -> dict[str, Any]:
+def base_kwargs(record: FeatureRecord) -> dict[str, Any]:
     return {
         "id": record.text("ID"),
-        "admin_code": record.text("AdminCode"),
-        "maker": record.text("Maker"),
-        "update_date": record.text("UpdateDate"),
-        "survey_date": record.text("SurveyDate"),
-        "version": record.text("Version"),
-        "remark": record.text("Remark"),
-        "hist_type": record.text("HistType"),
-        "hist_remark": record.text("HistRemark"),
         "source_path": record.source_path,
         "source_row": record.source_row,
     }

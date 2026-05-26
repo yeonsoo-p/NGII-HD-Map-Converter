@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    PointFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2023.features import V2023PointFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class C1_TRAFFICLIGHT(PointFeature):
+class C1_TRAFFICLIGHT(V2023PointFeature):
     layer_name: ClassVar[str] = "C1_TRAFFICLIGHT"
     TYPE_LABEL: ClassVar[dict[str, str]] = {
         "1": "차량횡형-삼색등",

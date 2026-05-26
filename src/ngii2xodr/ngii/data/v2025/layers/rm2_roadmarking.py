@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PolygonFeature, common_kwargs
+from ngii2xodr.ngii.data.features import FeatureRecord
+from ngii2xodr.ngii.data.v2025.features import V2025PolygonFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class RM2_ROADMARKING(PolygonFeature):
+class RM2_ROADMARKING(V2025PolygonFeature):
     layer_name: ClassVar[str] = "RM2_ROADMARKING"
     MARK_TYPE_LABEL: ClassVar[dict[str, str]] = {
         "100": "화살표",

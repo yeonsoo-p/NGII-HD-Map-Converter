@@ -3,16 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import (
-    FeatureRecord,
-    PointFeature,
-    common_kwargs,
-    relation_property,
-)
+from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.v2023.features import V2023PointFeature, common_kwargs
 
 
 @dataclass(slots=True)
-class C2_KILOPOST(PointFeature):
+class C2_KILOPOST(V2023PointFeature):
     layer_name: ClassVar[str] = "C2_KILOPOST"
 
     distance: float
