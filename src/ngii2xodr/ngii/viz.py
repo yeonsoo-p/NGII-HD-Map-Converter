@@ -380,7 +380,7 @@ class PolygonRenderLayer(RenderLayer):
             self.fallback_selector.AddPickList(self.fallback_actor)
 
     def set_visible(self, on: bool) -> None:
-        super().set_visible(on)
+        RenderLayer.set_visible(self, on)
         if self.fallback_actor is not None:
             self.fallback_actor.SetVisibility(int(on))
 

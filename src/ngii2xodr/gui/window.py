@@ -6,15 +6,14 @@ import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, override
 
 import shapely
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
-    QCheckBox,
     QDockWidget,
     QFileDialog,
     QGroupBox,
@@ -24,6 +23,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QRadioButton,
+    QStyle,
+    QStyleOptionButton,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -61,6 +62,54 @@ class _DetailRow:
     value: str
     is_section: bool = False
     target_ref: FeatureRef | None = None
+
+
+class _LayerVisibilityHeader(QHeaderView):
+    master_clicked = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._check_state = Qt.CheckState.Unchecked
+        self._checkable = False
+        self.setSectionsClickable(True)
+
+    def set_master_state(self, state: Qt.CheckState, *, checkable: bool) -> None:
+        self._check_state = state
+        self._checkable = checkable
+        self.viewport().update()
+
+    @override
+    def paintSection(self, painter: Any, rect: QRect, logical_index: int) -> None:
+        super().paintSection(painter, rect, logical_index)
+        if logical_index != 0:
+            return
+        option = QStyleOptionButton()
+        option.rect = self._checkbox_rect(rect)
+        option.state = QStyle.StateFlag.State_Active
+        if self._checkable:
+            option.state |= QStyle.StateFlag.State_Enabled
+        if self._check_state == Qt.CheckState.Checked:
+            option.state |= QStyle.StateFlag.State_On
+        elif self._check_state == Qt.CheckState.PartiallyChecked:
+            option.state |= QStyle.StateFlag.State_NoChange
+        else:
+            option.state |= QStyle.StateFlag.State_Off
+        self.style().drawPrimitive(
+            QStyle.PrimitiveElement.PE_IndicatorCheckBox, option, painter, self
+        )
+
+    @override
+    def mouseReleaseEvent(self, event: Any) -> None:
+        if self._checkable and self.logicalIndexAt(event.position().toPoint()) == 0:
+            self.master_clicked.emit()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _checkbox_rect(self, section_rect: QRect) -> QRect:
+        indicator = self.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth)
+        x = section_rect.x() + (section_rect.width() - indicator) // 2
+        y = section_rect.y() + (section_rect.height() - indicator) // 2
+        return QRect(x, y, indicator, indicator)
 
 
 class HdMapWindow(QMainWindow):
@@ -135,12 +184,11 @@ class HdMapWindow(QMainWindow):
 
         self._layers_group = QGroupBox("Renderable layers")
         self._layers_layout = QVBoxLayout(self._layers_group)
-        self._layer_master_checkbox = QCheckBox("All visible")
-        self._layer_master_checkbox.setTristate(True)
-        self._layer_master_checkbox.stateChanged.connect(self._on_layer_master_changed)
-        self._layers_layout.addWidget(self._layer_master_checkbox)
         self._layer_tree = QTreeWidget()
-        self._layer_tree.setHeaderLabels(("Visible", "Layer", "Geometry", "Count"))
+        self._layer_header = _LayerVisibilityHeader(self._layer_tree)
+        self._layer_header.master_clicked.connect(self._on_layer_master_clicked)
+        self._layer_tree.setHeader(self._layer_header)
+        self._layer_tree.setHeaderLabels(("", "Layer", "Geometry", "Count"))
         self._layer_tree.setAlternatingRowColors(True)
         self._layer_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._layer_tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -332,12 +380,15 @@ class HdMapWindow(QMainWindow):
             self.viz.set_layer_visible(attr, item.checkState(0) == Qt.CheckState.Checked)
             self._sync_layer_master_checkbox()
 
-    def _on_layer_master_changed(self, state: int) -> None:
+    def _on_layer_master_clicked(self) -> None:
         if self._updating_layer_master or self.viz is None:
             return
-        visible = Qt.CheckState(state) != Qt.CheckState.Unchecked
+        items = self._toggleable_layer_items()
+        visible = not items or not all(
+            item.checkState(0) == Qt.CheckState.Checked for item in items
+        )
         self._updating_layer_items = True
-        for item in self._toggleable_layer_items():
+        for item in items:
             item.setCheckState(0, Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
             attr = item.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(attr, str):
@@ -348,15 +399,14 @@ class HdMapWindow(QMainWindow):
     def _sync_layer_master_checkbox(self) -> None:
         items = self._toggleable_layer_items()
         self._updating_layer_master = True
-        self._layer_master_checkbox.setEnabled(bool(items))
         if not items:
-            self._layer_master_checkbox.setCheckState(Qt.CheckState.Unchecked)
+            self._layer_header.set_master_state(Qt.CheckState.Unchecked, checkable=False)
         elif all(item.checkState(0) == Qt.CheckState.Checked for item in items):
-            self._layer_master_checkbox.setCheckState(Qt.CheckState.Checked)
+            self._layer_header.set_master_state(Qt.CheckState.Checked, checkable=True)
         elif all(item.checkState(0) == Qt.CheckState.Unchecked for item in items):
-            self._layer_master_checkbox.setCheckState(Qt.CheckState.Unchecked)
+            self._layer_header.set_master_state(Qt.CheckState.Unchecked, checkable=True)
         else:
-            self._layer_master_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+            self._layer_header.set_master_state(Qt.CheckState.PartiallyChecked, checkable=True)
         self._updating_layer_master = False
 
     def _toggleable_layer_items(self) -> tuple[QTreeWidgetItem, ...]:

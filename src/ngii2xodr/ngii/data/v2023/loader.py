@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import struct
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,7 @@ _FIELD_ATTRS: dict[str, str] = {
     "Ref_ID": "ref_id",
 }
 _REPLACEMENT_CHAR = "\ufffd"
+_UTF8_DBF_INVALID_NON_ASCII_RATIO_MAX = 0.5
 _LAYER_ORDER = {spec.layer_name: index for index, spec in enumerate(LAYER_SPECS)}
 
 
@@ -201,7 +203,7 @@ def _warn_missing_sidecars(shp_path: Path, sanity: SanityReport) -> None:
 def _read_layer_file(
     layer_file: DiscoveredLayerFile, sanity: SanityReport, cfg: NGIIConfig
 ) -> list[NGIIFeature]:
-    gdf = _load_gdf(layer_file.path)
+    gdf = _load_gdf(layer_file.path, layer_file.spec, sanity)
     gdf = _normalize_columns(
         gdf,
         layer_file.path,
@@ -256,16 +258,131 @@ def _read_layer_file(
     return features
 
 
-def _load_gdf(shp_path: Path) -> gpd.GeoDataFrame:
+def _load_gdf(shp_path: Path, spec: LayerSpec, sanity: SanityReport) -> gpd.GeoDataFrame:
+    overlay_utf8_dbf_text = False
     try:
         gdf = gpd.read_file(shp_path)
         retry_reason = "mojibake heuristic" if _looks_like_cp949_mojibake(gdf) else None
     except UnicodeDecodeError:
         retry_reason = "UTF-8 decode failure"
+        overlay_utf8_dbf_text = _declares_utf8(shp_path)
     if retry_reason is not None:
         log.debug("retrying %s with cp949 after %s", shp_path.name, retry_reason)
         gdf = gpd.read_file(shp_path, encoding="cp949")
+        if overlay_utf8_dbf_text:
+            _overlay_utf8_dbf_text(gdf, shp_path, spec, sanity)
     return gdf
+
+
+def _declares_utf8(shp_path: Path) -> bool:
+    cpg_path = shp_path.with_suffix(".cpg")
+    if not cpg_path.is_file():
+        return False
+    declared = cpg_path.read_text(encoding="ascii", errors="ignore").strip().casefold()
+    normalized = declared.replace("-", "").replace("_", "")
+    return normalized in {"utf8", "65001"}
+
+
+def _overlay_utf8_dbf_text(
+    gdf: gpd.GeoDataFrame,
+    shp_path: Path,
+    spec: LayerSpec,
+    sanity: SanityReport,
+) -> None:
+    records, replacements, non_ascii_cells = _read_utf8_dbf_text_records(
+        shp_path.with_suffix(".dbf"), spec
+    )
+    if not records:
+        return
+    if (
+        non_ascii_cells > 0
+        and len(replacements) / non_ascii_cells > _UTF8_DBF_INVALID_NON_ASCII_RATIO_MAX
+    ):
+        log.debug(
+            "skipping UTF-8 DBF text overlay for %s: %d/%d non-ASCII text cells "
+            "decode with replacement characters",
+            shp_path.name,
+            len(replacements),
+            non_ascii_cells,
+        )
+        return
+    if len(records) != len(gdf):
+        sanity.warn(
+            "dbf-text-row-count-mismatch",
+            f"{spec.layer_name}: raw DBF text row count {len(records)} does not match "
+            f"geometry row count {len(gdf)}; UTF-8 text overlay skipped",
+            layer_name=spec.layer_name,
+            source_path=shp_path,
+        )
+        return
+    columns = sorted({column for record in records for column in record})
+    for column in columns:
+        if column in gdf.columns:
+            gdf[column] = [record.get(column, "") for record in records]
+    for row_idx, feature_id, column in replacements:
+        sanity.warn(
+            "corrupt-text-decode-replaced",
+            f"{spec.layer_name} {feature_id or f'row {row_idx}'}: {column} contained "
+            "malformed UTF-8 bytes and was decoded with replacement characters",
+            layer_name=spec.layer_name,
+            feature_id=feature_id or None,
+            source_path=shp_path,
+        )
+
+
+def _read_utf8_dbf_text_records(
+    dbf_path: Path, spec: LayerSpec
+) -> tuple[list[dict[str, str]], list[tuple[int, str, str]], int]:
+    if not dbf_path.is_file():
+        return [], [], 0
+    data = dbf_path.read_bytes()
+    if len(data) < 32:
+        return [], [], 0
+    num_records = struct.unpack_from("<I", data, 4)[0]
+    header_len = struct.unpack_from("<H", data, 8)[0]
+    record_len = struct.unpack_from("<H", data, 10)[0]
+    text_field_by_lower = {
+        rule.name.lower(): rule.name for rule in spec.field_rules if rule.field_type == "text"
+    }
+    fields: list[tuple[str, str, int, int]] = []
+    row_offset = 1
+    pos = 32
+    while pos + 32 <= len(data) and data[pos] != 0x0D:
+        desc = data[pos : pos + 32]
+        name = desc[:11].split(b"\0", maxsplit=1)[0].decode("ascii", errors="replace")
+        field_type = chr(desc[11])
+        length = int(desc[16])
+        canonical_name = text_field_by_lower.get(name.lower())
+        if field_type == "C" and canonical_name is not None:
+            fields.append((name, canonical_name, row_offset, length))
+        row_offset += length
+        pos += 32
+    records: list[dict[str, str]] = []
+    replacements: list[tuple[int, str, str]] = []
+    non_ascii_cells = 0
+    for row_idx in range(num_records):
+        start = header_len + row_idx * record_len
+        end = start + record_len
+        if end > len(data):
+            break
+        row = data[start:end]
+        if row[:1] == b"*":
+            continue
+        record: dict[str, str] = {}
+        replaced_columns: list[str] = []
+        for source_name, canonical_name, offset, length in fields:
+            raw = row[offset : offset + length].strip(b" \0")
+            if any(byte >= 0x80 for byte in raw):
+                non_ascii_cells += 1
+            value = raw.decode("utf-8", errors="replace") if raw else ""
+            record[source_name] = value
+            if _REPLACEMENT_CHAR in value:
+                replaced_columns.append(canonical_name)
+        feature_id = record.get("ID", "")
+        for column in replaced_columns:
+            replacements.append((row_idx, feature_id, column))
+        records.append(record)
+    return records, replacements, non_ascii_cells
 
 
 def _looks_like_cp949_mojibake(gdf: gpd.GeoDataFrame) -> bool:
