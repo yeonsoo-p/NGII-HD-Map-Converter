@@ -1,4 +1,4 @@
-# Project rules — shp2xodr-converter
+# Project rules — ngii2xodr-converter
 
 NGII (Korean precise road map) SHP → OpenDRIVE converter.
 
@@ -22,7 +22,7 @@ NGII (Korean precise road map) SHP → OpenDRIVE converter.
   where there is a meaningful recovery action.
 - **Configuration via Hydra.** No magic constants in modules — they live in
   `conf/`. The entry point uses `@hydra.main`.
-- **Source layout**: `src/shp2xodr/`. Importable as `shp2xodr.*`.
+- **Source layout**: `src/ngii2xodr/`. Importable as `ngii2xodr.*`.
 - **`logging`, never `print`.** Hydra wires up a logger automatically. Use
   `logging.getLogger(__name__)`; let verbosity be controlled from config.
 - **Point sequences are `numpy.ndarray` of shape `(N, 2)` or `(N, 3)`**, not

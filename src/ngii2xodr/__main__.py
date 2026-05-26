@@ -1,0 +1,214 @@
+"""Hydra entry point: ``uv run python -m ngii2xodr``.
+
+The window opens empty by default; select a section directory via
+**File → Open NGII folder…** (Ctrl+O). Pass ``ngii_dir=/path/to/section`` on
+the CLI (or set it in ``conf/config.yaml``) to auto-load on startup.
+
+This module is the only place that knows about both Hydra/OmegaConf
+``DictConfig`` and typed config dataclasses.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+import sys
+from pathlib import Path
+from typing import Any, cast
+
+import hydra
+from hydra.utils import to_absolute_path
+from omegaconf import DictConfig, OmegaConf
+from PySide6.QtWidgets import QApplication
+
+from ngii2xodr.ngii.data import (
+    NGIIConfig,
+    NGIISanityConfig,
+    NGIISanityRepairConfig,
+    NGIISanityWarningConfig,
+    NGIITextCorrection,
+    NGIITextCorrectionConfig,
+)
+from ngii2xodr.ngii.gui import HdMapWindow
+from ngii2xodr.ngii.segmentation import SegmentationConfig
+from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig
+
+log = logging.getLogger(__name__)
+
+
+def _rgb_int(v: list[int]) -> tuple[int, int, int]:
+    return (int(v[0]), int(v[1]), int(v[2]))
+
+
+def _rgb_float(v: list[float]) -> tuple[float, float, float]:
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
+    return SegmentationConfig(
+        z_intersection_tol_m=float(cfg.segmentation.z_intersection_tol_m),
+        junction_proximity_merge_dist_m=float(cfg.segmentation.junction_proximity_merge_dist_m),
+        junction_connection_node_merge_dist_m=float(
+            cfg.segmentation.junction_connection_node_merge_dist_m
+        ),
+        connection_perpendicular_half_length_m=float(
+            cfg.segmentation.connection_perpendicular_half_length_m
+        ),
+        enable_node_link_relations=bool(cfg.segmentation.enable_node_link_relations),
+        enable_uturn=bool(cfg.segmentation.enable_uturn),
+        enable_lateral_link_group=bool(cfg.segmentation.enable_lateral_link_group),
+        enable_lateral_node_group=bool(cfg.segmentation.enable_lateral_node_group),
+        enable_junction=bool(cfg.segmentation.enable_junction),
+        enable_junction_connection=bool(cfg.segmentation.enable_junction_connection),
+        enable_connection_reference=bool(cfg.segmentation.enable_connection_reference),
+        enable_connection_perpendicular=bool(cfg.segmentation.enable_connection_perpendicular),
+    )
+
+
+def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
+    raw = OmegaConf.to_container(cfg.viz, resolve=True)
+    if not isinstance(raw, dict):
+        msg = f"viz config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
+    layers_raw = raw["layers"]
+    if not isinstance(layers_raw, dict):
+        msg = f"viz.layers config: expected dict, got {type(layers_raw).__name__}"
+        raise TypeError(msg)
+    return VizConfig(
+        background_color=_rgb_float(raw["background_color"]),
+        highlight_rgb=_rgb_int(raw["highlight_rgb"]),
+        selector_tol_point=float(raw["selector_tol_point"]),
+        selector_tol_line=float(raw["selector_tol_line"]),
+        selector_tol_poly=float(raw["selector_tol_poly"]),
+        point_hit_radius_px=float(raw["point_hit_radius_px"]),
+        poly_depth_offset_factor=float(raw["poly_depth_offset_factor"]),
+        poly_depth_offset_units=float(raw["poly_depth_offset_units"]),
+        segmentation_seed=int(raw["segmentation_seed"]),
+        camera_focus=_build_camera_focus_cfg(raw["camera_focus"]),
+        layers={
+            str(attr): _build_viz_layer_cfg(value)
+            for attr, value in layers_raw.items()
+            if isinstance(value, dict)
+        },
+    )
+
+
+def _build_camera_focus_cfg(raw: object) -> VizCameraFocusConfig:
+    if not isinstance(raw, dict):
+        msg = f"viz.camera_focus config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
+    return VizCameraFocusConfig(
+        padding_m=float(cast(Any, raw["padding_m"])),
+        min_scale_m=float(cast(Any, raw["min_scale_m"])),
+        max_scale_m=float(cast(Any, raw["max_scale_m"])),
+    )
+
+
+def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
+    return NGIIConfig(
+        sanity=NGIISanityConfig(
+            node_match_tolerance_m=float(cfg.ngii.sanity.node_match_tolerance_m),
+            direction_parallel_dot_min=float(cfg.ngii.sanity.direction_parallel_dot_min),
+            warnings=NGIISanityWarningConfig(
+                missing_required_layers=bool(cfg.ngii.sanity.warnings.missing_required_layers),
+                missing_sidecars=bool(cfg.ngii.sanity.warnings.missing_sidecars),
+                duplicate_column_capitalization=bool(
+                    cfg.ngii.sanity.warnings.duplicate_column_capitalization
+                ),
+                manual_field_rules=bool(cfg.ngii.sanity.warnings.manual_field_rules),
+                unknown_manual_columns=bool(cfg.ngii.sanity.warnings.unknown_manual_columns),
+                invalid_code_values=bool(cfg.ngii.sanity.warnings.invalid_code_values),
+                unsupported_geometry=bool(cfg.ngii.sanity.warnings.unsupported_geometry),
+                unknown_layers=bool(cfg.ngii.sanity.warnings.unknown_layers),
+                unresolved_relationships=bool(cfg.ngii.sanity.warnings.unresolved_relationships),
+                global_id_collision=bool(cfg.ngii.sanity.warnings.global_id_collision),
+                duplicate_identical_ids=bool(cfg.ngii.sanity.warnings.duplicate_identical_ids),
+                duplicate_conflicting_ids=bool(cfg.ngii.sanity.warnings.duplicate_conflicting_ids),
+                a2_endpoint_alignment=bool(cfg.ngii.sanity.warnings.a2_endpoint_alignment),
+                a2_direction_ambiguous=bool(cfg.ngii.sanity.warnings.a2_direction_ambiguous),
+                a2_topology_direction=bool(cfg.ngii.sanity.warnings.a2_topology_direction),
+            ),
+            repairs=NGIISanityRepairConfig(
+                duplicate_conflicting_id_drop=bool(
+                    cfg.ngii.sanity.repairs.duplicate_conflicting_id_drop
+                ),
+                a2_endpoint_direction_swap=bool(cfg.ngii.sanity.repairs.a2_endpoint_direction_swap),
+                a2_missing_node_ref_nearest=bool(
+                    cfg.ngii.sanity.repairs.a2_missing_node_ref_nearest
+                ),
+                a2_missing_node_ref_remove=bool(cfg.ngii.sanity.repairs.a2_missing_node_ref_remove),
+                a2_topology_direction_swap=bool(cfg.ngii.sanity.repairs.a2_topology_direction_swap),
+            ),
+        ),
+        text_repair=_build_text_correction_cfg(cfg),
+    )
+
+
+def _build_text_correction_cfg(cfg: DictConfig) -> NGIITextCorrectionConfig:
+    raw = OmegaConf.to_container(cfg.ngii.text_repair, resolve=True)
+    if not isinstance(raw, dict):
+        msg = f"ngii.text_repair config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
+    corrections_raw = raw.get("corrections", ())
+    if not isinstance(corrections_raw, list):
+        msg = (
+            "ngii.text_repair.corrections config: expected list, "
+            f"got {type(corrections_raw).__name__}"
+        )
+        raise TypeError(msg)
+    return NGIITextCorrectionConfig(
+        enabled=bool(raw["enabled"]),
+        repair_mojibake=bool(raw["repair_mojibake"]),
+        apply_exact_corrections=bool(raw["apply_exact_corrections"]),
+        warn_unrepaired_replacement_chars=bool(raw["warn_unrepaired_replacement_chars"]),
+        corrections=tuple(
+            NGIITextCorrection(
+                layer_name=str(correction["layer_name"]),
+                feature_id=str(correction["feature_id"]),
+                field=str(correction["field"]),
+                old=str(correction["old"]),
+                new=str(correction["new"]),
+            )
+            for correction in corrections_raw
+            if isinstance(correction, dict)
+        ),
+    )
+
+
+def _build_viz_layer_cfg(raw: dict[str, object]) -> VizLayerConfig:
+    rgb = raw["rgb"]
+    if not isinstance(rgb, list):
+        msg = f"viz layer rgb: expected list, got {type(rgb).__name__}"
+        raise TypeError(msg)
+    return VizLayerConfig(
+        visible=bool(raw["visible"]),
+        rgb=_rgb_int(cast(list[int], rgb)),
+        point_size=float(cast(Any, raw["point_size"])),
+        line_width=float(cast(Any, raw["line_width"])),
+        opacity=float(cast(Any, raw["opacity"])),
+    )
+
+
+@hydra.main(version_base=None, config_path="../../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = HdMapWindow(
+        seg_cfg=_build_seg_cfg(cfg),
+        viz_cfg=_build_viz_cfg(cfg),
+        ngii_cfg=_build_ngii_cfg(cfg),
+        coordinate=str(cfg.ngii.coordinate),
+    )
+    window.show()
+    if cfg.ngii_dir is not None:
+        # to_absolute_path resolves against the invocation cwd, not Hydra's
+        # per-run output dir, which is what the user means by a relative path.
+        window.load_folder(Path(to_absolute_path(str(cfg.ngii_dir))).expanduser())
+    app.exec()
+
+
+if __name__ == "__main__":
+    # Windows stdio defaults to cp1252; UTF-8 makes logging non-ASCII-safe.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    main()

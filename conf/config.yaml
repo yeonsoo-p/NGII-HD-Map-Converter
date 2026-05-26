@@ -1,133 +1,172 @@
-# Section folder to auto-open on startup. null = open empty; the user selects
-# a folder via File → Open SHP folder…. Override on the CLI with
-# ``shp_dir=/path/to/section``. Relative paths resolve against the
+# NGII root folder to auto-open on startup. null = open empty; the user selects
+# a folder via File > Open NGII folder. Relative paths resolve against the
 # invocation cwd, not Hydra's run directory.
-shp_dir: examples/SEC001_군산공항입구교차로_외고삼거리/HDMap_UTM52N_타원체고
+ngii_dir: examples/SEC13_고성교차로_고성리장만이동산정류장앞
+
+ngii:
+  # Required coordinate product. The loader refuses to silently ingest all
+  # coordinate variants in a section.
+  coordinate: HDMap_UTMK_정표고
+  sanity:
+    # Max XY distance (m) for node-reference repair actions.
+    node_match_tolerance_m: 0.5
+    # Minimum dot product for topology direction comparison against a
+    # same-direction neighbor.
+    direction_parallel_dot_min: 0.85
+    warnings:
+      missing_required_layers: true
+      missing_sidecars: true
+      duplicate_column_capitalization: true
+      manual_field_rules: true
+      unknown_manual_columns: true
+      invalid_code_values: true
+      unsupported_geometry: true
+      unknown_layers: true
+      unresolved_relationships: true
+      global_id_collision: true
+      duplicate_identical_ids: true
+      duplicate_conflicting_ids: true
+      a2_endpoint_alignment: true
+      a2_direction_ambiguous: true
+      a2_topology_direction: true
+    repairs:
+      duplicate_conflicting_id_drop: true
+      a2_endpoint_direction_swap: true
+      a2_missing_node_ref_nearest: true
+      a2_missing_node_ref_remove: true
+      a2_topology_direction_swap: true
+  text_repair:
+    enabled: true
+    repair_mojibake: true
+    apply_exact_corrections: false
+    warn_unrepaired_replacement_chars: true
+    corrections:
+      - layer_name: A1_NODE
+        feature_id: A1199J720003
+        field: Maker
+        old: 올포랜드컨소��
+        new: 올포랜드컨소시엄
 
 segmentation:
-  # Max |Δz| (m) at an XY intersection to count as the same physical feature.
-  # Used by U-turn marker matching and Type=1 junction-link intersection
-  # grouping. Typical overpass clearance is ~4.5 m, so 2.0 m keeps stacked
-  # roads apart while allowing small digitized z disagreements.
+  enable_node_link_relations: true
+  enable_uturn: true
+  enable_lateral_link_group: true
+  enable_lateral_node_group: true
+  enable_junction: true
+  enable_junction_connection: false
+  enable_connection_reference: false
+  enable_connection_perpendicular: false
+  # Max |dZ| (m) at an XY intersection to count as the same physical feature.
   z_intersection_tol_m: 2.0
-  # Max planimetric gap (m) for merging nearby Type=1 junction-link
-  # components after exact R/L and intersection unions. This catches small
-  # digitization gaps inside one physical junction while staying narrower
-  # than a broad intersection-wide proximity merge.
+  # Max planimetric gap (m) for merging nearby Type=1 junction-link components.
   junction_proximity_merge_dist_m: 5.0
   # Max planimetric distance (m) for grouping A1 NodeType=1 lateral endpoint
-  # node groups into one bidirectional junction connection. Direct A2
-  # connectivity between node groups blocks this merge.
+  # node groups into one bidirectional junction connection.
   junction_connection_node_merge_dist_m: 10.0
-  # Half-length (m) of the lateral perpendicular line drawn at each
-  # JunctionConnection's outermost A1 node by ConnectionPerpendicularStage.
-  # Total rendered line length is twice this value.
+  # Half-length (m) of the lateral perpendicular line drawn by the post-junction
+  # perpendicular stage when that stage is enabled.
   connection_perpendicular_half_length_m: 5.0
 
 viz:
-  # ---- Rendering geometry --------------------------------------------------
-  node_point_size: 3.0
-  poly_opacity: 0.85
-  # VTK polygon-offset (factor, units) — pushes A3/A4 polygons back so A2 /
-  # B2 lines render in front of coincident-Z fills.
+  background_color: [0.86, 0.88, 0.90]
+  highlight_rgb: [255, 30, 200]
+  selector_tol_point: 0.01
+  selector_tol_line: 0.012
+  selector_tol_poly: 0.0
+  point_hit_radius_px: 12.0
   poly_depth_offset_factor: 2.0
   poly_depth_offset_units: 2.0
-  # Line widths — A2 thickest so raw links stay readable over markings.
-  line_width_a2: 2.5
-  line_width_b2: 1.4
-  line_width_c3: 1.8
-  # ---- Selector tolerances (fraction of screen) ------------------------------
-  # A1 dots are small (point selector); A2 has tight tol since the lines are
-  # thick. B2 / C3 are slimmer lines that pass over A3 / A4 polygons whose
-  # own selector is point-in-polygon (tol=0). A tight tolerance on the line
-  # selectors would let the cursor "slip off" thin lines and have the polygon
-  # selector win; ~1.2% of screen makes line grabbing reliable without
-  # bleeding into wrong cells.
-  selector_tol_a1: 0.01
-  selector_tol_a2: 0.005
-  selector_tol_thin: 0.012
-  selector_tol_poly: 0.0
+  segmentation_seed: 4217
+  camera_focus:
+    padding_m: 15.0
+    min_scale_m: 20.0
+    max_scale_m: 1000.0
+  layers:
+    a1_node:
+      visible: true
+      rgb: [35, 35, 40]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 1.0
+    a2_link:
+      visible: true
+      rgb: [100, 100, 115]
+      point_size: 4.0
+      line_width: 2.5
+      opacity: 1.0
+    a3_drivewaysection:
+      visible: true
+      rgb: [185, 188, 190]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.70
+    a4_subsidiarysection:
+      visible: true
+      rgb: [112, 184, 125]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.65
+    a5_parkinglot:
+      visible: true
+      rgb: [145, 145, 205]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.65
+    b1_safetysign:
+      visible: true
+      rgb: [210, 80, 70]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.80
+    b2_surfacelinemark:
+      visible: true
+      rgb: [255, 255, 255]
+      point_size: 4.0
+      line_width: 1.4
+      opacity: 1.0
+    b3_surfacemark:
+      visible: true
+      rgb: [245, 178, 65]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.85
+    c1_trafficlight:
+      visible: true
+      rgb: [20, 170, 70]
+      point_size: 6.0
+      line_width: 1.0
+      opacity: 1.0
+    c2_kilopost:
+      visible: true
+      rgb: [70, 115, 220]
+      point_size: 5.0
+      line_width: 1.0
+      opacity: 1.0
+    c3_vehicleprotectionsafety:
+      visible: true
+      rgb: [135, 135, 145]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 1.0
+    c4_speedbump:
+      visible: true
+      rgb: [210, 125, 35]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.80
+    c5_heightbarrier:
+      visible: true
+      rgb: [155, 85, 195]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 1.0
+    c6_postpoint:
+      visible: true
+      rgb: [75, 75, 80]
+      point_size: 5.0
+      line_width: 1.0
+      opacity: 1.0
 
-  # ---- Scene colors --------------------------------------------------------
-  # Slight cool off-white background so pure-white B2 lines (백색 차선 /
-  # 유도선 / 정지선) have contrast — they're invisible on a true #ffffff
-  # background. Floats in [0, 1] (VTK convention for renderer background).
-  background_color: [0.86, 0.88, 0.90]
-  # Magenta — wins against every base palette (B2 primaries, C3 neutrals,
-  # A3/A4 cool fills, A2 random saturated range).
-  highlight_rgb: [255, 30, 200]
-  # Uniform color for raw A2 links.
-  a2_uniform_rgb: [110, 110, 120]
-
-  # ---- A3 RoadType → fill color (NGII manual table 9.23) -------------------
-  a3_road_type_rgb:
-    "1": [200, 200, 200]   # 일반도로
-    "2": [80, 80, 80]      # 터널
-    "3": [140, 180, 220]   # 교량
-    "4": [60, 40, 140]     # 지하차도
-    "5": [200, 170, 120]   # 고가차도
-  # Kind=7 (자율주행금지구간/보호구역) overrides the RoadType-based color.
-  a3_protected_rgb: [220, 80, 80]
-  a3_fallback_rgb: [180, 180, 180]
-
-  # ---- A4 SubType → fill color (data.A4Data.SUBTYPE_LABEL) -----------------
-  a4_subtype_rgb:
-    "1": [120, 200, 120]
-    "2": [180, 220, 140]
-    "3": [220, 200, 160]
-    "4": [240, 180, 80]
-    "5": [180, 140, 220]
-  a4_fallback_rgb: [180, 180, 180]
-
-  # ---- B2 paint color (first digit of Type, data.B2Data.TYPE_COLOR_LABEL) --
-  # 1 황색, 2 백색, 3 청색.
-  b2_paint_rgb:
-    "1": [245, 235, 0]
-    "2": [255, 255, 255]
-    "3": [20, 90, 230]
-  b2_paint_fallback_rgb: [130, 130, 130]
-
-  # ---- C3 facility class → line color (NGII manual table 9.61) -------------
-  # C3 covers guardrails, concrete barriers, kerbs, pedestrian-crossing
-  # fences, and walls — real materials, so the palette stays in the
-  # neutral/warm-gray band that matches concrete + metal, well clear of B2's
-  # pure primaries and A3/A4's saturated polygon fills.
-  c3_type_rgb:
-    "2": [140, 140, 150]
-    "3": [210, 210, 200]
-    "4": [190, 175, 140]
-    "5": [50, 50, 50]
-    "6": [170, 170, 170]
-    "7": [220, 130, 30]
-    "8": [90, 90, 90]
-  c3_type_fallback_rgb: [140, 140, 140]
-
-  # ---- Connection-reference arrow glyph ------------------------------------
-  # ConnectionReferenceStage draws one arrow per JunctionConnection, anchored
-  # at the representative A2 link's endpoint where it touches the
-  # connection and oriented along the polyline's native (FromNode → ToNode)
-  # direction. Inbound legs point toward the junction; outbound legs point
-  # away.
-  connection_reference_arrow_length_m: 5.0
-  connection_reference_arrow_rgb: [255, 200, 30]
-
-  # ---- Connection-perpendicular line ---------------------------------------
-  # ConnectionPerpendicularStage draws one line per JunctionConnection at its
-  # outermost A1 node, perpendicular to the reference-line direction.
-  connection_perpendicular_rgb: [30, 200, 230]
-  connection_perpendicular_line_width: 3.0
-
-  # ---- Enlarged JunctionConnection A1 nodes --------------------------------
-  # Larger sphere size for A1 nodes that participate in a JunctionConnection.
-  # Rendered as a separate overlay on top of the base A1 layer (base layer
-  # uses node_point_size; the overlay covers JC nodes with bigger spheres).
-  junction_connection_node_point_size: 9.0
-
-# Hydra's default job_logging file handler opens its .log file with the
-# platform encoding (cp1252 on Windows). Section names contain Hangul; force
-# UTF-8 so the file handler doesn't throw UnicodeEncodeError mid-log. The console handler
-# already inherits the UTF-8 reconfigure of sys.stdout that __main__.py
-# applies before hydra.main runs.
 hydra:
   job_logging:
     handlers:

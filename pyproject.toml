@@ -1,5 +1,5 @@
 [project]
-name = "shp2xodr"
+name = "ngii2xodr"
 version = "0.1.0"
 description = "NGII precise road map (SHP) to OpenDRIVE converter."
 readme = "README.md"
@@ -26,7 +26,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/shp2xodr"]
+packages = ["src/ngii2xodr"]
 
 # ----------------------------------------------------------------------------
 # ruff
@@ -58,6 +58,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR2004", "TRY"]
+"src/ngii2xodr/ngii/data/layers/**" = ["N801"]
 
 [tool.ruff.format]
 quote-style = "double"
