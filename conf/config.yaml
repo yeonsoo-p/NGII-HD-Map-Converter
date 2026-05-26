@@ -56,8 +56,8 @@ segmentation:
   enable_lateral_link_group: true
   enable_lateral_node_group: true
   enable_junction: true
-  enable_junction_connection: false
-  enable_connection_reference: false
+  enable_junction_connection: true
+  enable_connection_reference: true
   enable_connection_perpendicular: false
   # Max |dZ| (m) at an XY intersection to count as the same physical feature.
   z_intersection_tol_m: 2.0

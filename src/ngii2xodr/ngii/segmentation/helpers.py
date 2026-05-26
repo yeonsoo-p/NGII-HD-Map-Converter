@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+
 import numpy as np
 import shapely
 from numpy.typing import NDArray
@@ -27,6 +29,27 @@ def uf_union(parent: NDArray[np.int32], a: int, b: int) -> None:
     root_b = uf_find(parent, b)
     if root_a != root_b:
         parent[root_b] = np.int32(root_a)
+
+
+def connected_components_from_pairs(
+    item_ids: Sequence[int],
+    pairs: Iterable[tuple[int, int]],
+) -> tuple[tuple[int, ...], ...]:
+    row_to_candidate = {row_i: candidate_i for candidate_i, row_i in enumerate(item_ids)}
+    parent = np.arange(len(item_ids), dtype=np.int32)
+    for a, b in pairs:
+        a_candidate = row_to_candidate.get(a)
+        b_candidate = row_to_candidate.get(b)
+        if a_candidate is not None and b_candidate is not None:
+            uf_union(parent, a_candidate, b_candidate)
+
+    rows_by_entity: dict[int, list[int]] = {}
+    root_to_entity: dict[int, int] = {}
+    for row_i in item_ids:
+        root = uf_find(parent, row_to_candidate[row_i])
+        entity_id = root_to_entity.setdefault(root, len(root_to_entity))
+        rows_by_entity.setdefault(entity_id, []).append(row_i)
+    return tuple(tuple(rows_by_entity[entity_id]) for entity_id in range(len(rows_by_entity)))
 
 
 def intersects_within_z_tol(

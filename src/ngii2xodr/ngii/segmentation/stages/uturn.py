@@ -27,8 +27,25 @@ class UTurnStage:
         previous_results: Mapping[str, StageResult],
     ) -> StageResult:
         del previous_results
+        direct_rows = context.rows_for_filter("uturn_link")
+        if direct_rows:
+            direct_entities: list[UTurn] = []
+            direct_entity_id_by_ref: dict[FeatureRef, int] = {}
+            for link_i in direct_rows:
+                link_ref = context.ref_for_link_index(link_i)
+                entity_id = len(direct_entities)
+                direct_entity_id_by_ref[link_ref] = entity_id
+                direct_entities.append(UTurn(id=entity_id, link_ref=link_ref, marker_refs=()))
+            return StageResult(
+                self.id,
+                self.label,
+                self.entity_label,
+                tuple(direct_entities),
+                direct_entity_id_by_ref,
+            )
+
         if context.lane_line_store is None:
-            return empty_result(self, skipped_reason="schema has no lane-line role")
+            return empty_result(self)
         marker_rows: list[int] = []
         marker_lines: list[shapely.LineString] = []
         for i in context.rows_for_filter("uturn_marker"):
@@ -37,7 +54,7 @@ class UTurnStage:
                 marker_rows.append(i)
                 marker_lines.append(marker_line)
         if not marker_rows:
-            return empty_result(self, skipped_reason="schema has no U-turn marker candidates")
+            return empty_result(self)
 
         tree = shapely.STRtree(marker_lines)
         entities: list[UTurn] = []

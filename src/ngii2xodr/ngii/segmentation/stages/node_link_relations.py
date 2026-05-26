@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping
 from typing import ClassVar
 
@@ -24,17 +23,6 @@ class NodeLinkRelationsStage:
         previous_results: Mapping[str, StageResult],
     ) -> StageResult:
         del previous_results
-        incoming: dict[str, list[FeatureRef]] = defaultdict(list)
-        outgoing: dict[str, list[FeatureRef]] = defaultdict(list)
-        for link_i, link in enumerate(context.link_store.features):
-            link_ref = context.ref_for_link_index(link_i)
-            from_node_id = getattr(link, "from_node_id", "")
-            to_node_id = getattr(link, "to_node_id", "")
-            if from_node_id and context.node_store.get(from_node_id) is not None:
-                outgoing[from_node_id].append(link_ref)
-            if to_node_id and context.node_store.get(to_node_id) is not None:
-                incoming[to_node_id].append(link_ref)
-
         entities: list[NodeLinkRelation] = []
         entity_id_by_ref: dict[FeatureRef, int] = {}
         for node in context.node_store.features:
@@ -45,8 +33,8 @@ class NodeLinkRelationsStage:
                 NodeLinkRelation(
                     id=entity_id,
                     node_ref=node_ref,
-                    incoming_link_refs=tuple(incoming.get(node.id, ())),
-                    outgoing_link_refs=tuple(outgoing.get(node.id, ())),
+                    incoming_link_refs=context.incoming_link_refs(node_ref),
+                    outgoing_link_refs=context.outgoing_link_refs(node_ref),
                 )
             )
         return StageResult(

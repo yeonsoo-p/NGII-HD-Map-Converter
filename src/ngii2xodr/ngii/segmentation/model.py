@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, Self
+from typing import Literal, Protocol, Self
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.profile import PerformanceProfile
+
+EndpointSide = Literal["from", "to"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -103,9 +105,10 @@ class NodeLinkRelation:
 class Junction:
     id: int
     link_refs: tuple[FeatureRef, ...]
+    endpoint_node_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
-        if selected_ref in self.link_refs:
+        if selected_ref in self.link_refs or selected_ref in self.endpoint_node_refs:
             return (SelectedField.scalar("Junction", self.id),)
         return (
             SelectedField.scalar("Junction", self.id),
@@ -114,6 +117,11 @@ class Junction:
                 tuple(ref.feature_id for ref in self.link_refs),
                 self.link_refs,
             ),
+            SelectedField.list(
+                "Junction node ID",
+                tuple(ref.feature_id for ref in self.endpoint_node_refs),
+                self.endpoint_node_refs,
+            ),
         )
 
 
@@ -121,33 +129,56 @@ class Junction:
 class LateralLinkGroup:
     id: int
     link_refs: tuple[FeatureRef, ...]
+    pocket_link_refs: tuple[FeatureRef, ...] = ()
+    reference_link_ref: FeatureRef | None = None
+    ordering_source: str = ""
+    ordering_warning: str = ""
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         if selected_ref in self.link_refs:
             neighbor_refs = tuple(ref for ref in self.link_refs if ref != selected_ref)
-            return (
+            fields = [
                 SelectedField.scalar("Lateral link group", self.id),
                 SelectedField.list(
                     "Lateral link neighbor ID",
                     tuple(ref.feature_id for ref in neighbor_refs),
                     neighbor_refs,
                 ),
-            )
-        return (
+            ]
+            if selected_ref in self.pocket_link_refs:
+                fields.append(SelectedField.scalar("Pocket link", "yes"))
+            if self.reference_link_ref == selected_ref:
+                fields.append(SelectedField.scalar("Reference-side link", "yes"))
+            if self.ordering_warning:
+                fields.append(SelectedField.scalar("Ordering warning", self.ordering_warning))
+            return tuple(fields)
+        fields = [
             SelectedField.scalar("Lateral link group", self.id),
             SelectedField.list(
                 "Lateral link group link ID",
                 tuple(ref.feature_id for ref in self.link_refs),
                 self.link_refs,
             ),
-        )
+        ]
+        if self.reference_link_ref is not None:
+            fields.append(
+                SelectedField.scalar(
+                    "Reference-side link ID",
+                    self.reference_link_ref.feature_id,
+                    self.reference_link_ref,
+                )
+            )
+        fields.append(SelectedField.scalar("Ordering source", self.ordering_source or "-"))
+        if self.ordering_warning:
+            fields.append(SelectedField.scalar("Ordering warning", self.ordering_warning))
+        return tuple(fields)
 
 
 @dataclass(slots=True, frozen=True)
 class LateralNodeGroup:
     id: int
     lateral_link_group_id: int
-    side: str
+    side: EndpointSide
     link_refs: tuple[FeatureRef, ...]
     node_refs: tuple[FeatureRef, ...]
 
@@ -189,15 +220,33 @@ class LateralNodeGroup:
 @dataclass(slots=True, frozen=True)
 class JunctionConnection:
     id: int
-    node_refs: tuple[FeatureRef, ...]
+    junction_id: int
+    lateral_link_group_id: int
+    endpoint_side: EndpointSide
+    lateral_node_refs: tuple[FeatureRef, ...]
+    junction_node_refs: tuple[FeatureRef, ...]
+    link_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
             SelectedField.scalar("Junction connection", self.id),
+            SelectedField.scalar("Junction", self.junction_id),
+            SelectedField.scalar("Lateral link group", self.lateral_link_group_id),
+            SelectedField.scalar("Endpoint side", self.endpoint_side),
             SelectedField.list(
-                "Connection node ID",
-                tuple(ref.feature_id for ref in self.node_refs),
-                self.node_refs,
+                "Lateral endpoint node ID",
+                tuple(ref.feature_id for ref in self.lateral_node_refs),
+                self.lateral_node_refs,
+            ),
+            SelectedField.list(
+                "Junction node ID",
+                tuple(ref.feature_id for ref in self.junction_node_refs),
+                self.junction_node_refs,
+            ),
+            SelectedField.list(
+                "Connection link ID",
+                tuple(ref.feature_id for ref in self.link_refs),
+                self.link_refs,
             ),
         )
 
@@ -205,12 +254,20 @@ class JunctionConnection:
 @dataclass(slots=True, frozen=True)
 class ConnectionReference:
     id: int
+    connection_id: int
+    junction_id: int
+    endpoint_side: EndpointSide
     link_ref: FeatureRef
+    reversed_from_source: bool
 
     def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
             SelectedField.scalar("Connection reference", self.id),
+            SelectedField.scalar("Junction connection", self.connection_id),
+            SelectedField.scalar("Junction", self.junction_id),
+            SelectedField.scalar("Endpoint side", self.endpoint_side),
             SelectedField.scalar("Reference link ID", self.link_ref.feature_id, self.link_ref),
+            SelectedField.scalar("Reversed from source", self.reversed_from_source),
         )
 
 

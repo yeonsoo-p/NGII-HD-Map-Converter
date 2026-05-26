@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from typing import Any, ClassVar, Literal
+from typing import ClassVar
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
 from ngii2xodr.ngii.segmentation.model import LateralLinkGroup, LateralNodeGroup, StageResult
 from ngii2xodr.ngii.segmentation.stage import empty_result
 from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGroupStage
-
-_EndpointSide = Literal["from", "to"]
 
 
 class LateralNodeGroupStage:
@@ -36,9 +34,8 @@ class LateralNodeGroupStage:
         for link_group in link_group_result.entities:
             if not isinstance(link_group, LateralLinkGroup):
                 continue
-            links = _resolved_links(context, link_group.link_refs)
             for side in ("from", "to"):
-                node_refs = _endpoint_node_refs(context, links, side)
+                node_refs = context.endpoint_node_refs(link_group.link_refs, side)
                 if not node_refs:
                     continue
                 entity_id = len(entities)
@@ -62,35 +59,3 @@ class LateralNodeGroupStage:
             entity_id_by_ref={},
             entity_ids_by_ref={ref: tuple(ids) for ref, ids in entity_ids_by_ref.items()},
         )
-
-
-def _resolved_links(
-    context: SegmentationContext, link_refs: tuple[FeatureRef, ...]
-) -> tuple[Any, ...]:
-    links: list[Any] = []
-    for ref in link_refs:
-        if ref.layer_attr != context.link_attr:
-            continue
-        link = context.link_store.get(ref.feature_id)
-        if link is not None:
-            links.append(link)
-    return tuple(links)
-
-
-def _endpoint_node_refs(
-    context: SegmentationContext,
-    links: tuple[Any, ...],
-    side: _EndpointSide,
-) -> tuple[FeatureRef, ...]:
-    node_refs: list[FeatureRef] = []
-    seen: set[str] = set()
-    for link in links:
-        node_id = (
-            getattr(link, "from_node_id", "") if side == "from" else getattr(link, "to_node_id", "")
-        )
-        node = context.node_store.get(node_id)
-        if node is None or node.id in seen:
-            continue
-        seen.add(node.id)
-        node_refs.append(FeatureRef(context.node_attr, node.id))
-    return tuple(node_refs)

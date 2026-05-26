@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import ClassVar
 
-import numpy as np
 import shapely
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
-from ngii2xodr.ngii.segmentation.helpers import intersects_within_z_tol, uf_find, uf_union
+from ngii2xodr.ngii.segmentation.helpers import (
+    connected_components_from_pairs,
+    intersects_within_z_tol,
+)
 from ngii2xodr.ngii.segmentation.model import Junction, StageResult
 from ngii2xodr.ngii.segmentation.stage import empty_result
 
@@ -32,53 +34,49 @@ class JunctionStage:
         if not candidate_rows:
             return empty_result(self, skipped_reason="schema has no junction link candidates")
 
-        row_to_candidate = {row_i: candidate_i for candidate_i, row_i in enumerate(candidate_rows)}
-        parent = np.arange(len(candidate_rows), dtype=np.int32)
-        _union_link_refs(context, candidate_rows, row_to_candidate, parent)
-        _union_intersections(context, candidate_rows, row_to_candidate, parent)
-
-        rows_by_entity: dict[int, list[int]] = {}
-        root_to_entity: dict[int, int] = {}
-        for row_i in candidate_rows:
-            root = uf_find(parent, row_to_candidate[row_i])
-            entity_id = root_to_entity.setdefault(root, len(root_to_entity))
-            rows_by_entity.setdefault(entity_id, []).append(row_i)
+        candidate_set = set(candidate_rows)
+        components = connected_components_from_pairs(
+            candidate_rows,
+            (
+                *_lateral_pairs(context, candidate_rows, candidate_set),
+                *_intersection_pairs(context, candidate_rows),
+            ),
+        )
 
         entities: list[Junction] = []
         entity_id_by_ref: dict[FeatureRef, int] = {}
-        for entity_id in range(len(rows_by_entity)):
-            refs = tuple(context.ref_for_link_index(i) for i in rows_by_entity[entity_id])
+        for entity_id, rows in enumerate(components):
+            refs = tuple(context.ref_for_link_index(i) for i in rows)
+            endpoint_node_refs = _junction_endpoint_node_refs(context, refs)
             for ref in refs:
                 entity_id_by_ref[ref] = entity_id
-            entities.append(Junction(id=entity_id, link_refs=refs))
+            for node_ref in endpoint_node_refs:
+                entity_id_by_ref[node_ref] = entity_id
+            entities.append(
+                Junction(id=entity_id, link_refs=refs, endpoint_node_refs=endpoint_node_refs)
+            )
         return StageResult(
             self.id, self.label, self.entity_label, tuple(entities), entity_id_by_ref
         )
 
 
-def _union_link_refs(
+def _lateral_pairs(
     context: SegmentationContext,
     candidate_rows: list[int],
-    row_to_candidate: dict[int, int],
-    parent: np.ndarray,
-) -> None:
+    candidate_set: set[int],
+) -> tuple[tuple[int, int], ...]:
+    pairs: list[tuple[int, int]] = []
     for row_i in candidate_rows:
-        link = context.link_store.features[row_i]
-        for neighbour_id in (
-            getattr(link, "r_link_id", ""),
-            getattr(link, "l_link_id", ""),
-        ):
-            neighbour_row = context.link_store.id_to_index.get(str(neighbour_id))
-            if neighbour_row is not None and neighbour_row in row_to_candidate:
-                uf_union(parent, row_to_candidate[row_i], row_to_candidate[neighbour_row])
+        for neighbour_row in context.lateral_neighbor_rows_for_link_index(row_i):
+            if neighbour_row in candidate_set:
+                pairs.append((row_i, neighbour_row))
+    return tuple(pairs)
 
 
-def _union_intersections(
+def _intersection_pairs(
     context: SegmentationContext,
     candidate_rows: list[int],
-    row_to_candidate: dict[int, int],
-    parent: np.ndarray,
-) -> None:
+) -> tuple[tuple[int, int], ...]:
     geometry_rows: list[int] = []
     lines: list[shapely.LineString] = []
     for row_i in candidate_rows:
@@ -87,7 +85,8 @@ def _union_intersections(
             geometry_rows.append(row_i)
             lines.append(line)
     if len(geometry_rows) < 2:
-        return
+        return ()
+    pairs: list[tuple[int, int]] = []
     tree = shapely.STRtree(lines)
     for a_pos, line in enumerate(lines):
         a_row = geometry_rows[a_pos]
@@ -104,4 +103,19 @@ def _union_intersections(
                 other,
                 context.cfg.z_intersection_tol_m,
             ):
-                uf_union(parent, row_to_candidate[a_row], row_to_candidate[b_row])
+                pairs.append((a_row, b_row))
+    return tuple(pairs)
+
+
+def _junction_endpoint_node_refs(
+    context: SegmentationContext, link_refs: tuple[FeatureRef, ...]
+) -> tuple[FeatureRef, ...]:
+    node_refs: list[FeatureRef] = []
+    seen: set[FeatureRef] = set()
+    for link_ref in link_refs:
+        for node_ref in context.endpoint_node_refs_for_link_ref(link_ref):
+            if node_ref in seen:
+                continue
+            seen.add(node_ref)
+            node_refs.append(node_ref)
+    return tuple(node_refs)
