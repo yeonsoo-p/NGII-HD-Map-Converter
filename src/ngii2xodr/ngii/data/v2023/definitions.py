@@ -360,6 +360,7 @@ SCHEMA = SchemaDefinition(
     role_filters=(
         RoleFilter("junction_link", "link", "link_type", ("1",)),
         RoleFilter("ordinary_link", "link", "link_type", ("6",)),
+        RoleFilter("pocket_link", "link", "lane_no", numeric_min=90.0),
         RoleFilter("uturn_marker", "lane_line", "kind", ("502",)),
         RoleFilter("junction_node", "node", "node_type", ("1",)),
     ),

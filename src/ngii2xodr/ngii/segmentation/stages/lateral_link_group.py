@@ -35,6 +35,8 @@ class LateralLinkGroupStage:
         ]
         if not candidate_rows:
             return empty_result(self, skipped_reason="schema has no lateral link candidates")
+        pocket_rows = set(context.rows_for_filter("pocket_link"))
+        pocket_filter_refs = {context.ref_for_link_index(i) for i in pocket_rows}
         candidate_set = set(candidate_rows)
         components = connected_components_from_pairs(
             candidate_rows,
@@ -50,7 +52,7 @@ class LateralLinkGroupStage:
         entity_id_by_ref: dict[FeatureRef, int] = {}
         for entity_id, rows in enumerate(components):
             refs = tuple(context.ref_for_link_index(i) for i in rows)
-            pocket_refs = _pocket_link_refs(context, refs, uturn_refs)
+            pocket_refs = _pocket_link_refs(refs, uturn_refs, pocket_filter_refs)
             reference_ref, ordering_source, ordering_warning = _reference_link_ref(
                 context, rows, pocket_refs
             )
@@ -72,15 +74,11 @@ class LateralLinkGroupStage:
 
 
 def _pocket_link_refs(
-    context: SegmentationContext,
     refs: tuple[FeatureRef, ...],
     uturn_refs: set[FeatureRef],
+    pocket_filter_refs: set[FeatureRef],
 ) -> tuple[FeatureRef, ...]:
-    pocket_refs: list[FeatureRef] = []
-    for ref in refs:
-        if ref in uturn_refs or context.link_turn_for_ref(ref) in {"1", "3"}:
-            pocket_refs.append(ref)
-    return tuple(pocket_refs)
+    return tuple(ref for ref in refs if ref in uturn_refs or ref in pocket_filter_refs)
 
 
 def _reference_link_ref(
@@ -92,7 +90,18 @@ def _reference_link_ref(
     pocket_set = set(pocket_refs)
     non_pocket_refs = row_refs - pocket_set
     if not non_pocket_refs:
-        return None, "lateral_topology", "no non-pocket links"
+        return None, "lane_no", "no non-pocket links"
+
+    lane_no_candidates = [
+        ref
+        for ref in sorted(non_pocket_refs, key=lambda item: item.feature_id)
+        if context.link_lane_no_for_ref(ref) == 1
+    ]
+    if len(lane_no_candidates) == 1:
+        return lane_no_candidates[0], "lane_no", ""
+    lane_no_warning = ""
+    if len(lane_no_candidates) > 1:
+        lane_no_warning = "multiple lane_no_1 candidates; "
 
     candidates: list[FeatureRef] = []
     for row_i in rows:
@@ -103,7 +112,8 @@ def _reference_link_ref(
         if not any(left_ref in non_pocket_refs for left_ref in left_refs):
             candidates.append(ref)
     if len(candidates) == 1:
-        return candidates[0], "lateral_topology", ""
+        warning = f"{lane_no_warning}topology selected".strip() if lane_no_warning else ""
+        return candidates[0], "lateral_topology", warning
     if not candidates:
-        return None, "lateral_topology", "no non-pocket left edge"
-    return None, "lateral_topology", "multiple non-pocket left edges"
+        return None, "lateral_topology", f"{lane_no_warning}no non-pocket left edge".strip()
+    return None, "lateral_topology", f"{lane_no_warning}multiple non-pocket left edges".strip()

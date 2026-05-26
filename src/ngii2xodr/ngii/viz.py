@@ -31,7 +31,13 @@ from ngii2xodr.ngii.data.features import (
     feature_points,
     feature_polygon_ring,
 )
-from ngii2xodr.ngii.segmentation import Segmentation, SegmentationConfig
+from ngii2xodr.ngii.segmentation import (
+    ConnectionReference,
+    ConnectionReferenceStage,
+    JunctionConnectionStage,
+    Segmentation,
+    SegmentationConfig,
+)
 from ngii2xodr.profile import (
     PerformanceProfile,
     ProfileTimer,
@@ -46,6 +52,7 @@ vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 SelectCallback = Callable[[FeatureRef], None]
 GeometryKind = FeatureGeometryKind
 LayerGeometryKind = Literal["point", "line", "polygon", "mixed"]
+PointSizeFn = Callable[[], NDArray[np.float64]]
 
 
 @dataclass(slots=True, frozen=True)
@@ -80,6 +87,9 @@ class VizPointConfig:
 class VizConfig:
     background_color: tuple[float, float, float]
     highlight_rgb: tuple[int, int, int]
+    junction_connection_node_point_size: float
+    connection_reference_arrow_length_m: float
+    connection_reference_arrow_rgb: tuple[int, int, int]
     selector_tol_point: float
     selector_tol_line: float
     selector_tol_poly: float
@@ -122,6 +132,7 @@ class RenderLayer(ABC):
     poly_depth_offset_units: float
     render_points_as_spheres: bool
     color_fn: Callable[[], NDArray[np.uint8]]
+    point_size_fn: PointSizeFn | None = None
     feature_indices: tuple[int, ...] | None = None
     actor: vtk.vtkActor | None = field(default=None, init=False)
     selected_index: int | None = field(default=None, init=False)
@@ -172,6 +183,11 @@ class RenderLayer(ABC):
     @abstractmethod
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None: ...
 
+    def detach(self, plotter: pv.Plotter) -> None:
+        if self.actor is not None:
+            plotter.remove_actor(self.actor)
+            self.actor = None
+
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
             self.actor.SetVisibility(int(on))
@@ -197,6 +213,12 @@ class RenderLayer(ABC):
 class PointRenderLayer(RenderLayer):
     poly: pv.PolyData = field(init=False)
     selector: vtk.vtkPointPicker = field(init=False)
+    emphasis_poly: pv.PolyData = field(init=False)
+    emphasis_selector: vtk.vtkPointPicker = field(init=False)
+    emphasis_actor: vtk.vtkActor | None = field(default=None, init=False)
+    emphasis_feature_indices: tuple[int, ...] = field(default=(), init=False)
+    emphasis_point_size: float = field(default=0.0, init=False)
+    _plotter: pv.Plotter | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         points: list[NDArray[np.float64]] = []
@@ -209,10 +231,15 @@ class PointRenderLayer(RenderLayer):
         self.selector = vtk.vtkPointPicker()
         self.selector.SetTolerance(self.selector_tolerance)
         self.selector.PickFromListOn()
+        self.emphasis_poly = pv.PolyData()
+        self.emphasis_selector = vtk.vtkPointPicker()
+        self.emphasis_selector.SetTolerance(self.selector_tolerance)
+        self.emphasis_selector.PickFromListOn()
 
     @override
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
         del polygon_selector
+        self._plotter = plotter
         if self.poly.n_points == 0:
             return
         self.refresh_colors()
@@ -226,20 +253,38 @@ class PointRenderLayer(RenderLayer):
         )
         self.actor.SetVisibility(int(self.config.visible))
         self.selector.AddPickList(self.actor)
+        self._refresh_emphasis()
+
+    @override
+    def detach(self, plotter: pv.Plotter) -> None:
+        RenderLayer.detach(self, plotter)
+        if self.emphasis_actor is not None:
+            plotter.remove_actor(self.emphasis_actor)
+            self.emphasis_actor = None
+        self.selector.InitializePickList()
+        self.emphasis_selector.InitializePickList()
+        self._plotter = None
 
     @override
     def refresh_colors(self) -> None:
         if self.poly.n_points == 0:
             return
-        rgb = self._render_colors()
-        render_selected = self._render_index_for_selected()
-        if render_selected is not None and 0 <= render_selected < len(rgb):
-            rgb[render_selected] = self.selected_rgb
+        rgb = self._render_colors_with_selection()
         self.poly.point_data["rgb"] = rgb
         self.poly.Modified()
+        self._refresh_emphasis()
+
+    @override
+    def set_visible(self, on: bool) -> None:
+        RenderLayer.set_visible(self, on)
+        if self.emphasis_actor is not None:
+            self.emphasis_actor.SetVisibility(int(on))
 
     @override
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
+        emphasis = self._try_emphasis_select(x, y, renderer)
+        if emphasis is not None:
+            return emphasis
         if self.actor is None or not self.selector.Pick(x, y, 0, renderer):
             return None
         index = self.selector.GetPointId()
@@ -249,6 +294,9 @@ class PointRenderLayer(RenderLayer):
     def try_point_select(
         self, x: int, y: int, renderer: Any, radius_px: float
     ) -> tuple[FeatureRef, float] | None:
+        emphasis = self._try_emphasis_point_select(x, y, renderer, radius_px)
+        if emphasis is not None:
+            return emphasis
         if self.actor is None or not self.actor.GetVisibility() or self.poly.n_points == 0:
             return None
         if not self.selector.Pick(x, y, 0, renderer):
@@ -271,6 +319,110 @@ class PointRenderLayer(RenderLayer):
         if self.feature_indices is None:
             return np.array(colors, dtype=np.uint8, copy=True)
         return np.array(colors[list(self.feature_indices)], dtype=np.uint8, copy=True)
+
+    def _render_colors_with_selection(self) -> NDArray[np.uint8]:
+        rgb = self._render_colors()
+        render_selected = self._render_index_for_selected()
+        if render_selected is not None and 0 <= render_selected < len(rgb):
+            rgb[render_selected] = self.selected_rgb
+        return rgb
+
+    def _render_point_sizes(self) -> NDArray[np.float64] | None:
+        if self.point_size_fn is None:
+            return None
+        sizes = np.asarray(self.point_size_fn(), dtype=np.float64)
+        if self.feature_indices is None:
+            return np.array(sizes, dtype=np.float64, copy=True)
+        return np.array(sizes[list(self.feature_indices)], dtype=np.float64, copy=True)
+
+    def _refresh_emphasis(self) -> None:
+        if (
+            self._plotter is None
+            or self.actor is None
+            or self.point_size_fn is None
+            or self.poly.n_points == 0
+        ):
+            return
+        sizes = self._render_point_sizes()
+        if sizes is None:
+            return
+        render_indices = tuple(
+            i
+            for i, point_size in enumerate(sizes)
+            if i < self.poly.n_points and point_size > self.config.point_size
+        )
+        if not render_indices:
+            self._remove_emphasis_actor()
+            return
+        feature_indices = tuple(self._feature_index_at(i) for i in render_indices)
+        point_size = max(float(sizes[i]) for i in render_indices)
+        if (
+            self.emphasis_actor is None
+            or self.emphasis_feature_indices != feature_indices
+            or self.emphasis_point_size != point_size
+        ):
+            self._remove_emphasis_actor()
+            self.emphasis_feature_indices = feature_indices
+            self.emphasis_point_size = point_size
+            self.emphasis_poly = pv.PolyData(
+                np.asarray(self.poly.points[list(render_indices)], dtype=np.float64)
+            )
+            self.emphasis_poly.point_data["rgb"] = self._emphasis_colors(render_indices)
+            self.emphasis_actor = self._plotter.add_mesh(
+                self.emphasis_poly,
+                scalars="rgb",
+                rgb=True,
+                point_size=point_size,
+                render_points_as_spheres=self.render_points_as_spheres,
+                show_scalar_bar=False,
+            )
+            self.emphasis_actor.SetVisibility(int(self.config.visible))
+            self.emphasis_selector.AddPickList(self.emphasis_actor)
+            return
+        self.emphasis_poly.point_data["rgb"] = self._emphasis_colors(render_indices)
+        self.emphasis_poly.Modified()
+        self.emphasis_actor.GetProperty().SetPointSize(point_size)
+        self.emphasis_actor.SetVisibility(int(self.config.visible))
+
+    def _remove_emphasis_actor(self) -> None:
+        if self._plotter is not None and self.emphasis_actor is not None:
+            self._plotter.remove_actor(self.emphasis_actor)
+        self.emphasis_actor = None
+        self.emphasis_feature_indices = ()
+        self.emphasis_point_size = 0.0
+        self.emphasis_poly = pv.PolyData()
+        self.emphasis_selector.InitializePickList()
+
+    def _emphasis_colors(self, render_indices: tuple[int, ...]) -> NDArray[np.uint8]:
+        rgb = self._render_colors_with_selection()
+        return np.array(rgb[list(render_indices)], dtype=np.uint8, copy=True)
+
+    def _try_emphasis_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
+        if (
+            self.emphasis_actor is None
+            or not self.emphasis_actor.GetVisibility()
+            or self.emphasis_poly.n_points == 0
+        ):
+            return None
+        if not self.emphasis_selector.Pick(x, y, 0, renderer):
+            return None
+        index = self.emphasis_selector.GetPointId()
+        if not 0 <= index < len(self.emphasis_feature_indices):
+            return None
+        feature_index = self.emphasis_feature_indices[index]
+        return FeatureRef(self.layer_attr, self.store.features[feature_index].id)
+
+    def _try_emphasis_point_select(
+        self, x: int, y: int, renderer: Any, radius_px: float
+    ) -> tuple[FeatureRef, float] | None:
+        ref = self._try_emphasis_select(x, y, renderer)
+        if ref is None:
+            return None
+        index = self.emphasis_selector.GetPointId()
+        dist2 = _display_distance2(self.emphasis_poly.points[index], x, y, renderer)
+        if dist2 > radius_px * radius_px:
+            return None
+        return ref, dist2
 
 
 @dataclass(slots=True)
@@ -304,6 +456,11 @@ class LineRenderLayer(RenderLayer):
         )
         self.actor.SetVisibility(int(self.config.visible))
         self.selector.AddPickList(self.actor)
+
+    @override
+    def detach(self, plotter: pv.Plotter) -> None:
+        RenderLayer.detach(self, plotter)
+        self.selector.InitializePickList()
 
     @override
     def refresh_colors(self) -> None:
@@ -397,6 +554,14 @@ class PolygonRenderLayer(RenderLayer):
             self.fallback_actor.SetVisibility(int(on))
 
     @override
+    def detach(self, plotter: pv.Plotter) -> None:
+        RenderLayer.detach(self, plotter)
+        if self.fallback_actor is not None:
+            plotter.remove_actor(self.fallback_actor)
+            self.fallback_actor = None
+        self.fallback_selector.InitializePickList()
+
+    @override
     def refresh_colors(self) -> None:
         face_rgb = self.color_fn()
         if self.poly.n_cells > 0:
@@ -462,6 +627,11 @@ class CompositeRenderLayer(RenderLayer):
             layer.attach(plotter, polygon_selector)
 
     @override
+    def detach(self, plotter: pv.Plotter) -> None:
+        for layer in self.sublayers:
+            layer.detach(plotter)
+
+    @override
     def set_visible(self, on: bool) -> None:
         for layer in self.sublayers:
             layer.set_visible(on)
@@ -491,6 +661,48 @@ class CompositeRenderLayer(RenderLayer):
         for layer in self.sublayers:
             layers.extend(layer.render_layers(kind))
         return tuple(layers)
+
+
+@dataclass(slots=True)
+class _ReferenceArrowOverlay:
+    references: tuple[ConnectionReference, ...]
+    visible_level: int | None
+    arrow_length_m: float
+    rgb: tuple[int, int, int]
+    actor: vtk.vtkActor | None = field(default=None, init=False)
+
+    def attach(self, plotter: pv.Plotter, current_level: int) -> None:
+        if not self.references:
+            return
+        anchors = np.asarray(
+            [reference.anchor_xyz for reference in self.references], dtype=np.float64
+        )
+        directions = np.asarray(
+            [
+                (reference.tangent_xy[0], reference.tangent_xy[1], 0.0)
+                for reference in self.references
+            ],
+            dtype=np.float64,
+        )
+        self.actor = plotter.add_arrows(
+            anchors,
+            directions,
+            mag=self.arrow_length_m,
+            color=_rgb_int_to_float(self.rgb),
+        )
+        self.set_level(current_level)
+
+    def detach(self, plotter: pv.Plotter) -> None:
+        if self.actor is not None:
+            plotter.remove_actor(self.actor)
+            self.actor = None
+
+    def set_level(self, level: int) -> None:
+        if self.actor is None:
+            return
+        self.actor.SetVisibility(
+            int(self.visible_level is not None and level >= self.visible_level)
+        )
 
 
 class HdMapViz:
@@ -530,6 +742,7 @@ class HdMapViz:
         self.polygon_selector.SetTolerance(viz_cfg.selector_tol_poly)
         self.polygon_selector.PickFromListOn()
         self.registry = self._build_registry()
+        self._connection_reference_overlay = self._build_connection_reference_overlay()
         self.loaded_map = LoadedMap(
             dataset=self.dataset,
             sanity=self.sanity,
@@ -552,9 +765,10 @@ class HdMapViz:
                 continue
             config = _required_layer_config(self.viz_cfg.layers, attr, store)
             color_fn = self._color_fn(attr, store, config)
+            point_size_fn = self._point_size_fn(attr, store, config)
             if len(kinds) == 1:
                 layers[attr] = self._make_render_layer(
-                    attr, store, kinds[0], config, color_fn, None
+                    attr, store, kinds[0], config, color_fn, point_size_fn, None
                 )
                 continue
             sublayers = tuple(
@@ -564,6 +778,7 @@ class HdMapViz:
                     kind,
                     config,
                     color_fn,
+                    point_size_fn,
                     store.feature_indices_for_geometry_kind(kind),
                 )
                 for kind in kinds
@@ -579,6 +794,7 @@ class HdMapViz:
                 poly_depth_offset_units=self.viz_cfg.poly_depth_offset_units,
                 render_points_as_spheres=self.viz_cfg.points.render_as_spheres,
                 color_fn=color_fn,
+                point_size_fn=point_size_fn,
                 sublayers=sublayers,
             )
         return RenderRegistry(layers)
@@ -590,6 +806,7 @@ class HdMapViz:
         kind: GeometryKind,
         config: VizLayerConfig,
         color_fn: Callable[[], NDArray[np.uint8]],
+        point_size_fn: PointSizeFn | None,
         feature_indices: tuple[int, ...] | None,
     ) -> RenderLayer:
         layer_cls: type[RenderLayer]
@@ -610,6 +827,7 @@ class HdMapViz:
             poly_depth_offset_units=self.viz_cfg.poly_depth_offset_units,
             render_points_as_spheres=self.viz_cfg.points.render_as_spheres,
             color_fn=color_fn,
+            point_size_fn=point_size_fn,
             feature_indices=feature_indices,
         )
 
@@ -625,7 +843,16 @@ class HdMapViz:
     ) -> Callable[[], NDArray[np.uint8]]:
         if attr in self.dataset.schema.attrs_for_role("link"):
             return lambda: self._link_colors(attr, store, config)
+        if attr == self.dataset.schema.attr_for_role("node"):
+            return lambda: self._node_colors(attr, store, config)
         return lambda: np.tile(np.asarray(config.rgb, dtype=np.uint8), (len(store), 1))
+
+    def _point_size_fn(
+        self, attr: str, store: LayerStore[Any], config: VizLayerConfig
+    ) -> PointSizeFn | None:
+        if attr == self.dataset.schema.attr_for_role("node"):
+            return lambda: self._node_point_sizes(attr, store, config)
+        return None
 
     def _link_colors(
         self, layer_attr: str, store: LayerStore[Any], config: VizLayerConfig
@@ -643,6 +870,64 @@ class HdMapViz:
                     colored_refs.add(ref)
         return rgb
 
+    def _node_colors(
+        self, layer_attr: str, store: LayerStore[Any], config: VizLayerConfig
+    ) -> NDArray[np.uint8]:
+        rgb = np.tile(np.asarray(config.rgb, dtype=np.uint8), (len(store), 1))
+        result = self.segmentation.result_or_none(JunctionConnectionStage.id)
+        if result is None or not self._stage_is_visible(JunctionConnectionStage.id):
+            return rgb
+        palette = self._palette_by_stage[result.stage_id]
+        for ref, entity_ids in result.entity_ids_by_ref.items():
+            if ref.layer_attr != layer_attr or not entity_ids:
+                continue
+            idx = store.id_to_index.get(ref.feature_id)
+            entity_id = entity_ids[0]
+            if idx is not None and 0 <= entity_id < len(palette):
+                rgb[idx] = palette[entity_id]
+        return rgb
+
+    def _node_point_sizes(
+        self, layer_attr: str, store: LayerStore[Any], config: VizLayerConfig
+    ) -> NDArray[np.float64]:
+        sizes = np.full(len(store), config.point_size, dtype=np.float64)
+        result = self.segmentation.result_or_none(JunctionConnectionStage.id)
+        if result is None or not self._stage_is_visible(JunctionConnectionStage.id):
+            return sizes
+        for ref, entity_ids in result.entity_ids_by_ref.items():
+            if ref.layer_attr != layer_attr or not entity_ids:
+                continue
+            idx = store.id_to_index.get(ref.feature_id)
+            if idx is not None:
+                sizes[idx] = self.viz_cfg.junction_connection_node_point_size
+        return sizes
+
+    def _build_connection_reference_overlay(self) -> _ReferenceArrowOverlay:
+        result = self.segmentation.result_or_none(ConnectionReferenceStage.id)
+        references = (
+            ()
+            if result is None
+            else tuple(
+                entity for entity in result.entities if isinstance(entity, ConnectionReference)
+            )
+        )
+        return _ReferenceArrowOverlay(
+            references=references,
+            visible_level=self._stage_visible_level(ConnectionReferenceStage.id),
+            arrow_length_m=self.viz_cfg.connection_reference_arrow_length_m,
+            rgb=self.viz_cfg.connection_reference_arrow_rgb,
+        )
+
+    def _stage_visible_level(self, stage_id: str) -> int | None:
+        for level, result in enumerate(self.segmentation.stage_results, start=1):
+            if result.stage_id == stage_id:
+                return level
+        return None
+
+    def _stage_is_visible(self, stage_id: str) -> bool:
+        visible_level = self._stage_visible_level(stage_id)
+        return visible_level is not None and self._segmentation_level >= visible_level
+
     def attach(self) -> None:
         if self._attached:
             return
@@ -651,6 +936,7 @@ class HdMapViz:
             self.plotter.background_color = self.viz_cfg.background_color
             for layer in self.registry.selectable_layers():
                 layer.attach(self.plotter, self.polygon_selector)
+            self._connection_reference_overlay.attach(self.plotter, self._segmentation_level)
             self.plotter.add_axes()
             self._add_view_keys()
             self._left_press_tag = self.plotter.iren.add_observer(
@@ -679,13 +965,10 @@ class HdMapViz:
             self.plotter.show()
 
     def detach(self) -> None:
-        for layer in self.registry.render_layers():
-            if layer.actor is not None:
-                self.plotter.remove_actor(layer.actor)
-                layer.actor = None
-            if isinstance(layer, PolygonRenderLayer) and layer.fallback_actor is not None:
-                self.plotter.remove_actor(layer.fallback_actor)
-                layer.fallback_actor = None
+        self._connection_reference_overlay.detach(self.plotter)
+        for layer in self.registry.selectable_layers():
+            layer.detach(self.plotter)
+        self.polygon_selector.InitializePickList()
         if self._left_press_tag is not None:
             self.plotter.iren.remove_observer(self._left_press_tag)
             self._left_press_tag = None
@@ -762,10 +1045,9 @@ class HdMapViz:
         if level == self._segmentation_level:
             return
         self._segmentation_level = level
-        for attr in self.dataset.schema.attrs_for_role("link"):
-            layer = self.registry.layers.get(attr)
-            if layer is not None:
-                layer.refresh_colors()
+        for layer in self.registry.selectable_layers():
+            layer.refresh_colors()
+        self._connection_reference_overlay.set_level(level)
         self.plotter.render()
 
     def select_feature(self, ref: FeatureRef | None, *, emit: bool = True) -> None:
@@ -905,6 +1187,10 @@ def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
         return np.empty((0, 3), dtype=np.uint8)
     rng = np.random.default_rng(seed)
     return rng.integers(60, 240, size=(n, 3), dtype=np.uint8)
+
+
+def _rgb_int_to_float(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
+    return (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
 
 
 def _polyline_polydata(polylines: list[NDArray[np.float64]]) -> pv.PolyData:

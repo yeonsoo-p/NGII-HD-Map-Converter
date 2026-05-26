@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,6 +13,7 @@ from numpy.typing import NDArray
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 from ngii2xodr.ngii.data.features import LineFeature
+from ngii2xodr.ngii.data.schema import RoleFilter
 from ngii2xodr.ngii.segmentation.model import EndpointSide, SegmentationConfig
 
 
@@ -154,7 +156,7 @@ class SegmentationContext:
             rows_by_filter[role_filter.name] = tuple(
                 i
                 for i, feature in enumerate(store.features)
-                if str(getattr(feature, role_filter.attr_name, "")) in role_filter.values
+                if _matches_role_filter(feature, role_filter)
             )
         return rows_by_filter
 
@@ -297,11 +299,38 @@ class SegmentationContext:
         link = self.link_for_ref(link_ref)
         return "" if link is None else _optional_text(getattr(link, "turn", ""))
 
+    def link_lane_no_for_ref(self, link_ref: FeatureRef) -> int | None:
+        link = self.link_for_ref(link_ref)
+        if link is None:
+            return None
+        value = getattr(link, "lane_no", None)
+        return value if isinstance(value, int) else None
+
     def link_polyline_for_ref(self, link_ref: FeatureRef) -> NDArray[np.float64] | None:
         link = self.link_for_ref(link_ref)
         if not isinstance(link, LineFeature):
             return None
         return link.polyline
+
+    def endpoint_geometry_for_link_ref(
+        self, link_ref: FeatureRef, side: EndpointSide
+    ) -> tuple[tuple[float, float, float], tuple[float, float]] | None:
+        polyline = self.link_polyline_for_ref(link_ref)
+        if polyline is None or len(polyline) < 2:
+            return None
+        if side == "from":
+            anchor = polyline[0]
+            tangent = polyline[1, :2] - polyline[0, :2]
+        else:
+            anchor = polyline[-1]
+            tangent = polyline[-1, :2] - polyline[-2, :2]
+        norm = float(np.hypot(tangent[0], tangent[1]))
+        if norm <= 0.0:
+            return None
+        return (
+            (float(anchor[0]), float(anchor[1]), float(anchor[2])),
+            (float(tangent[0]) / norm, float(tangent[1]) / norm),
+        )
 
 
 def _line_or_none(feature: Any) -> shapely.LineString | None:
@@ -314,3 +343,30 @@ def _optional_text(value: object) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _matches_role_filter(feature: Any, role_filter: RoleFilter) -> bool:
+    for attr in role_filter.attrs:
+        value = getattr(feature, attr, None)
+        if role_filter.numeric_min is not None:
+            number = _number_or_none(value)
+            if number is not None and number >= role_filter.numeric_min:
+                return True
+            continue
+        if str(value) in role_filter.values:
+            return True
+    return False
+
+
+_NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
+
+
+def _number_or_none(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not _NUMBER_RE.fullmatch(text):
+        return None
+    return float(text)

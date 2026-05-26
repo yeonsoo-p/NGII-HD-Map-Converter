@@ -350,11 +350,17 @@ SCHEMA = SchemaDefinition(
     version="2025.12",
     layer_specs=LAYER_SPECS,
     role_filters=(
-        RoleFilter("junction_link", "link", "link_type", ("100",)),
+        RoleFilter("junction_link", "link", "link_type", ("100", "102")),
         RoleFilter("ordinary_link", "link", "link_type", ("300",)),
+        RoleFilter("pocket_link", "link", "turn", ("1", "3")),
         RoleFilter("uturn_link", "link", "turn", ("3",)),
         RoleFilter("uturn_marker", "lane_line", "line_kind", ("502",)),
-        RoleFilter("junction_node", "node", "node_type1", ("100",)),
+        RoleFilter(
+            "junction_node",
+            "node",
+            values=("100",),
+            attr_names=("node_type1", "node_type2", "node_type3"),
+        ),
     ),
 )
 

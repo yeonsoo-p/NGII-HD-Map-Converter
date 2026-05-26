@@ -221,22 +221,35 @@ class LateralNodeGroup:
 class JunctionConnection:
     id: int
     junction_id: int
-    lateral_link_group_id: int
-    endpoint_side: EndpointSide
-    lateral_node_refs: tuple[FeatureRef, ...]
+    lateral_link_group_ids: tuple[int, ...]
+    endpoint_sides: tuple[EndpointSide, ...]
+    node_refs: tuple[FeatureRef, ...]
     junction_node_refs: tuple[FeatureRef, ...]
     link_refs: tuple[FeatureRef, ...]
+    match_methods: tuple[str, ...]
 
-    def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
+    def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
+        if selected_ref in self.node_refs:
+            return (
+                SelectedField.scalar("Junction connection", self.id),
+                SelectedField.list(
+                    "Connection node ID",
+                    tuple(ref.feature_id for ref in self.node_refs),
+                    self.node_refs,
+                ),
+            )
         return (
             SelectedField.scalar("Junction connection", self.id),
             SelectedField.scalar("Junction", self.junction_id),
-            SelectedField.scalar("Lateral link group", self.lateral_link_group_id),
-            SelectedField.scalar("Endpoint side", self.endpoint_side),
             SelectedField.list(
-                "Lateral endpoint node ID",
-                tuple(ref.feature_id for ref in self.lateral_node_refs),
-                self.lateral_node_refs,
+                "Lateral link group",
+                tuple(str(group_id) for group_id in self.lateral_link_group_ids),
+            ),
+            SelectedField.list("Endpoint side", self.endpoint_sides),
+            SelectedField.list(
+                "Connection node ID",
+                tuple(ref.feature_id for ref in self.node_refs),
+                self.node_refs,
             ),
             SelectedField.list(
                 "Junction node ID",
@@ -248,6 +261,7 @@ class JunctionConnection:
                 tuple(ref.feature_id for ref in self.link_refs),
                 self.link_refs,
             ),
+            SelectedField.list("Match method", self.match_methods),
         )
 
 
@@ -258,7 +272,10 @@ class ConnectionReference:
     junction_id: int
     endpoint_side: EndpointSide
     link_ref: FeatureRef
+    anchor_xyz: tuple[float, float, float]
+    tangent_xy: tuple[float, float]
     reversed_from_source: bool
+    selection_source: str
 
     def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
@@ -268,6 +285,7 @@ class ConnectionReference:
             SelectedField.scalar("Endpoint side", self.endpoint_side),
             SelectedField.scalar("Reference link ID", self.link_ref.feature_id, self.link_ref),
             SelectedField.scalar("Reversed from source", self.reversed_from_source),
+            SelectedField.scalar("Selection source", self.selection_source),
         )
 
 

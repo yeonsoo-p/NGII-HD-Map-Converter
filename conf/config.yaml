@@ -73,6 +73,9 @@ segmentation:
 viz:
   background_color: [0.86, 0.88, 0.90]
   highlight_rgb: [255, 30, 200]
+  junction_connection_node_point_size: 12.0
+  connection_reference_arrow_length_m: 12.0
+  connection_reference_arrow_rgb: [25, 90, 255]
   selector_tol_point: 0.01
   selector_tol_line: 0.012
   selector_tol_poly: 0.0

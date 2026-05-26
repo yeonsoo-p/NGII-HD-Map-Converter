@@ -79,6 +79,9 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
     return VizConfig(
         background_color=_rgb_float(raw["background_color"]),
         highlight_rgb=_rgb_int(raw["highlight_rgb"]),
+        junction_connection_node_point_size=float(raw["junction_connection_node_point_size"]),
+        connection_reference_arrow_length_m=float(raw["connection_reference_arrow_length_m"]),
+        connection_reference_arrow_rgb=_rgb_int(raw["connection_reference_arrow_rgb"]),
         selector_tol_point=float(raw["selector_tol_point"]),
         selector_tol_line=float(raw["selector_tol_line"]),
         selector_tol_poly=float(raw["selector_tol_poly"]),

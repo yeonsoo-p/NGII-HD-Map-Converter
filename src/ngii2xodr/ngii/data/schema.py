@@ -54,8 +54,19 @@ class RelationshipRule:
 class RoleFilter:
     name: str
     role: LayerRole
-    attr_name: str
-    values: tuple[str, ...]
+    attr_name: str = ""
+    values: tuple[str, ...] = ()
+    attr_names: tuple[str, ...] = ()
+    numeric_min: float | None = None
+
+    @property
+    def attrs(self) -> tuple[str, ...]:
+        if self.attr_names:
+            return self.attr_names
+        if self.attr_name:
+            return (self.attr_name,)
+        msg = f"role filter {self.name!r} must define attr_name or attr_names"
+        raise ValueError(msg)
 
 
 @dataclass(slots=True, frozen=True)
