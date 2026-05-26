@@ -29,7 +29,6 @@ from ngii2xodr.ngii.data.features import (
     PointOrPolygonFeature,
     PolygonFeature,
 )
-from ngii2xodr.ngii.data.v2023.definitions import LAYER_SPECS, SPECS_BY_LAYER_NAME
 from ngii2xodr.ngii.segmentation import Segmentation, SegmentationConfig
 from ngii2xodr.profile import (
     PerformanceProfile,
@@ -520,7 +519,7 @@ class HdMapViz:
     def _build_registry(self) -> RenderRegistry:
         layers: dict[str, RenderLayer] = {}
         for attr, store in _dataset_layer_items(self.dataset):
-            kinds = _geometry_kinds(store)
+            kinds = _geometry_kinds(self.dataset, store)
             if not kinds:
                 continue
             config = self.viz_cfg.layers.get(attr, _default_layer_config(attr))
@@ -596,17 +595,19 @@ class HdMapViz:
     def _color_fn(
         self, attr: str, store: LayerStore[Any], config: VizLayerConfig
     ) -> Callable[[], NDArray[np.uint8]]:
-        if attr == "a2_link":
-            return lambda: self._a2_colors(store, config)
+        if attr in self.dataset.schema.attrs_for_role("link"):
+            return lambda: self._link_colors(attr, store, config)
         return lambda: np.tile(np.asarray(config.rgb, dtype=np.uint8), (len(store), 1))
 
-    def _a2_colors(self, store: LayerStore[Any], config: VizLayerConfig) -> NDArray[np.uint8]:
+    def _link_colors(
+        self, layer_attr: str, store: LayerStore[Any], config: VizLayerConfig
+    ) -> NDArray[np.uint8]:
         rgb = np.tile(np.asarray(config.rgb, dtype=np.uint8), (len(store), 1))
         colored_refs: set[FeatureRef] = set()
         for result in self.segmentation.active_results(self._segmentation_level):
             palette = self._palette_by_stage[result.stage_id]
             for ref, entity_id in result.entity_id_by_ref.items():
-                if ref.layer_attr != "a2_link" or ref in colored_refs:
+                if ref.layer_attr != layer_attr or ref in colored_refs:
                     continue
                 idx = store.id_to_index.get(ref.feature_id)
                 if idx is not None and 0 <= entity_id < len(palette):
@@ -710,9 +711,10 @@ class HdMapViz:
         if level == self._segmentation_level:
             return
         self._segmentation_level = level
-        layer = self.registry.layers.get("a2_link")
-        if layer is not None:
-            layer.refresh_colors()
+        for attr in self.dataset.schema.attrs_for_role("link"):
+            layer = self.registry.layers.get(attr)
+            if layer is not None:
+                layer.refresh_colors()
         self.plotter.render()
 
     def select_feature(self, ref: FeatureRef | None, *, emit: bool = True) -> None:
@@ -836,13 +838,14 @@ class HdMapViz:
 
 def _dataset_layer_items(dataset: NGIIDataset) -> tuple[tuple[str, LayerStore[Any]], ...]:
     return tuple(
-        (spec.python_attr, dataset.store_for_attr(spec.python_attr)) for spec in LAYER_SPECS
+        (spec.python_attr, dataset.store_for_attr(spec.python_attr))
+        for spec in dataset.schema.layer_specs
     )
 
 
-def _geometry_kinds(store: LayerStore[Any]) -> tuple[GeometryKind, ...]:
+def _geometry_kinds(dataset: NGIIDataset, store: LayerStore[Any]) -> tuple[GeometryKind, ...]:
     if not store.features:
-        spec = SPECS_BY_LAYER_NAME.get(store.layer_name)
+        spec = dataset.schema.spec_for_layer_name(store.layer_name)
         return () if spec is None else (spec.geometry_kind,)
     kinds = {_feature_geometry_kind(feature) for feature in store.features}
     return tuple(kind for kind in ("point", "line", "polygon") if kind in kinds)
@@ -885,6 +888,20 @@ def _default_layer_config(attr: str) -> VizLayerConfig:
         "c4_speedbump": (200, 120, 40),
         "c5_heightbarrier": (160, 80, 200),
         "c6_postpoint": (80, 80, 80),
+        "nt1_node": (40, 40, 40),
+        "nt2_link": (110, 110, 120),
+        "rs1_roadborder": (120, 120, 120),
+        "rs2_roadstructure": (180, 180, 180),
+        "rs3_subsidiarysection": (120, 200, 120),
+        "pw1_pathway": (95, 165, 120),
+        "rm1_laneline": (255, 255, 255),
+        "rm2_roadmarking": (255, 180, 60),
+        "rm3_parkinglot": (160, 160, 220),
+        "sf1_barrier": (140, 140, 140),
+        "sf2_trafficsign": (200, 80, 80),
+        "sf3_trafficlight": (30, 180, 60),
+        "sf4_supportpost": (80, 80, 80),
+        "sf5_speedbump": (200, 120, 40),
     }
     return VizLayerConfig(
         visible=True,
@@ -1150,10 +1167,14 @@ def _feature_points(feature: NGIIFeature) -> NDArray[np.float64] | None:
 def _point_layer_priority(layer_attr: str) -> int:
     priority = {
         "a1_node": 0,
+        "nt1_node": 0,
         "c1_trafficlight": 1,
         "c6_postpoint": 1,
+        "sf3_trafficlight": 1,
+        "sf4_supportpost": 1,
         "c2_kilopost": 2,
         "b1_safetysign": 2,
+        "sf2_trafficsign": 2,
     }
     return priority.get(layer_attr, 10)
 

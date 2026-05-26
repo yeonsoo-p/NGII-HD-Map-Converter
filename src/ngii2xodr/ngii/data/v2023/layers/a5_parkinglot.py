@@ -25,10 +25,7 @@ class A5_PARKINGLOT(PolygonFeature):
 
     @property
     def section(self) -> object | None:
-        if self.section_id is None:
-            return None
-        dataset = self._require_dataset()
-        return dataset.a4_subsidiarysection.get(self.section_id)
+        return self.resolve_relation("SectionID")
 
 
 def make_feature(record: FeatureRecord) -> A5_PARKINGLOT:

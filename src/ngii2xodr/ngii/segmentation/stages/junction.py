@@ -14,8 +14,6 @@ from ngii2xodr.ngii.segmentation.helpers import intersects_within_z_tol, uf_find
 from ngii2xodr.ngii.segmentation.model import Junction, StageResult
 from ngii2xodr.ngii.segmentation.stage import empty_result
 
-_JUNCTION_LINK_TYPE = "1"
-
 
 class JunctionStage:
     id: ClassVar[str] = "junction"
@@ -30,9 +28,9 @@ class JunctionStage:
         previous_results: Mapping[str, StageResult],
     ) -> StageResult:
         del previous_results
-        candidate_rows = list(context.a2_rows_for_link_type(_JUNCTION_LINK_TYPE))
+        candidate_rows = list(context.rows_for_filter("junction_link"))
         if not candidate_rows:
-            return empty_result(self)
+            return empty_result(self, skipped_reason="schema has no junction link candidates")
 
         row_to_candidate = {row_i: candidate_i for candidate_i, row_i in enumerate(candidate_rows)}
         parent = np.arange(len(candidate_rows), dtype=np.int32)
@@ -49,7 +47,7 @@ class JunctionStage:
         entities: list[Junction] = []
         entity_id_by_ref: dict[FeatureRef, int] = {}
         for entity_id in range(len(rows_by_entity)):
-            refs = tuple(context.ref_for_a2_index(i) for i in rows_by_entity[entity_id])
+            refs = tuple(context.ref_for_link_index(i) for i in rows_by_entity[entity_id])
             for ref in refs:
                 entity_id_by_ref[ref] = entity_id
             entities.append(Junction(id=entity_id, link_refs=refs))
@@ -65,9 +63,12 @@ def _union_link_refs(
     parent: np.ndarray,
 ) -> None:
     for row_i in candidate_rows:
-        link = context.dataset.a2_link.features[row_i]
-        for neighbour_id in (link.r_link_id, link.l_link_id):
-            neighbour_row = context.dataset.a2_link.id_to_index.get(str(neighbour_id))
+        link = context.link_store.features[row_i]
+        for neighbour_id in (
+            getattr(link, "r_link_id", ""),
+            getattr(link, "l_link_id", ""),
+        ):
+            neighbour_row = context.link_store.id_to_index.get(str(neighbour_id))
             if neighbour_row is not None and neighbour_row in row_to_candidate:
                 uf_union(parent, row_to_candidate[row_i], row_to_candidate[neighbour_row])
 
@@ -81,7 +82,7 @@ def _union_intersections(
     geometry_rows: list[int] = []
     lines: list[shapely.LineString] = []
     for row_i in candidate_rows:
-        line = context.a2_lines[row_i]
+        line = context.link_lines[row_i]
         if line is not None:
             geometry_rows.append(row_i)
             lines.append(line)
@@ -97,9 +98,9 @@ def _union_intersections(
             b_row = geometry_rows[b_pos]
             other = lines[b_pos]
             if intersects_within_z_tol(
-                context.dataset.a2_link.features[a_row].polyline,
+                context.link_store.features[a_row].polyline,
                 line,
-                context.dataset.a2_link.features[b_row].polyline,
+                context.link_store.features[b_row].polyline,
                 other,
                 context.cfg.z_intersection_tol_m,
             ):

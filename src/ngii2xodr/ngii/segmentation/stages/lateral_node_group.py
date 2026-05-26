@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from ngii2xodr.ngii.app import FeatureRef
-from ngii2xodr.ngii.data.v2023.layers.a2_link import A2_LINK
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
 from ngii2xodr.ngii.segmentation.model import LateralLinkGroup, LateralNodeGroup, StageResult
 from ngii2xodr.ngii.segmentation.stage import empty_result
@@ -67,10 +66,12 @@ class LateralNodeGroupStage:
 
 def _resolved_links(
     context: SegmentationContext, link_refs: tuple[FeatureRef, ...]
-) -> tuple[A2_LINK, ...]:
-    links: list[A2_LINK] = []
+) -> tuple[Any, ...]:
+    links: list[Any] = []
     for ref in link_refs:
-        link = context.dataset.a2_link.get(ref.feature_id)
+        if ref.layer_attr != context.link_attr:
+            continue
+        link = context.link_store.get(ref.feature_id)
         if link is not None:
             links.append(link)
     return tuple(links)
@@ -78,16 +79,18 @@ def _resolved_links(
 
 def _endpoint_node_refs(
     context: SegmentationContext,
-    links: tuple[A2_LINK, ...],
+    links: tuple[Any, ...],
     side: _EndpointSide,
 ) -> tuple[FeatureRef, ...]:
     node_refs: list[FeatureRef] = []
     seen: set[str] = set()
     for link in links:
-        node_id = link.from_node_id if side == "from" else link.to_node_id
-        node = context.dataset.a1_node.get(node_id)
+        node_id = (
+            getattr(link, "from_node_id", "") if side == "from" else getattr(link, "to_node_id", "")
+        )
+        node = context.node_store.get(node_id)
         if node is None or node.id in seen:
             continue
         seen.add(node.id)
-        node_refs.append(FeatureRef("a1_node", node.id))
+        node_refs.append(FeatureRef(context.node_attr, node.id))
     return tuple(node_refs)

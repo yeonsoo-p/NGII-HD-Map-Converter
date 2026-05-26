@@ -64,7 +64,7 @@ class UTurn:
     marker_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
-        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+        if selected_ref == self.link_ref:
             return (SelectedField.scalar("U-turn", self.id),)
         return (
             SelectedField.scalar("U-turn", self.id),
@@ -105,7 +105,7 @@ class Junction:
     link_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
-        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+        if selected_ref in self.link_refs:
             return (SelectedField.scalar("Junction", self.id),)
         return (
             SelectedField.scalar("Junction", self.id),
@@ -123,7 +123,7 @@ class LateralLinkGroup:
     link_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
-        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+        if selected_ref in self.link_refs:
             neighbor_refs = tuple(ref for ref in self.link_refs if ref != selected_ref)
             return (
                 SelectedField.scalar("Lateral link group", self.id),
@@ -152,7 +152,7 @@ class LateralNodeGroup:
     node_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
-        if selected_ref is not None and selected_ref.layer_attr == "a1_node":
+        if selected_ref in self.node_refs:
             return (
                 SelectedField.list(
                     "Lateral node group node ID",
@@ -160,7 +160,7 @@ class LateralNodeGroup:
                     self.node_refs,
                 ),
             )
-        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+        if selected_ref in self.link_refs:
             return (
                 SelectedField.scalar(f"Lateral {self.side} node group", self.id),
                 SelectedField.list(

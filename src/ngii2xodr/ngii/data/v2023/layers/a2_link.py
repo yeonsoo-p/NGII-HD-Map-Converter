@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
-from ngii2xodr.ngii.data.v2023.layers.a1_node import A1_NODE
 
 
 @dataclass(slots=True)
@@ -60,28 +59,20 @@ class A2_LINK(LineFeature):
     its_link_id: str
 
     @property
-    def from_node(self) -> A1_NODE | None:
-        if self.from_node_id is None:
-            return None
-        return self._require_dataset().a1_node.get(self.from_node_id)
+    def from_node(self) -> object | None:
+        return self.resolve_relation("FromNodeID")
 
     @property
-    def to_node(self) -> A1_NODE | None:
-        if self.to_node_id is None:
-            return None
-        return self._require_dataset().a1_node.get(self.to_node_id)
+    def to_node(self) -> object | None:
+        return self.resolve_relation("ToNodeID")
 
     @property
-    def right_link(self) -> A2_LINK | None:
-        if self.r_link_id is None:
-            return None
-        return self._require_dataset().a2_link.get(self.r_link_id)
+    def right_link(self) -> object | None:
+        return self.resolve_relation("R_LinkID")
 
     @property
-    def left_link(self) -> A2_LINK | None:
-        if self.l_link_id is None:
-            return None
-        return self._require_dataset().a2_link.get(self.l_link_id)
+    def left_link(self) -> object | None:
+        return self.resolve_relation("L_LinkID")
 
 
 def _optional_id(value: str) -> str | None:

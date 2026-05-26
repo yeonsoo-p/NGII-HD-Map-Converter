@@ -1,4 +1,4 @@
-"""A1 node to A2 link graph relationship stage."""
+"""Node-to-link graph relationship stage."""
 
 from __future__ import annotations
 
@@ -26,17 +26,19 @@ class NodeLinkRelationsStage:
         del previous_results
         incoming: dict[str, list[FeatureRef]] = defaultdict(list)
         outgoing: dict[str, list[FeatureRef]] = defaultdict(list)
-        for link_i, link in enumerate(context.dataset.a2_link.features):
-            link_ref = context.ref_for_a2_index(link_i)
-            if link.from_node_id and context.dataset.a1_node.get(link.from_node_id) is not None:
-                outgoing[link.from_node_id].append(link_ref)
-            if link.to_node_id and context.dataset.a1_node.get(link.to_node_id) is not None:
-                incoming[link.to_node_id].append(link_ref)
+        for link_i, link in enumerate(context.link_store.features):
+            link_ref = context.ref_for_link_index(link_i)
+            from_node_id = getattr(link, "from_node_id", "")
+            to_node_id = getattr(link, "to_node_id", "")
+            if from_node_id and context.node_store.get(from_node_id) is not None:
+                outgoing[from_node_id].append(link_ref)
+            if to_node_id and context.node_store.get(to_node_id) is not None:
+                incoming[to_node_id].append(link_ref)
 
         entities: list[NodeLinkRelation] = []
         entity_id_by_ref: dict[FeatureRef, int] = {}
-        for node in context.dataset.a1_node.features:
-            node_ref = FeatureRef("a1_node", node.id)
+        for node in context.node_store.features:
+            node_ref = FeatureRef(context.node_attr, node.id)
             entity_id = len(entities)
             entity_id_by_ref[node_ref] = entity_id
             entities.append(

@@ -1,4 +1,4 @@
-"""NGII 2025 data loader placeholder."""
+"""NGII 2025.12 version package."""
 
 from ngii2xodr.ngii.data.v2025.loader import load_ngii
 

@@ -34,10 +34,8 @@ class C3_VEHICLEPROTECTIONSAFETY(LineFeature):
     ref_id: str | None
 
     @property
-    def reference(self) -> C3_VEHICLEPROTECTIONSAFETY | None:
-        if self.ref_id is None:
-            return None
-        return self._require_dataset().c3_vehicleprotectionsafety.get(self.ref_id)
+    def reference(self) -> object | None:
+        return self.resolve_relation("Ref_ID")
 
 
 def make_feature(record: FeatureRecord) -> C3_VEHICLEPROTECTIONSAFETY:

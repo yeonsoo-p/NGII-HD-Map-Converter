@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Literal
-
-from ngii2xodr.ngii.data.features import FeatureRecord, NGIIFeature
+from ngii2xodr.ngii.data.schema import (
+    LayerSpec,
+    RelationshipRule,
+    RoleFilter,
+    SchemaDefinition,
+    float_rule,
+    integer_rule,
+    text_rule,
+)
 from ngii2xodr.ngii.data.v2023.layers import (
     A1_NODE,
     A2_LINK,
@@ -38,54 +42,6 @@ from ngii2xodr.ngii.data.v2023.layers.c4_speedbump import make_feature as make_c
 from ngii2xodr.ngii.data.v2023.layers.c5_heightbarrier import make_feature as make_c5
 from ngii2xodr.ngii.data.v2023.layers.c6_postpoint import make_feature as make_c6
 
-GeometryKind = Literal["point", "line", "polygon"]
-FieldType = Literal["text", "integer", "float"]
-
-
-@dataclass(slots=True, frozen=True)
-class FieldRule:
-    name: str
-    required: bool
-    field_type: FieldType
-    max_length: int | None = None
-    code_list: dict[str, str] | None = None
-
-
-@dataclass(slots=True, frozen=True)
-class RelationshipRule:
-    column_name: str
-    source_attr: str
-    target_attrs: tuple[str, ...]
-    required: bool
-
-
-@dataclass(slots=True, frozen=True)
-class LayerSpec:
-    layer_name: str
-    python_attr: str
-    filename: str
-    geometry_kind: GeometryKind
-    feature_type: type[NGIIFeature]
-    factory: Callable[[FeatureRecord], NGIIFeature]
-    required_layer: bool
-    field_rules: tuple[FieldRule, ...]
-    relationships: tuple[RelationshipRule, ...] = ()
-
-
-def text_rule(
-    name: str, max_length: int, *, required: bool, code_list: dict[str, str] | None = None
-) -> FieldRule:
-    return FieldRule(name, required, "text", max_length, code_list)
-
-
-def integer_rule(name: str, *, required: bool) -> FieldRule:
-    return FieldRule(name, required, "integer")
-
-
-def float_rule(name: str, *, required: bool) -> FieldRule:
-    return FieldRule(name, required, "float")
-
-
 COMMON_FIELD_RULES = (
     text_rule("ID", 12, required=True),
     text_rule("AdminCode", 3, required=True),
@@ -109,6 +65,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=A1_NODE,
         factory=make_a1,
         required_layer=True,
+        roles=("node",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("NodeType", 2, required=True, code_list=A1_NODE.NODE_TYPE_LABEL),
@@ -123,6 +80,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=A2_LINK,
         factory=make_a2,
         required_layer=True,
+        roles=("link",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("RoadRank", 1, required=True, code_list=A2_LINK.ROAD_RANK_LABEL),
@@ -159,6 +117,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=A3_DRIVEWAYSECTION,
         factory=make_a3,
         required_layer=False,
+        roles=("driveway_section",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Kind", 1, required=True, code_list=A3_DRIVEWAYSECTION.KIND_LABEL),
@@ -173,6 +132,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=A4_SUBSIDIARYSECTION,
         factory=make_a4,
         required_layer=False,
+        roles=("subsidiary_section",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("SubType", 1, required=True, code_list=A4_SUBSIDIARYSECTION.SUBTYPE_LABEL),
@@ -194,6 +154,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=A5_PARKINGLOT,
         factory=make_a5,
         required_layer=False,
+        roles=("parking_lot",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 1, required=True, code_list=A5_PARKINGLOT.TYPE_LABEL),
@@ -211,6 +172,8 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=B1_SAFETYSIGN,
         factory=make_b1,
         required_layer=False,
+        roles=("traffic_sign",),
+        accepted_geometry_kinds=("point", "polygon"),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 1, required=True, code_list=B1_SAFETYSIGN.TYPE_LABEL),
@@ -231,6 +194,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=B2_SURFACELINEMARK,
         factory=make_b2,
         required_layer=True,
+        roles=("lane_line",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 3, required=True, code_list=B2_SURFACELINEMARK.TYPE_LABEL),
@@ -251,6 +215,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=B3_SURFACEMARK,
         factory=make_b3,
         required_layer=False,
+        roles=("road_marking",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 1, required=True, code_list=B3_SURFACEMARK.TYPE_LABEL),
@@ -267,6 +232,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=C1_TRAFFICLIGHT,
         factory=make_c1,
         required_layer=False,
+        roles=("traffic_light",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 2, required=True, code_list=C1_TRAFFICLIGHT.TYPE_LABEL),
@@ -287,6 +253,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=C2_KILOPOST,
         factory=make_c2,
         required_layer=False,
+        roles=("kilopost",),
         field_rules=(
             *COMMON_FIELD_RULES,
             float_rule("Distance", required=True),
@@ -304,6 +271,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=C3_VEHICLEPROTECTIONSAFETY,
         factory=make_c3,
         required_layer=True,
+        roles=("barrier",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 2, required=True, code_list=C3_VEHICLEPROTECTIONSAFETY.TYPE_LABEL),
@@ -333,6 +301,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=C4_SPEEDBUMP,
         factory=make_c4,
         required_layer=False,
+        roles=("speed_bump",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 1, required=True, code_list=C4_SPEEDBUMP.TYPE_LABEL),
@@ -349,6 +318,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=C5_HEIGHTBARRIER,
         factory=make_c5,
         required_layer=False,
+        roles=("height_barrier",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 1, required=True, code_list=C5_HEIGHTBARRIER.TYPE_LABEL),
@@ -365,6 +335,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         feature_type=C6_POSTPOINT,
         factory=make_c6,
         required_layer=False,
+        roles=("support_post",),
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Type", 1, required=True, code_list=C6_POSTPOINT.TYPE_LABEL),
@@ -372,5 +343,16 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
     ),
 )
 
-SPECS_BY_FILENAME = {spec.filename.upper(): spec for spec in LAYER_SPECS}
-SPECS_BY_LAYER_NAME = {spec.layer_name: spec for spec in LAYER_SPECS}
+SCHEMA = SchemaDefinition(
+    version="2023.07",
+    layer_specs=LAYER_SPECS,
+    role_filters=(
+        RoleFilter("junction_link", "link", "link_type", ("1",)),
+        RoleFilter("ordinary_link", "link", "link_type", ("6",)),
+        RoleFilter("uturn_marker", "lane_line", "kind", ("502",)),
+        RoleFilter("junction_node", "node", "node_type", ("1",)),
+    ),
+)
+
+SPECS_BY_FILENAME = SCHEMA.specs_by_filename
+SPECS_BY_LAYER_NAME = SCHEMA.specs_by_layer_name

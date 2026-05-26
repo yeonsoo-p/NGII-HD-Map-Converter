@@ -7,13 +7,21 @@ from ngii2xodr.ngii.data.features import FeatureRecord, PolygonFeature, common_k
 
 
 @dataclass(slots=True)
-class B3_SURFACEMARK(PolygonFeature):
-    layer_name: ClassVar[str] = "B3_SURFACEMARK"
-    TYPE_LABEL: ClassVar[dict[str, str]] = {
-        "1": "화살표",
-        "5": "횡단보도",
+class RM2_ROADMARKING(PolygonFeature):
+    layer_name: ClassVar[str] = "RM2_ROADMARKING"
+    MARK_TYPE_LABEL: ClassVar[dict[str, str]] = {
+        "100": "화살표",
+        "200": "횡단보도",
+        "300": "도형",
+        "500": "구역",
+        "999": "기타",
     }
-    KIND_LABEL: ClassVar[dict[str, str]] = {
+    MARK_KIND_LABEL: ClassVar[dict[str, str]] = {
+        "522": "양보",
+        "5232": "버스정차구획",
+        "5233": "택시정차구획",
+        "524": "정차금지대",
+        "529": "횡단보도 예고",
         "5321": "횡단보도",
         "533": "고원식횡단보도",
         "534": "자전거횡단보도",
@@ -24,30 +32,21 @@ class B3_SURFACEMARK(PolygonFeature):
         "5379": "전방향",
         "5381": "직진 및 좌회전",
         "5382": "직진 및 우회전",
-        "5383": "직진 및 유턴",
         "5391": "유턴",
         "5392": "좌회전 및 유턴",
         "5431": "차로변경(좌로합류)",
         "5432": "차로변경(우로합류)",
-        "544": "오르막경사면",
-        "599": "기타 지시표시",
+        "999": "기타 노면표시",
     }
 
-    type: str
-    kind: str
-    link_id: str | None
-
-    @property
-    def link(self) -> object | None:
-        return self.resolve_relation("LinkID")
+    mark_type: str
+    mark_kind: str
 
 
-def make_feature(record: FeatureRecord) -> B3_SURFACEMARK:
-    link_id = record.text("LinkID")
-    return B3_SURFACEMARK(
+def make_feature(record: FeatureRecord) -> RM2_ROADMARKING:
+    return RM2_ROADMARKING(
         **common_kwargs(record),
         ring=record.geometry,
-        type=record.text("Type"),
-        kind=record.text("Kind"),
-        link_id=link_id or None,
+        mark_type=record.text("MarkType"),
+        mark_kind=record.text("MarkKind"),
     )

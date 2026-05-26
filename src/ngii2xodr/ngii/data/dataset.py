@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import shapely
@@ -20,6 +20,7 @@ from ngii2xodr.ngii.data.features import (
 )
 from ngii2xodr.ngii.data.geometry import xy_line
 from ngii2xodr.ngii.data.sanity import SanityReport
+from ngii2xodr.ngii.data.schema import LayerRole, SchemaDefinition
 from ngii2xodr.profile import PerformanceProfile
 
 _ARRAY_ATTRS = {
@@ -50,6 +51,21 @@ _ARRAY_ATTRS = {
     "is_central": "is_central",
     "low_high": "low_high",
     "ref_ids": "ref_id",
+    "node_type1s": "node_type1",
+    "node_type2s": "node_type2",
+    "node_type3s": "node_type3",
+    "start_end1s": "start_end1",
+    "start_end2s": "start_end2",
+    "start_end3s": "start_end3",
+    "pseudos": "pseudo",
+    "group_ids": "group_id",
+    "max_speeds": "max_speed",
+    "turns": "turn",
+    "road_type_ids": "road_type_id",
+    "line_types": "line_type",
+    "line_kinds": "line_kind",
+    "mark_types": "mark_type",
+    "mark_kinds": "mark_kind",
 }
 
 
@@ -136,54 +152,22 @@ class LayerStore[T: NGIIFeature]:
 class NGIIDataset:
     root: Path
     coordinate: str
+    schema: SchemaDefinition
     sanity: SanityReport
     warn_global_id_collision: bool = True
     load_profile: PerformanceProfile = field(default_factory=PerformanceProfile)
-    a1_node: LayerStore[Any] = field(default_factory=lambda: LayerStore("A1_NODE"))
-    a2_link: LayerStore[Any] = field(default_factory=lambda: LayerStore("A2_LINK"))
-    a3_drivewaysection: LayerStore[Any] = field(
-        default_factory=lambda: LayerStore("A3_DRIVEWAYSECTION")
-    )
-    a4_subsidiarysection: LayerStore[Any] = field(
-        default_factory=lambda: LayerStore("A4_SUBSIDIARYSECTION")
-    )
-    a5_parkinglot: LayerStore[Any] = field(default_factory=lambda: LayerStore("A5_PARKINGLOT"))
-    b1_safetysign: LayerStore[Any] = field(default_factory=lambda: LayerStore("B1_SAFETYSIGN"))
-    b2_surfacelinemark: LayerStore[Any] = field(
-        default_factory=lambda: LayerStore("B2_SURFACELINEMARK")
-    )
-    b3_surfacemark: LayerStore[Any] = field(default_factory=lambda: LayerStore("B3_SURFACEMARK"))
-    c1_trafficlight: LayerStore[Any] = field(default_factory=lambda: LayerStore("C1_TRAFFICLIGHT"))
-    c2_kilopost: LayerStore[Any] = field(default_factory=lambda: LayerStore("C2_KILOPOST"))
-    c3_vehicleprotectionsafety: LayerStore[Any] = field(
-        default_factory=lambda: LayerStore("C3_VEHICLEPROTECTIONSAFETY")
-    )
-    c4_speedbump: LayerStore[Any] = field(default_factory=lambda: LayerStore("C4_SPEEDBUMP"))
-    c5_heightbarrier: LayerStore[Any] = field(
-        default_factory=lambda: LayerStore("C5_HEIGHTBARRIER")
-    )
-    c6_postpoint: LayerStore[Any] = field(default_factory=lambda: LayerStore("C6_POSTPOINT"))
+    _stores: dict[str, LayerStore[Any]] = field(default_factory=dict, init=False)
     _global_index: dict[str, NGIIFeature] = field(default_factory=dict, init=False)
     _ambiguous_global_ids: set[str] = field(default_factory=set, init=False)
 
+    def __post_init__(self) -> None:
+        self._stores = {
+            spec.python_attr: LayerStore(spec.layer_name) for spec in self.schema.layer_specs
+        }
+
     @property
     def layer_stores(self) -> tuple[LayerStore[Any], ...]:
-        return (
-            self.a1_node,
-            self.a2_link,
-            self.a3_drivewaysection,
-            self.a4_subsidiarysection,
-            self.a5_parkinglot,
-            self.b1_safetysign,
-            self.b2_surfacelinemark,
-            self.b3_surfacemark,
-            self.c1_trafficlight,
-            self.c2_kilopost,
-            self.c3_vehicleprotectionsafety,
-            self.c4_speedbump,
-            self.c5_heightbarrier,
-            self.c6_postpoint,
-        )
+        return tuple(self._stores[spec.python_attr] for spec in self.schema.layer_specs)
 
     def __getitem__(self, feature_id: str) -> NGIIFeature:
         if feature_id in self._ambiguous_global_ids:
@@ -214,8 +198,28 @@ class NGIIDataset:
                         )
 
     def store_for_attr(self, attr: str) -> LayerStore[Any]:
-        store = getattr(self, attr)
-        if not isinstance(store, LayerStore):
-            msg = f"{attr!r} is not an NGII layer store"
-            raise TypeError(msg)
-        return store
+        try:
+            return self._stores[attr]
+        except KeyError:
+            msg = f"{attr!r} is not an NGII layer store in schema {self.schema.version}"
+            raise KeyError(msg) from None
+
+    def store_for_role(self, role: LayerRole) -> LayerStore[Any]:
+        return self.store_for_attr(self.schema.attr_for_role(role))
+
+    def store_for_layer_name(self, layer_name: str) -> LayerStore[Any] | None:
+        attr = self.schema.attr_for_layer_name(layer_name)
+        return None if attr is None else self.store_for_attr(attr)
+
+    def feature_ref_attr(self, feature: NGIIFeature) -> str | None:
+        return self.schema.attr_for_layer_name(feature.layer_name)
+
+    def __getattr__(self, name: str) -> LayerStore[Any]:
+        try:
+            stores = cast(dict[str, LayerStore[Any]], object.__getattribute__(self, "_stores"))
+        except AttributeError:
+            stores = {}
+        if name in stores:
+            return stores[name]
+        msg = f"{type(self).__name__!s} has no attribute {name!r}"
+        raise AttributeError(msg)

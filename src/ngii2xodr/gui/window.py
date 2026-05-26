@@ -45,7 +45,7 @@ from ngii2xodr.ngii.data.features import (
     PointOrPolygonFeature,
     PolygonFeature,
 )
-from ngii2xodr.ngii.data.v2023.definitions import LAYER_SPECS, SPECS_BY_LAYER_NAME, RelationshipRule
+from ngii2xodr.ngii.data.schema import RelationshipRule
 from ngii2xodr.ngii.segmentation import SegmentationConfig, SelectedField
 from ngii2xodr.ngii.viz import HdMapViz, VizConfig
 
@@ -340,7 +340,7 @@ class HdMapWindow(QMainWindow):
                     item.setForeground(column, QBrush(QColor(145, 145, 150)))
             self._layer_tree.addTopLevelItem(item)
             self._layer_items[attr] = item
-        _fit_tree_to_rows(self._layer_tree, len(LAYER_SPECS))
+        _fit_tree_to_rows(self._layer_tree, len(viz.dataset.schema.layer_specs))
         self._sync_layer_master_checkbox()
         self._updating_layer_items = False
 
@@ -552,7 +552,8 @@ def _clear_layout(layout: QVBoxLayout) -> None:
 
 def _layer_store_items(viz: HdMapViz) -> tuple[tuple[str, LayerStore[Any]], ...]:
     return tuple(
-        (spec.python_attr, viz.dataset.store_for_attr(spec.python_attr)) for spec in LAYER_SPECS
+        (spec.python_attr, viz.dataset.store_for_attr(spec.python_attr))
+        for spec in viz.dataset.schema.layer_specs
     )
 
 
@@ -582,7 +583,8 @@ def _dataclass_rows(viz: HdMapViz, feature: NGIIFeature) -> list[_DetailRow]:
         "ring",
     }
     relationships = {
-        relationship.source_attr: relationship for relationship in _feature_relationships(feature)
+        relationship.source_attr: relationship
+        for relationship in _feature_relationships(viz, feature)
     }
     rows = [_DetailRow("Fields", "", True)]
     for field in fields(feature):
@@ -673,8 +675,8 @@ def _relationship_detail_row(
     return _DetailRow(_display_name(field_name), feature_id, target_ref=target_ref)
 
 
-def _feature_relationships(feature: NGIIFeature) -> tuple[RelationshipRule, ...]:
-    spec = SPECS_BY_LAYER_NAME.get(feature.layer_name)
+def _feature_relationships(viz: HdMapViz, feature: NGIIFeature) -> tuple[RelationshipRule, ...]:
+    spec = viz.dataset.schema.spec_for_layer_name(feature.layer_name)
     return () if spec is None else spec.relationships
 
 
@@ -694,10 +696,8 @@ def _resolve_relationship_ref(
         target = viz.dataset[feature_id]
     except (KeyError, AmbiguousFeatureIDError):
         return None
-    for spec in LAYER_SPECS:
-        if spec.layer_name == target.layer_name:
-            return FeatureRef(spec.python_attr, target.id)
-    return None
+    attr = viz.dataset.feature_ref_attr(target)
+    return None if attr is None else FeatureRef(attr, target.id)
 
 
 def _feature_summary(feature: NGIIFeature) -> str:

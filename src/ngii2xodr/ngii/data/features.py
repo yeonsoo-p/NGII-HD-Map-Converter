@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
 import shapely
@@ -50,6 +50,7 @@ class NGIIFeature:
     admin_code: str
     maker: str
     update_date: str
+    survey_date: str
     version: str
     remark: str
     hist_type: str
@@ -67,6 +68,34 @@ class NGIIFeature:
             msg = f"{self.layer_name} {self.id!r} is not bound to an NGII dataset"
             raise RuntimeError(msg)
         return self._dataset
+
+    def resolve_relation(self, column_or_attr: str) -> NGIIFeature | None:
+        """Resolve one documented relationship through the bound dataset schema."""
+        dataset = self._require_dataset()
+        spec = dataset.schema.spec_for_layer_name(self.layer_name)
+        if spec is None:
+            return None
+        relationship = next(
+            (
+                item
+                for item in spec.relationships
+                if column_or_attr in {item.column_name, item.source_attr}
+            ),
+            None,
+        )
+        if relationship is None:
+            return None
+        value = getattr(self, relationship.source_attr, "")
+        if value is None:
+            return None
+        feature_id = str(value)
+        if not feature_id:
+            return None
+        for target_attr in relationship.target_attrs:
+            feature = dataset.store_for_attr(target_attr).get(feature_id)
+            if feature is not None:
+                return cast(NGIIFeature, feature)
+        return None
 
 
 @dataclass(slots=True)
@@ -130,6 +159,7 @@ def common_kwargs(record: FeatureRecord) -> dict[str, Any]:
         "admin_code": record.text("AdminCode"),
         "maker": record.text("Maker"),
         "update_date": record.text("UpdateDate"),
+        "survey_date": record.text("SurveyDate"),
         "version": record.text("Version"),
         "remark": record.text("Remark"),
         "hist_type": record.text("HistType"),

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
-from ngii2xodr.ngii.data.v2023.layers.a2_link import A2_LINK
 
 
 @dataclass(slots=True)
@@ -21,10 +20,8 @@ class C5_HEIGHTBARRIER(LineFeature):
     ref_lane: int
 
     @property
-    def link(self) -> A2_LINK | None:
-        if self.link_id is None:
-            return None
-        return self._require_dataset().a2_link.get(self.link_id)
+    def link(self) -> object | None:
+        return self.resolve_relation("LinkID")
 
 
 def make_feature(record: FeatureRecord) -> C5_HEIGHTBARRIER:

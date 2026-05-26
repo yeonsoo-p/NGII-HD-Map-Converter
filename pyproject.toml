@@ -59,6 +59,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR2004", "TRY"]
 "src/ngii2xodr/ngii/data/v2023/layers/**" = ["N801"]
+"src/ngii2xodr/ngii/data/v2025/layers/**" = ["N801"]
 
 [tool.ruff.format]
 quote-style = "double"
