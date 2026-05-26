@@ -183,3 +183,48 @@ def relation_property(column_or_attr: str) -> property:
         return self.resolve_relation(column_or_attr)
 
     return property(_resolve)
+
+
+def iter_feature_text_fields(feature: NGIIFeature) -> list[tuple[str, str]]:
+    dataset = feature._require_dataset()
+    spec = dataset.schema.spec_for_layer_name(feature.layer_name)
+    if spec is None:
+        return []
+    values: list[tuple[str, str]] = []
+    for rule in spec.field_rules:
+        if rule.name == "ID" or rule.field_type != "text":
+            continue
+        attr_name = rule.attr
+        if not hasattr(feature, attr_name):
+            continue
+        value = getattr(feature, attr_name)
+        if isinstance(value, str):
+            values.append((rule.name, value))
+    return values
+
+
+def feature_value_for_column(feature: NGIIFeature, column_name: str) -> Any:
+    attr_name = _attr_for_feature_column(feature, column_name)
+    if attr_name and hasattr(feature, attr_name):
+        return getattr(feature, attr_name)
+    return ""
+
+
+def set_feature_column(feature: NGIIFeature, column_name: str, value: Any) -> None:
+    attr_name = _attr_for_feature_column(feature, column_name)
+    if attr_name and hasattr(feature, attr_name):
+        setattr(feature, attr_name, value)
+
+
+def _attr_for_feature_column(feature: NGIIFeature, column_name: str) -> str:
+    dataset = feature._require_dataset()
+    spec = dataset.schema.spec_for_layer_name(feature.layer_name)
+    if spec is None:
+        return ""
+    for rule in spec.field_rules:
+        if rule.name == column_name:
+            return rule.attr
+    for relationship in spec.relationships:
+        if relationship.column_name == column_name:
+            return relationship.source_attr
+    return ""

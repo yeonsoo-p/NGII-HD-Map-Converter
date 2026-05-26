@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -43,6 +44,26 @@ class PerformanceProfile:
     @property
     def total_s(self) -> float:
         return sum(event.duration_s for event in self.events)
+
+
+def log_profile_events(
+    profile: PerformanceProfile,
+    logger: logging.Logger,
+    *,
+    title: str,
+    context: str,
+) -> None:
+    if not profile.events:
+        return
+    logger.info("%s: total %.3fs for %s", title, profile.total_s, context)
+    grouped: dict[tuple[str, str], float] = defaultdict(float)
+    for event in profile.events:
+        grouped[(event.name, event.detail)] += event.duration_s
+    for (name, detail), duration_s in sorted(
+        grouped.items(), key=lambda item: item[1], reverse=True
+    ):
+        suffix = f" {detail}" if detail else ""
+        logger.info("%s: %.3fs %s%s", title, duration_s, name, suffix)
 
 
 @dataclass(slots=True, frozen=True)

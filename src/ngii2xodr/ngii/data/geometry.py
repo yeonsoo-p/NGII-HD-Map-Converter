@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import shapely
 import shapely.ops
 from numpy import float64
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from ngii2xodr.ngii.data.features import FeatureGeometryKind
+    from ngii2xodr.ngii.data.schema import LayerSpec
 
 
 def _ensure_xyz(coords: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -48,6 +54,45 @@ def polygon_outer_ring_xyz(
     return _ensure_xyz(
         np.asarray(_as_single_polygon(g, row_id=row_id).exterior.coords, dtype=float64)
     )
+
+
+def convert_geometry(
+    spec: LayerSpec,
+    geometry: shapely.geometry.base.BaseGeometry,
+    *,
+    row_id: str,
+    multipart_snap_tolerance_m: float,
+) -> tuple[FeatureGeometryKind, NDArray[np.float64]]:
+    geometry_kind = _geometry_kind_for(geometry, row_id)
+    if geometry_kind not in spec.geometry_kinds:
+        expected = ", ".join(spec.geometry_kinds)
+        msg = (
+            f"row ID={row_id!r}: {spec.layer_name} does not accept "
+            f"{type(geometry).__name__}; expected {expected}"
+        )
+        raise TypeError(msg)
+    if geometry_kind == "point":
+        return geometry_kind, point_xyz(geometry, row_id=row_id)
+    if geometry_kind == "line":
+        return geometry_kind, polyline_xyz(
+            geometry,
+            row_id=row_id,
+            multipart_snap_tolerance_m=multipart_snap_tolerance_m,
+        )
+    return geometry_kind, polygon_outer_ring_xyz(geometry, row_id=row_id)
+
+
+def _geometry_kind_for(
+    geometry: shapely.geometry.base.BaseGeometry, row_id: str
+) -> FeatureGeometryKind:
+    if isinstance(geometry, shapely.Point):
+        return "point"
+    if isinstance(geometry, (shapely.LineString, shapely.MultiLineString)):
+        return "line"
+    if isinstance(geometry, (shapely.Polygon, shapely.MultiPolygon)):
+        return "polygon"
+    msg = f"row ID={row_id!r}: unsupported geometry {type(geometry).__name__}"
+    raise TypeError(msg)
 
 
 def xy_line(polyline: NDArray[np.float64]) -> shapely.LineString:

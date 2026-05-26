@@ -75,6 +75,12 @@ class LayerSpec:
     def field_rules_by_column(self) -> dict[str, FieldRule]:
         return {column: rule for rule in self.field_rules for column in rule.columns}
 
+    @property
+    def manual_columns(self) -> set[str]:
+        field_columns = {rule.name for rule in self.field_rules}
+        relationship_columns = {relationship.column_name for relationship in self.relationships}
+        return field_columns | relationship_columns
+
 
 @dataclass(slots=True, frozen=True)
 class SchemaDefinition:

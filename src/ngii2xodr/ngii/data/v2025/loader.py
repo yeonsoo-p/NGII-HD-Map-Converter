@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import NGIIDataset
-from ngii2xodr.ngii.data.engine import load_schema
+from ngii2xodr.ngii.data.loader import load_schema
 from ngii2xodr.ngii.data.v2025.definitions import SCHEMA
 
 

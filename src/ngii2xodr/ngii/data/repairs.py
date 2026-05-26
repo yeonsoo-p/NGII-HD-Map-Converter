@@ -11,9 +11,147 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
+from ngii2xodr.ngii.data.features import (
+    NGIIFeature,
+    iter_feature_text_fields,
+    same_feature,
+    set_feature_column,
+)
 from ngii2xodr.ngii.data.geometry import xy_distance
+from ngii2xodr.ngii.data.sanity import SanityReport
 
 RepairHook = Callable[[NGIIDataset, NGIIConfig], None]
+_REPLACEMENT_CHAR = "\ufffd"
+
+
+def merge_features(
+    store: LayerStore[Any],
+    features: list[NGIIFeature],
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+) -> None:
+    for feature in features:
+        if not feature.id:
+            if cfg.sanity.warnings.manual_field_rules:
+                sanity.warn(
+                    "missing-feature-id",
+                    f"{feature.layer_name} row has an empty ID and cannot be globally indexed",
+                    layer_name=feature.layer_name,
+                    source_path=feature.source_path,
+                )
+            continue
+        existing = store.by_id.get(feature.id)
+        if existing is None:
+            store.id_to_index[feature.id] = len(store.features)
+            store.by_id[feature.id] = feature
+            store.features.append(feature)
+            continue
+        if same_feature(existing, feature):
+            if cfg.sanity.warnings.duplicate_identical_ids:
+                sanity.warn(
+                    "duplicate-identical-id",
+                    f"{feature.layer_name} ID {feature.id!r} appears more than once "
+                    "with identical data",
+                    layer_name=feature.layer_name,
+                    feature_id=feature.id,
+                    source_path=feature.source_path,
+                )
+            continue
+        before = {
+            "kept_source": str(existing.source_path),
+            "dropped_source": str(feature.source_path),
+        }
+        after = {"canonical_source": str(existing.source_path)}
+        if cfg.sanity.repairs.duplicate_conflicting_id_drop:
+            sanity.action(
+                "duplicate-conflicting-id-dropped",
+                f"{feature.layer_name} ID {feature.id!r} conflicts with an earlier row; "
+                "later row dropped",
+                before=before,
+                after=after,
+                layer_name=feature.layer_name,
+                feature_id=feature.id,
+                source_path=feature.source_path,
+            )
+        elif cfg.sanity.warnings.duplicate_conflicting_ids:
+            sanity.warn(
+                "duplicate-conflicting-id-drop-disabled",
+                f"{feature.layer_name} ID {feature.id!r} conflicts with an earlier row; "
+                "later row could not become canonical because duplicate repair is disabled",
+                layer_name=feature.layer_name,
+                feature_id=feature.id,
+                source_path=feature.source_path,
+            )
+
+
+def apply_text_repairs(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
+    if not cfg.text_repair.enabled:
+        return
+    if cfg.text_repair.repair_mojibake:
+        _repair_mojibake_text(dataset)
+    if cfg.text_repair.warn_unrepaired_replacement_chars:
+        _warn_unrepaired_replacement_chars(dataset)
+
+
+def _repair_mojibake_text(dataset: NGIIDataset) -> None:
+    for store in dataset.layer_stores:
+        for feature in store.features:
+            for field_name, value in iter_feature_text_fields(feature):
+                repaired = _repair_cp949_latin1_mojibake(value)
+                if repaired is None:
+                    continue
+                set_feature_column(feature, field_name, repaired)
+                dataset.sanity.action(
+                    "text-mojibake-repaired",
+                    f"{feature.layer_name} {feature.id} {field_name} repaired by "
+                    "latin1-to-cp949 mojibake rule",
+                    before={field_name: value},
+                    after={field_name: repaired},
+                    layer_name=feature.layer_name,
+                    feature_id=feature.id,
+                    source_path=feature.source_path,
+                )
+
+
+def _repair_cp949_latin1_mojibake(value: str) -> str | None:
+    if not value or _REPLACEMENT_CHAR in value:
+        return None
+    try:
+        candidate = value.encode("latin1").decode("cp949")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return None
+    if candidate == value or _REPLACEMENT_CHAR in candidate:
+        return None
+    original_hangul = _hangul_count(value)
+    candidate_hangul = _hangul_count(candidate)
+    if candidate_hangul <= original_hangul:
+        return None
+    if _mojibake_marker_count(value) == 0 and candidate_hangul < 2:
+        return None
+    return candidate
+
+
+def _hangul_count(value: str) -> int:
+    return sum(1 for char in value if "\uac00" <= char <= "\ud7a3")
+
+
+def _mojibake_marker_count(value: str) -> int:
+    return sum(1 for char in value if "\u00a1" <= char <= "\u00ff" or "\uff61" <= char <= "\uff9f")
+
+
+def _warn_unrepaired_replacement_chars(dataset: NGIIDataset) -> None:
+    for store in dataset.layer_stores:
+        for feature in store.features:
+            for field_name, value in iter_feature_text_fields(feature):
+                if _REPLACEMENT_CHAR in value:
+                    dataset.sanity.warn(
+                        "corrupt-text-unrepaired",
+                        f"{feature.layer_name} {feature.id}: {field_name} contains "
+                        "Unicode replacement characters",
+                        layer_name=feature.layer_name,
+                        feature_id=feature.id,
+                        source_path=feature.source_path,
+                    )
 
 
 def repair_reversed_link_endpoints(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
