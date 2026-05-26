@@ -81,6 +81,12 @@ viz:
     padding_m: 15.0
     min_scale_m: 20.0
     max_scale_m: 1000.0
+  points:
+    render_as_spheres: false
+  profiling:
+    enabled: true
+    slow_frame_ms: 33.0
+    log_every_n_interactions: 1
   layers:
     a1_node:
       visible: true

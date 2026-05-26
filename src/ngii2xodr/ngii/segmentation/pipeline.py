@@ -8,7 +8,6 @@ from typing import Any
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.data.dataset import NGIIDataset
-from ngii2xodr.ngii.profile import PerformanceProfile
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
 from ngii2xodr.ngii.segmentation.model import (
     SegmentationConfig,
@@ -27,6 +26,7 @@ from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGro
 from ngii2xodr.ngii.segmentation.stages.lateral_node_group import LateralNodeGroupStage
 from ngii2xodr.ngii.segmentation.stages.node_link_relations import NodeLinkRelationsStage
 from ngii2xodr.ngii.segmentation.stages.uturn import UTurnStage
+from ngii2xodr.profile import PerformanceProfile
 
 log = logging.getLogger(__name__)
 

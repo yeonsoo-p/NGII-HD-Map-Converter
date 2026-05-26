@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from ngii2xodr.ngii.data.features import FeatureRecord, PolygonFeature, common_kwargs
-from ngii2xodr.ngii.data.layers.a2_link import A2_LINK
+from ngii2xodr.ngii.data.v2023.layers.a2_link import A2_LINK
 
 
 @dataclass(slots=True)

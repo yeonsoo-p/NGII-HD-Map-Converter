@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import shapely
@@ -43,7 +44,7 @@ from ngii2xodr.ngii.data.features import (
     PointOrPolygonFeature,
     PolygonFeature,
 )
-from ngii2xodr.ngii.data.manual_2023 import LAYER_SPECS, SPECS_BY_LAYER_NAME, RelationshipRule
+from ngii2xodr.ngii.data.v2023.definitions import LAYER_SPECS, SPECS_BY_LAYER_NAME, RelationshipRule
 from ngii2xodr.ngii.segmentation import SegmentationConfig, SelectedField
 from ngii2xodr.ngii.viz import HdMapViz, VizConfig
 
@@ -408,12 +409,18 @@ class HdMapWindow(QMainWindow):
         viz = self.viz
         if viz is None:
             return
+        started_at = perf_counter()
         self._selected_ref = ref
         if update_viz:
             viz.select_feature(ref, emit=False)
             viz.focus_feature(ref)
+        _log_gui_profile(viz, "selection_update_viz", started_at, _ref_detail(ref, update_viz))
+        started_at = perf_counter()
         self._sync_item_selection(ref)
+        _log_gui_profile(viz, "selection_sync_items", started_at, _ref_detail(ref, False))
+        started_at = perf_counter()
         self._populate_selected_panel(viz, ref)
+        _log_gui_profile(viz, "selection_selected_table", started_at, _ref_detail(ref, False))
         log.info("selected %s:%s", ref.layer_attr, ref.feature_id)
 
     def _sync_item_selection(self, ref: FeatureRef) -> None:
@@ -677,7 +684,7 @@ def _segmentation_rows(fields_: tuple[SelectedField, ...]) -> list[_DetailRow]:
     if not fields_:
         return []
     rows = [_DetailRow("Segmentation", "", True)]
-    for field in fields_:
+    for field in _compact_selected_fields(fields_):
         values = field.values if field.values else ("-",)
         refs = field.refs if field.refs else tuple(None for _ in values)
         for index, value in enumerate(values):
@@ -685,6 +692,47 @@ def _segmentation_rows(fields_: tuple[SelectedField, ...]) -> list[_DetailRow]:
             ref = refs[index] if index < len(refs) else None
             rows.append(_DetailRow(name, value, target_ref=ref))
     return rows
+
+
+def _compact_selected_fields(fields_: tuple[SelectedField, ...]) -> tuple[SelectedField, ...]:
+    compacted: list[SelectedField] = []
+    index_by_name: dict[str, int] = {}
+    seen_values_by_name: dict[str, set[tuple[str, FeatureRef | None]]] = {}
+    for field in fields_:
+        output_index = index_by_name.get(field.name)
+        if output_index is None:
+            index_by_name[field.name] = len(compacted)
+            compacted.append(field)
+            seen_values_by_name[field.name] = set(zip(field.values, field.refs, strict=True))
+            continue
+
+        seen = seen_values_by_name[field.name]
+        values = list(compacted[output_index].values)
+        refs = list(compacted[output_index].refs)
+        for value, ref in zip(field.values, field.refs, strict=True):
+            key = (value, ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(value)
+            refs.append(ref)
+        compacted[output_index] = SelectedField(
+            name=field.name,
+            values=tuple(values),
+            refs=tuple(refs),
+        )
+    return tuple(compacted)
+
+
+def _log_gui_profile(viz: HdMapViz, name: str, started_at: float, detail: str) -> None:
+    elapsed = perf_counter() - started_at
+    viz.viewport_profile.add(name, elapsed, detail)
+    if viz.viz_cfg.profiling.enabled:
+        log.info("gui %s: %.1fms (%s)", name, elapsed * 1000.0, detail)
+
+
+def _ref_detail(ref: FeatureRef, update_viz: bool) -> str:
+    return f"ref={ref.layer_attr}:{ref.feature_id}; update_viz={update_viz}"
 
 
 def _display_name(name: str) -> str:

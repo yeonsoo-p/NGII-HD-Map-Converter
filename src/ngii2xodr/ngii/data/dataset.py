@@ -19,24 +19,8 @@ from ngii2xodr.ngii.data.features import (
     PolygonFeature,
 )
 from ngii2xodr.ngii.data.geometry import xy_line
-from ngii2xodr.ngii.data.layers import (
-    A1_NODE,
-    A2_LINK,
-    A3_DRIVEWAYSECTION,
-    A4_SUBSIDIARYSECTION,
-    A5_PARKINGLOT,
-    B1_SAFETYSIGN,
-    B2_SURFACELINEMARK,
-    B3_SURFACEMARK,
-    C1_TRAFFICLIGHT,
-    C2_KILOPOST,
-    C3_VEHICLEPROTECTIONSAFETY,
-    C4_SPEEDBUMP,
-    C5_HEIGHTBARRIER,
-    C6_POSTPOINT,
-)
 from ngii2xodr.ngii.data.sanity import SanityReport
-from ngii2xodr.ngii.profile import PerformanceProfile
+from ngii2xodr.profile import PerformanceProfile
 
 _ARRAY_ATTRS = {
     "node_types": "node_type",
@@ -155,42 +139,30 @@ class NGIIDataset:
     sanity: SanityReport
     warn_global_id_collision: bool = True
     load_profile: PerformanceProfile = field(default_factory=PerformanceProfile)
-    a1_node: LayerStore[A1_NODE] = field(default_factory=lambda: LayerStore("A1_NODE"))
-    a2_link: LayerStore[A2_LINK] = field(default_factory=lambda: LayerStore("A2_LINK"))
-    a3_drivewaysection: LayerStore[A3_DRIVEWAYSECTION] = field(
+    a1_node: LayerStore[Any] = field(default_factory=lambda: LayerStore("A1_NODE"))
+    a2_link: LayerStore[Any] = field(default_factory=lambda: LayerStore("A2_LINK"))
+    a3_drivewaysection: LayerStore[Any] = field(
         default_factory=lambda: LayerStore("A3_DRIVEWAYSECTION")
     )
-    a4_subsidiarysection: LayerStore[A4_SUBSIDIARYSECTION] = field(
+    a4_subsidiarysection: LayerStore[Any] = field(
         default_factory=lambda: LayerStore("A4_SUBSIDIARYSECTION")
     )
-    a5_parkinglot: LayerStore[A5_PARKINGLOT] = field(
-        default_factory=lambda: LayerStore("A5_PARKINGLOT")
-    )
-    b1_safetysign: LayerStore[B1_SAFETYSIGN] = field(
-        default_factory=lambda: LayerStore("B1_SAFETYSIGN")
-    )
-    b2_surfacelinemark: LayerStore[B2_SURFACELINEMARK] = field(
+    a5_parkinglot: LayerStore[Any] = field(default_factory=lambda: LayerStore("A5_PARKINGLOT"))
+    b1_safetysign: LayerStore[Any] = field(default_factory=lambda: LayerStore("B1_SAFETYSIGN"))
+    b2_surfacelinemark: LayerStore[Any] = field(
         default_factory=lambda: LayerStore("B2_SURFACELINEMARK")
     )
-    b3_surfacemark: LayerStore[B3_SURFACEMARK] = field(
-        default_factory=lambda: LayerStore("B3_SURFACEMARK")
-    )
-    c1_trafficlight: LayerStore[C1_TRAFFICLIGHT] = field(
-        default_factory=lambda: LayerStore("C1_TRAFFICLIGHT")
-    )
-    c2_kilopost: LayerStore[C2_KILOPOST] = field(default_factory=lambda: LayerStore("C2_KILOPOST"))
-    c3_vehicleprotectionsafety: LayerStore[C3_VEHICLEPROTECTIONSAFETY] = field(
+    b3_surfacemark: LayerStore[Any] = field(default_factory=lambda: LayerStore("B3_SURFACEMARK"))
+    c1_trafficlight: LayerStore[Any] = field(default_factory=lambda: LayerStore("C1_TRAFFICLIGHT"))
+    c2_kilopost: LayerStore[Any] = field(default_factory=lambda: LayerStore("C2_KILOPOST"))
+    c3_vehicleprotectionsafety: LayerStore[Any] = field(
         default_factory=lambda: LayerStore("C3_VEHICLEPROTECTIONSAFETY")
     )
-    c4_speedbump: LayerStore[C4_SPEEDBUMP] = field(
-        default_factory=lambda: LayerStore("C4_SPEEDBUMP")
-    )
-    c5_heightbarrier: LayerStore[C5_HEIGHTBARRIER] = field(
+    c4_speedbump: LayerStore[Any] = field(default_factory=lambda: LayerStore("C4_SPEEDBUMP"))
+    c5_heightbarrier: LayerStore[Any] = field(
         default_factory=lambda: LayerStore("C5_HEIGHTBARRIER")
     )
-    c6_postpoint: LayerStore[C6_POSTPOINT] = field(
-        default_factory=lambda: LayerStore("C6_POSTPOINT")
-    )
+    c6_postpoint: LayerStore[Any] = field(default_factory=lambda: LayerStore("C6_POSTPOINT"))
     _global_index: dict[str, NGIIFeature] = field(default_factory=dict, init=False)
     _ambiguous_global_ids: set[str] = field(default_factory=set, init=False)
 

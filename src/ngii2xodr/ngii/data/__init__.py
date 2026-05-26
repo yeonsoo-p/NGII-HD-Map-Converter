@@ -1,4 +1,4 @@
-"""NGII 2023 data loading API."""
+"""NGII data loading API and common canonical contracts."""
 
 from ngii2xodr.ngii.data.config import (
     NGIIConfig,
@@ -9,40 +9,10 @@ from ngii2xodr.ngii.data.config import (
     NGIITextCorrectionConfig,
 )
 from ngii2xodr.ngii.data.dataset import AmbiguousFeatureIDError, LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.layers import (
-    A1_NODE,
-    A2_LINK,
-    A3_DRIVEWAYSECTION,
-    A4_SUBSIDIARYSECTION,
-    A5_PARKINGLOT,
-    B1_SAFETYSIGN,
-    B2_SURFACELINEMARK,
-    B3_SURFACEMARK,
-    C1_TRAFFICLIGHT,
-    C2_KILOPOST,
-    C3_VEHICLEPROTECTIONSAFETY,
-    C4_SPEEDBUMP,
-    C5_HEIGHTBARRIER,
-    C6_POSTPOINT,
-)
-from ngii2xodr.ngii.data.loader import load_ngii
+from ngii2xodr.ngii.data.loader import NGIIVersion, detect_ngii_version, load_ngii
 from ngii2xodr.ngii.data.sanity import SanityAction, SanityReport, SanityWarning
 
 __all__ = [
-    "A1_NODE",
-    "A2_LINK",
-    "A3_DRIVEWAYSECTION",
-    "A4_SUBSIDIARYSECTION",
-    "A5_PARKINGLOT",
-    "B1_SAFETYSIGN",
-    "B2_SURFACELINEMARK",
-    "B3_SURFACEMARK",
-    "C1_TRAFFICLIGHT",
-    "C2_KILOPOST",
-    "C3_VEHICLEPROTECTIONSAFETY",
-    "C4_SPEEDBUMP",
-    "C5_HEIGHTBARRIER",
-    "C6_POSTPOINT",
     "AmbiguousFeatureIDError",
     "LayerStore",
     "NGIIConfig",
@@ -52,8 +22,10 @@ __all__ = [
     "NGIISanityWarningConfig",
     "NGIITextCorrection",
     "NGIITextCorrectionConfig",
+    "NGIIVersion",
     "SanityAction",
     "SanityReport",
     "SanityWarning",
+    "detect_ngii_version",
     "load_ngii",
 ]

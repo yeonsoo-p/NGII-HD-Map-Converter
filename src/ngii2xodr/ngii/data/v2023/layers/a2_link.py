@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
-from ngii2xodr.ngii.data.layers.a1_node import A1_NODE
+from ngii2xodr.ngii.data.v2023.layers.a1_node import A1_NODE
 
 
 @dataclass(slots=True)

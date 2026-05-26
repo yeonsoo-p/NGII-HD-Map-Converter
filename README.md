@@ -29,11 +29,18 @@ generic render registry from `dataset.layer_stores`. Point, line, and polygon
 layers are rendered according to per-layer defaults in
 [conf/config.yaml](conf/config.yaml).
 
-The inspector dock in [src/ngii2xodr/ngii/gui.py](src/ngii2xodr/ngii/gui.py)
+The inspector dock in [src/ngii2xodr/gui/window.py](src/ngii2xodr/gui/window.py)
 has three tabs: `Layers`, `Items`, and `Selected`. Both shift-click selection
 and item search resolve through `FeatureRef(layer_attr, feature_id)`, so the
 3D highlight, item tree, and selected table all point at the same canonical
 feature object.
+
+NGII data code is split between common contracts in
+[src/ngii2xodr/ngii/data](src/ngii2xodr/ngii/data) and version-specific
+definitions/loaders in
+[src/ngii2xodr/ngii/data/v2023](src/ngii2xodr/ngii/data/v2023). The public
+loader remains `load_ngii(path, coordinate, cfg.ngii)` and dispatches to the
+implemented version from the requested coordinate product.
 
 Segmentation stages live under
 [src/ngii2xodr/ngii/segmentation](src/ngii2xodr/ngii/segmentation). The pipeline
@@ -53,7 +60,6 @@ currently enables:
 Post-junction stages are explicit pipeline stages but default to disabled in
 Hydra until their dataset-native semantics are ready.
 
-Renderer note: the current PyVista/VTK viewport remains the default for this
-pass. If 2D inspection becomes the bottleneck, profile viewport interaction
-first and introduce a small viewport interface before evaluating a dedicated
-2D renderer.
+Renderer note: the current PyVista/VTK viewport remains the default. Viewport
+interaction profiling is log-only and configured under `viz.profiling`; use
+those timings before evaluating a dedicated 2D renderer.

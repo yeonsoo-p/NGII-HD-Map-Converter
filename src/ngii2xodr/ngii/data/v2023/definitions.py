@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ngii2xodr.ngii.data.features import FeatureRecord, NGIIFeature
-from ngii2xodr.ngii.data.layers import (
+from ngii2xodr.ngii.data.v2023.layers import (
     A1_NODE,
     A2_LINK,
     A3_DRIVEWAYSECTION,
@@ -23,20 +23,20 @@ from ngii2xodr.ngii.data.layers import (
     C5_HEIGHTBARRIER,
     C6_POSTPOINT,
 )
-from ngii2xodr.ngii.data.layers.a1_node import make_feature as make_a1
-from ngii2xodr.ngii.data.layers.a2_link import make_feature as make_a2
-from ngii2xodr.ngii.data.layers.a3_drivewaysection import make_feature as make_a3
-from ngii2xodr.ngii.data.layers.a4_subsidiarysection import make_feature as make_a4
-from ngii2xodr.ngii.data.layers.a5_parkinglot import make_feature as make_a5
-from ngii2xodr.ngii.data.layers.b1_safetysign import make_feature as make_b1
-from ngii2xodr.ngii.data.layers.b2_surfacelinemark import make_feature as make_b2
-from ngii2xodr.ngii.data.layers.b3_surfacemark import make_feature as make_b3
-from ngii2xodr.ngii.data.layers.c1_trafficlight import make_feature as make_c1
-from ngii2xodr.ngii.data.layers.c2_kilopost import make_feature as make_c2
-from ngii2xodr.ngii.data.layers.c3_vehicleprotectionsafety import make_feature as make_c3
-from ngii2xodr.ngii.data.layers.c4_speedbump import make_feature as make_c4
-from ngii2xodr.ngii.data.layers.c5_heightbarrier import make_feature as make_c5
-from ngii2xodr.ngii.data.layers.c6_postpoint import make_feature as make_c6
+from ngii2xodr.ngii.data.v2023.layers.a1_node import make_feature as make_a1
+from ngii2xodr.ngii.data.v2023.layers.a2_link import make_feature as make_a2
+from ngii2xodr.ngii.data.v2023.layers.a3_drivewaysection import make_feature as make_a3
+from ngii2xodr.ngii.data.v2023.layers.a4_subsidiarysection import make_feature as make_a4
+from ngii2xodr.ngii.data.v2023.layers.a5_parkinglot import make_feature as make_a5
+from ngii2xodr.ngii.data.v2023.layers.b1_safetysign import make_feature as make_b1
+from ngii2xodr.ngii.data.v2023.layers.b2_surfacelinemark import make_feature as make_b2
+from ngii2xodr.ngii.data.v2023.layers.b3_surfacemark import make_feature as make_b3
+from ngii2xodr.ngii.data.v2023.layers.c1_trafficlight import make_feature as make_c1
+from ngii2xodr.ngii.data.v2023.layers.c2_kilopost import make_feature as make_c2
+from ngii2xodr.ngii.data.v2023.layers.c3_vehicleprotectionsafety import make_feature as make_c3
+from ngii2xodr.ngii.data.v2023.layers.c4_speedbump import make_feature as make_c4
+from ngii2xodr.ngii.data.v2023.layers.c5_heightbarrier import make_feature as make_c5
+from ngii2xodr.ngii.data.v2023.layers.c6_postpoint import make_feature as make_c6
 
 GeometryKind = Literal["point", "line", "polygon"]
 FieldType = Literal["text", "integer", "float"]

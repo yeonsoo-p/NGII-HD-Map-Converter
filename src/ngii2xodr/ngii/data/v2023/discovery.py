@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ngii2xodr.ngii.data.manual_2023 import SPECS_BY_FILENAME, LayerSpec
 from ngii2xodr.ngii.data.sanity import SanityReport
+from ngii2xodr.ngii.data.v2023.definitions import SPECS_BY_FILENAME, LayerSpec
 
 
 @dataclass(slots=True, frozen=True)
@@ -49,6 +49,6 @@ def discover_layer_files(
 
 
 def _coordinate_dirs(root: Path, coordinate: str) -> list[Path]:
-    if root.name == coordinate:
+    if root.name == coordinate or any(root.glob("*.shp")):
         return [root]
     return sorted(path for path in root.rglob(coordinate) if path.is_dir())

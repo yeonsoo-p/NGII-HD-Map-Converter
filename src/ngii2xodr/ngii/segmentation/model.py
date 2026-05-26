@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, Self
 
 from ngii2xodr.ngii.app import FeatureRef
-from ngii2xodr.ngii.profile import PerformanceProfile
+from ngii2xodr.profile import PerformanceProfile
 
 
 @dataclass(slots=True, frozen=True)
@@ -52,7 +52,9 @@ class SegmentEntity(Protocol):
     @property
     def id(self) -> int: ...
 
-    def selected_fields(self) -> tuple[SelectedField, ...]: ...
+    def selected_fields(
+        self, selected_ref: FeatureRef | None = None
+    ) -> tuple[SelectedField, ...]: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -61,7 +63,9 @@ class UTurn:
     link_ref: FeatureRef
     marker_refs: tuple[FeatureRef, ...]
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
+        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+            return (SelectedField.scalar("U-turn", self.id),)
         return (
             SelectedField.scalar("U-turn", self.id),
             SelectedField.scalar("U-turn link ID", self.link_ref.feature_id, self.link_ref),
@@ -80,7 +84,7 @@ class NodeLinkRelation:
     incoming_link_refs: tuple[FeatureRef, ...]
     outgoing_link_refs: tuple[FeatureRef, ...]
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
             SelectedField.list(
                 "Incoming link ID",
@@ -100,7 +104,9 @@ class Junction:
     id: int
     link_refs: tuple[FeatureRef, ...]
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
+        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+            return (SelectedField.scalar("Junction", self.id),)
         return (
             SelectedField.scalar("Junction", self.id),
             SelectedField.list(
@@ -116,7 +122,17 @@ class LateralLinkGroup:
     id: int
     link_refs: tuple[FeatureRef, ...]
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
+        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+            neighbor_refs = tuple(ref for ref in self.link_refs if ref != selected_ref)
+            return (
+                SelectedField.scalar("Lateral link group", self.id),
+                SelectedField.list(
+                    "Lateral link neighbor ID",
+                    tuple(ref.feature_id for ref in neighbor_refs),
+                    neighbor_refs,
+                ),
+            )
         return (
             SelectedField.scalar("Lateral link group", self.id),
             SelectedField.list(
@@ -135,7 +151,24 @@ class LateralNodeGroup:
     link_refs: tuple[FeatureRef, ...]
     node_refs: tuple[FeatureRef, ...]
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
+        if selected_ref is not None and selected_ref.layer_attr == "a1_node":
+            return (
+                SelectedField.list(
+                    "Lateral node group node ID",
+                    tuple(ref.feature_id for ref in self.node_refs),
+                    self.node_refs,
+                ),
+            )
+        if selected_ref is not None and selected_ref.layer_attr == "a2_link":
+            return (
+                SelectedField.scalar(f"Lateral {self.side} node group", self.id),
+                SelectedField.list(
+                    f"Lateral {self.side} node ID",
+                    tuple(ref.feature_id for ref in self.node_refs),
+                    self.node_refs,
+                ),
+            )
         return (
             SelectedField.scalar("Lateral node group", self.id),
             SelectedField.scalar("Endpoint side", self.side),
@@ -158,7 +191,7 @@ class JunctionConnection:
     id: int
     node_refs: tuple[FeatureRef, ...]
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
             SelectedField.scalar("Junction connection", self.id),
             SelectedField.list(
@@ -174,7 +207,7 @@ class ConnectionReference:
     id: int
     link_ref: FeatureRef
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
             SelectedField.scalar("Connection reference", self.id),
             SelectedField.scalar("Reference link ID", self.link_ref.feature_id, self.link_ref),
@@ -186,7 +219,7 @@ class ConnectionPerpendicular:
     id: int
     node_ref: FeatureRef
 
-    def selected_fields(self) -> tuple[SelectedField, ...]:
+    def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
             SelectedField.scalar("Connection perpendicular", self.id),
             SelectedField.scalar(
@@ -215,7 +248,7 @@ class StageResult:
         fields: list[SelectedField] = []
         for entity_id in entity_ids:
             if 0 <= entity_id < len(self.entities):
-                fields.extend(self.entities[entity_id].selected_fields())
+                fields.extend(self.entities[entity_id].selected_fields(ref))
         return tuple(fields)
 
 

@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 import numpy as np
@@ -28,8 +29,13 @@ from ngii2xodr.ngii.data.features import (
     PointOrPolygonFeature,
     PolygonFeature,
 )
-from ngii2xodr.ngii.data.manual_2023 import LAYER_SPECS, SPECS_BY_LAYER_NAME
+from ngii2xodr.ngii.data.v2023.definitions import LAYER_SPECS, SPECS_BY_LAYER_NAME
 from ngii2xodr.ngii.segmentation import Segmentation, SegmentationConfig
+from ngii2xodr.profile import (
+    PerformanceProfile,
+    ViewportInteractionProfiler,
+    ViewportProfilingConfig,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +44,13 @@ vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 SelectCallback = Callable[[FeatureRef], None]
 GeometryKind = Literal["point", "line", "polygon"]
 LayerGeometryKind = Literal["point", "line", "polygon", "mixed"]
+
+
+@dataclass(slots=True, frozen=True)
+class _PolygonBuildResult:
+    poly: pv.PolyData
+    fallback_point_poly: pv.PolyData
+    fallback_feature_indices: tuple[int, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -57,6 +70,11 @@ class VizCameraFocusConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class VizPointConfig:
+    render_as_spheres: bool
+
+
+@dataclass(slots=True, frozen=True)
 class VizConfig:
     background_color: tuple[float, float, float]
     highlight_rgb: tuple[int, int, int]
@@ -68,6 +86,8 @@ class VizConfig:
     poly_depth_offset_units: float
     segmentation_seed: int
     camera_focus: VizCameraFocusConfig
+    points: VizPointConfig
+    profiling: ViewportProfilingConfig
     layers: dict[str, VizLayerConfig]
 
 
@@ -98,6 +118,7 @@ class RenderLayer:
     selector_tolerance: float
     poly_depth_offset_factor: float
     poly_depth_offset_units: float
+    render_points_as_spheres: bool
     color_fn: Callable[[], NDArray[np.uint8]]
     feature_indices: tuple[int, ...] | None = None
     actor: vtk.vtkActor | None = field(default=None, init=False)
@@ -163,6 +184,12 @@ class RenderLayer:
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         raise NotImplementedError
 
+    def try_point_select(
+        self, x: int, y: int, renderer: Any, radius_px: float
+    ) -> tuple[FeatureRef, float] | None:
+        del x, y, renderer, radius_px
+        return None
+
 
 @dataclass(slots=True)
 class PointRenderLayer(RenderLayer):
@@ -191,7 +218,7 @@ class PointRenderLayer(RenderLayer):
             scalars="rgb",
             rgb=True,
             point_size=self.config.point_size,
-            render_points_as_spheres=True,
+            render_points_as_spheres=self.render_points_as_spheres,
             show_scalar_bar=False,
         )
         self.actor.SetVisibility(int(self.config.visible))
@@ -213,28 +240,20 @@ class PointRenderLayer(RenderLayer):
         index = self.selector.GetPointId()
         return self.feature_ref_at(index) if 0 <= index < self.poly.n_points else None
 
-    def nearest_ref_in_display_radius(
+    def try_point_select(
         self, x: int, y: int, renderer: Any, radius_px: float
     ) -> tuple[FeatureRef, float] | None:
         if self.actor is None or not self.actor.GetVisibility() or self.poly.n_points == 0:
             return None
-        coordinate = vtk.vtkCoordinate()
-        coordinate.SetCoordinateSystemToWorld()
-        best_index: int | None = None
-        best_dist2 = radius_px * radius_px
-        for render_index in range(self.poly.n_points):
-            point = self.poly.points[render_index]
-            coordinate.SetValue(float(point[0]), float(point[1]), float(point[2]))
-            display = coordinate.GetComputedDoubleDisplayValue(renderer)
-            dx = float(display[0] - x)
-            dy = float(display[1] - y)
-            dist2 = dx * dx + dy * dy
-            if dist2 <= best_dist2:
-                best_dist2 = dist2
-                best_index = render_index
-        if best_index is None:
+        if not self.selector.Pick(x, y, 0, renderer):
             return None
-        return self.feature_ref_at(best_index), best_dist2
+        index = self.selector.GetPointId()
+        if not 0 <= index < self.poly.n_points:
+            return None
+        dist2 = _display_distance2(self.poly.points[index], x, y, renderer)
+        if dist2 > radius_px * radius_px:
+            return None
+        return self.feature_ref_at(index), dist2
 
     def _iter_feature_indices(self) -> tuple[int, ...]:
         if self.feature_indices is not None:
@@ -310,44 +329,106 @@ class LineRenderLayer(RenderLayer):
 @dataclass(slots=True)
 class PolygonRenderLayer(RenderLayer):
     poly: pv.PolyData = field(init=False)
+    fallback_point_poly: pv.PolyData = field(init=False)
+    fallback_feature_indices: tuple[int, ...] = field(init=False)
+    fallback_actor: vtk.vtkActor | None = field(default=None, init=False)
+    fallback_selector: vtk.vtkPointPicker = field(init=False)
 
     def __post_init__(self) -> None:
         feature_indices = self.feature_indices or tuple(range(len(self.store.features)))
-        self.poly = _polygon_polydata(self.layer_name, self.store.features, feature_indices)
+        built = _polygon_polydata(self.layer_name, self.store.features, feature_indices)
+        self.poly = built.poly
+        self.fallback_point_poly = built.fallback_point_poly
+        self.fallback_feature_indices = built.fallback_feature_indices
+        self.fallback_selector = vtk.vtkPointPicker()
+        self.fallback_selector.SetTolerance(self.selector_tolerance)
+        self.fallback_selector.PickFromListOn()
+
+    @property
+    def geometry_label(self) -> str:
+        if self.fallback_point_poly.n_points > 0:
+            return "polygon+point"
+        return self.kind
 
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
-        if self.poly.n_cells == 0:
-            return
         self.refresh_colors()
-        self.actor = plotter.add_mesh(
-            self.poly,
-            scalars="rgb",
-            rgb=True,
-            opacity=self.config.opacity,
-            show_scalar_bar=False,
-            show_edges=False,
-            lighting=False,
-        )
-        self.actor.SetVisibility(int(self.config.visible))
-        self.actor.GetMapper().SetRelativeCoincidentTopologyPolygonOffsetParameters(
-            self.poly_depth_offset_factor, self.poly_depth_offset_units
-        )
-        polygon_selector.AddPickList(self.actor)
+        if self.poly.n_cells > 0:
+            self.actor = plotter.add_mesh(
+                self.poly,
+                scalars="rgb",
+                rgb=True,
+                opacity=self.config.opacity,
+                show_scalar_bar=False,
+                show_edges=False,
+                lighting=False,
+            )
+            self.actor.SetVisibility(int(self.config.visible))
+            self.actor.GetMapper().SetRelativeCoincidentTopologyPolygonOffsetParameters(
+                self.poly_depth_offset_factor, self.poly_depth_offset_units
+            )
+            polygon_selector.AddPickList(self.actor)
+        if self.fallback_point_poly.n_points > 0:
+            self.fallback_actor = plotter.add_mesh(
+                self.fallback_point_poly,
+                scalars="rgb",
+                rgb=True,
+                point_size=self.config.point_size,
+                render_points_as_spheres=self.render_points_as_spheres,
+                show_scalar_bar=False,
+            )
+            self.fallback_actor.SetVisibility(int(self.config.visible))
+            self.fallback_selector.AddPickList(self.fallback_actor)
+
+    def set_visible(self, on: bool) -> None:
+        super().set_visible(on)
+        if self.fallback_actor is not None:
+            self.fallback_actor.SetVisibility(int(on))
 
     def refresh_colors(self) -> None:
-        if self.poly.n_cells == 0:
-            return
         face_rgb = self.color_fn()
-        feature_idx = np.asarray(self.poly.cell_data["feature_idx"])
-        rgb = np.array(face_rgb[feature_idx], dtype=np.uint8, copy=True)
-        if self.selected_index is not None:
-            rgb[feature_idx == self.selected_index] = self.selected_rgb
-        self.poly.cell_data["rgb"] = rgb
-        self.poly.Modified()
+        if self.poly.n_cells > 0:
+            feature_idx = np.asarray(self.poly.cell_data["feature_idx"])
+            rgb = np.array(face_rgb[feature_idx], dtype=np.uint8, copy=True)
+            if self.selected_index is not None:
+                rgb[feature_idx == self.selected_index] = self.selected_rgb
+            self.poly.cell_data["rgb"] = rgb
+            self.poly.Modified()
+        if self.fallback_point_poly.n_points > 0:
+            indices = np.asarray(self.fallback_feature_indices, dtype=np.int32)
+            rgb = np.array(face_rgb[indices], dtype=np.uint8, copy=True)
+            if self.selected_index is not None:
+                rgb[indices == self.selected_index] = self.selected_rgb
+            self.fallback_point_poly.point_data["rgb"] = rgb
+            self.fallback_point_poly.Modified()
 
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         del x, y, renderer
         return None
+
+    def try_point_select(
+        self, x: int, y: int, renderer: Any, radius_px: float
+    ) -> tuple[FeatureRef, float] | None:
+        if (
+            self.fallback_actor is None
+            or not self.fallback_actor.GetVisibility()
+            or self.fallback_point_poly.n_points == 0
+        ):
+            return None
+        if not self.fallback_selector.Pick(x, y, 0, renderer):
+            return None
+        index = self.fallback_selector.GetPointId()
+        if not 0 <= index < self.fallback_point_poly.n_points:
+            return None
+        dist2 = _display_distance2(self.fallback_point_poly.points[index], x, y, renderer)
+        if dist2 > radius_px * radius_px:
+            return None
+        feature_idx = self.fallback_feature_indices[index]
+        return FeatureRef(self.layer_attr, self.store.features[feature_idx].id), dist2
+
+    def render_layers(self, kind: GeometryKind | None = None) -> tuple[RenderLayer, ...]:
+        if kind == "point" and self.fallback_point_poly.n_points > 0:
+            return (self,)
+        return RenderLayer.render_layers(self, kind)
 
 
 @dataclass(slots=True)
@@ -408,6 +489,12 @@ class HdMapViz:
         self.on_select = on_select
         self.dataset: NGIIDataset = load_ngii(ngii_dir, coordinate, ngii_cfg)
         self.segmentation = Segmentation.from_dataset(self.dataset, seg_cfg)
+        self.viewport_profile = PerformanceProfile()
+        self._viewport_profiler = ViewportInteractionProfiler(
+            profile=self.viewport_profile,
+            config=viz_cfg.profiling,
+            logger=log,
+        )
         self._segmentation_level = 0
         self._selected_ref: FeatureRef | None = None
         self._palette_by_stage = {
@@ -424,8 +511,10 @@ class HdMapViz:
             render_registry=self.registry,
             load_profile=self.dataset.load_profile,
             segmentation_profile=self.segmentation.profile,
+            viewport_profile=self.viewport_profile,
         )
         self._left_press_tag: int | None = None
+        self._vtk_observer_tags: list[tuple[Any, int]] = []
         self._key_events_bound: tuple[str, ...] = ()
 
     def _build_registry(self) -> RenderRegistry:
@@ -461,6 +550,7 @@ class HdMapViz:
                 selector_tolerance=0.0,
                 poly_depth_offset_factor=self.viz_cfg.poly_depth_offset_factor,
                 poly_depth_offset_units=self.viz_cfg.poly_depth_offset_units,
+                render_points_as_spheres=self.viz_cfg.points.render_as_spheres,
                 color_fn=color_fn,
                 sublayers=sublayers,
             )
@@ -491,6 +581,7 @@ class HdMapViz:
             selector_tolerance=self._selector_tolerance(kind),
             poly_depth_offset_factor=self.viz_cfg.poly_depth_offset_factor,
             poly_depth_offset_units=self.viz_cfg.poly_depth_offset_units,
+            render_points_as_spheres=self.viz_cfg.points.render_as_spheres,
             color_fn=color_fn,
             feature_indices=feature_indices,
         )
@@ -532,6 +623,7 @@ class HdMapViz:
         self._left_press_tag = self.plotter.iren.add_observer(
             "LeftButtonPressEvent", self._on_left_press
         )
+        self._attach_viewport_profile_observers()
 
     def show(self) -> None:
         self.attach()
@@ -541,13 +633,70 @@ class HdMapViz:
         for layer in self.registry.render_layers():
             if layer.actor is not None:
                 self.plotter.remove_actor(layer.actor)
+            if isinstance(layer, PolygonRenderLayer) and layer.fallback_actor is not None:
+                self.plotter.remove_actor(layer.fallback_actor)
         if self._left_press_tag is not None:
             self.plotter.iren.remove_observer(self._left_press_tag)
             self._left_press_tag = None
+        self._remove_vtk_observers()
         for key in self._key_events_bound:
             self.plotter.clear_events_for_key(key)
         self._key_events_bound = ()
         self.plotter.hide_axes()
+
+    def _attach_viewport_profile_observers(self) -> None:
+        if not self.viz_cfg.profiling.enabled:
+            return
+        iren = self.plotter.iren
+        self._vtk_observer_tags.extend(
+            (
+                (iren, iren.add_observer("StartInteractionEvent", self._on_interaction_start)),
+                (
+                    iren,
+                    iren.add_observer("InteractionEvent", self._on_interaction_event),
+                ),
+                (iren, iren.add_observer("EndInteractionEvent", self._on_interaction_end)),
+            )
+        )
+        render_window = getattr(self.plotter, "ren_win", None)
+        if render_window is None:
+            render_window = getattr(self.plotter, "render_window", None)
+        if render_window is not None and hasattr(render_window, "AddObserver"):
+            self._vtk_observer_tags.extend(
+                (
+                    (
+                        render_window,
+                        int(render_window.AddObserver("StartEvent", self._on_render_start)),
+                    ),
+                    (
+                        render_window,
+                        int(render_window.AddObserver("EndEvent", self._on_render_end)),
+                    ),
+                )
+            )
+
+    def _remove_vtk_observers(self) -> None:
+        for observed, tag in self._vtk_observer_tags:
+            if hasattr(observed, "remove_observer"):
+                observed.remove_observer(tag)
+            elif hasattr(observed, "RemoveObserver"):
+                observed.RemoveObserver(tag)
+        self._vtk_observer_tags = []
+
+    def _on_interaction_start(self, _obj: Any, event: str) -> None:
+        self._viewport_profiler.start_interaction(event)
+
+    def _on_interaction_event(self, _obj: Any, _event: str) -> None:
+        self._viewport_profiler.note_interaction_event()
+
+    def _on_interaction_end(self, _obj: Any, event: str) -> None:
+        self._viewport_profiler.end_interaction(event)
+
+    def _on_render_start(self, _obj: Any, event: str) -> None:
+        self._viewport_profiler.start_render(event)
+
+    def _on_render_end(self, _obj: Any, event: str) -> None:
+        self._viewport_profiler.end_render(event)
 
     def set_layer_visible(self, layer_attr: str, on: bool) -> None:
         layer = self.registry.layers.get(layer_attr)
@@ -567,9 +716,23 @@ class HdMapViz:
         self.plotter.render()
 
     def select_feature(self, ref: FeatureRef | None, *, emit: bool = True) -> None:
+        started_at = perf_counter()
+        previous_ref = self._selected_ref
         self._selected_ref = ref
-        for layer in self.registry.selectable_layers():
-            layer.set_selected_ref(ref)
+        touched_attrs = {
+            selected_ref.layer_attr
+            for selected_ref in (previous_ref, ref)
+            if selected_ref is not None
+        }
+        for attr in touched_attrs:
+            layer = self.registry.layers.get(attr)
+            if layer is not None:
+                layer.set_selected_ref(ref)
+        self._log_profile_step(
+            "selection_highlight",
+            started_at,
+            _selection_detail(ref, extra=f"layers={len(touched_attrs)}"),
+        )
         self.plotter.render()
         if emit and ref is not None and self.on_select is not None:
             self.on_select(ref)
@@ -612,27 +775,34 @@ class HdMapViz:
             return
         x, y = iren.GetEventPosition()
         renderer = self.plotter.renderer
+        started_at = perf_counter()
         point_ref = self._try_point_priority_select(x, y, renderer)
+        self._log_profile_step("selection_pick_points", started_at, f"hit={point_ref is not None}")
         if point_ref is not None:
             self.select_feature(point_ref)
             return
+        started_at = perf_counter()
         for layer in self.registry.render_layers("line"):
             ref = layer.try_select(x, y, renderer)
             if ref is not None:
+                self._log_profile_step("selection_pick_lines", started_at, "hit=True")
                 self.select_feature(ref)
                 return
-        self._try_polygon_select(x, y, renderer)
+        self._log_profile_step("selection_pick_lines", started_at, "hit=False")
+        started_at = perf_counter()
+        polygon_ref = self._try_polygon_select(x, y, renderer)
+        self._log_profile_step(
+            "selection_pick_polygons", started_at, f"hit={polygon_ref is not None}"
+        )
+        if polygon_ref is not None:
+            self.select_feature(polygon_ref)
 
     def _try_point_priority_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         best_ref: FeatureRef | None = None
         best_priority = 1_000_000
         best_dist2 = float("inf")
         for layer in self.registry.render_layers("point"):
-            if not isinstance(layer, PointRenderLayer):
-                continue
-            candidate = layer.nearest_ref_in_display_radius(
-                x, y, renderer, self.viz_cfg.point_hit_radius_px
-            )
+            candidate = layer.try_point_select(x, y, renderer, self.viz_cfg.point_hit_radius_px)
             if candidate is None:
                 continue
             ref, dist2 = candidate
@@ -643,19 +813,25 @@ class HdMapViz:
                 best_dist2 = dist2
         return best_ref
 
-    def _try_polygon_select(self, x: int, y: int, renderer: Any) -> None:
+    def _try_polygon_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         if not self.polygon_selector.Pick(x, y, 0, renderer):
-            return
+            return None
         cid = self.polygon_selector.GetCellId()
         if cid < 0:
-            return
+            return None
         actor = self.polygon_selector.GetActor()
         for layer in self.registry.render_layers("polygon"):
             if not isinstance(layer, PolygonRenderLayer) or layer.actor is not actor:
                 continue
             feature_idx = int(layer.poly.cell_data["feature_idx"][cid])
-            self.select_feature(FeatureRef(layer.layer_attr, layer.store.features[feature_idx].id))
-            return
+            return FeatureRef(layer.layer_attr, layer.store.features[feature_idx].id)
+        return None
+
+    def _log_profile_step(self, name: str, started_at: float, detail: str) -> None:
+        elapsed = perf_counter() - started_at
+        self.viewport_profile.add(name, elapsed, detail)
+        if self.viz_cfg.profiling.enabled:
+            log.info("viewport %s: %.1fms%s", name, elapsed * 1000.0, _detail_suffix(detail))
 
 
 def _dataset_layer_items(dataset: NGIIDataset) -> tuple[tuple[str, LayerStore[Any]], ...]:
@@ -741,60 +917,90 @@ def _polyline_polydata(polylines: list[NDArray[np.float64]]) -> pv.PolyData:
 
 def _polygon_polydata(
     layer_name: str, features: list[NGIIFeature], feature_indices: tuple[int, ...]
-) -> pv.PolyData:
+) -> _PolygonBuildResult:
     if not features:
-        return pv.PolyData()
+        return _PolygonBuildResult(pv.PolyData(), pv.PolyData(), ())
     all_pts: list[NDArray[np.float64]] = []
     face_cells: list[int] = []
     tri_feature_idx: list[int] = []
+    fallback_pts: list[NDArray[np.float64]] = []
+    fallback_feature_idx: list[int] = []
+    outcome_counts = {"direct": 0, "repaired": 0, "fallback_point": 0, "skipped": 0}
+    outcome_examples: dict[str, list[str]] = {
+        "repaired": [],
+        "fallback_point": [],
+        "skipped": [],
+    }
+    skipped_reasons: dict[str, int] = {}
     vert_offset = 0
     for feature_idx in feature_indices:
         feature = features[feature_idx]
         ring = _polygon_feature_ring(feature)
         if ring is None:
             continue
-        for tri_xy in _triangulated_ring_xy(layer_name, feature.id, ring):
+        tri_result = _triangulated_ring_xy(ring)
+        if tri_result[0]:
+            outcome_counts[tri_result[1]] += 1
+        elif layer_name == "B1_SAFETYSIGN":
+            fallback_point = _fallback_point_from_ring(ring)
+            if fallback_point is not None:
+                fallback_pts.append(fallback_point)
+                fallback_feature_idx.append(feature_idx)
+                outcome_counts["fallback_point"] += 1
+                _append_example(outcome_examples["fallback_point"], feature.id)
+            else:
+                outcome_counts["skipped"] += 1
+                _append_example(outcome_examples["skipped"], feature.id)
+                skipped_reasons[tri_result[2]] = skipped_reasons.get(tri_result[2], 0) + 1
+            continue
+        else:
+            outcome_counts["skipped"] += 1
+            _append_example(outcome_examples["skipped"], feature.id)
+            skipped_reasons[tri_result[2]] = skipped_reasons.get(tri_result[2], 0) + 1
+            continue
+
+        if tri_result[1] == "repaired":
+            _append_example(outcome_examples["repaired"], feature.id)
+        for tri_xy in tri_result[0]:
             tri_z = np.array([_nearest_ring_z(ring, x, y) for x, y in tri_xy])
             all_pts.append(np.column_stack([tri_xy, tri_z]))
             face_cells.extend([3, vert_offset, vert_offset + 1, vert_offset + 2])
             vert_offset += 3
             tri_feature_idx.append(feature_idx)
+    _log_polygon_render_summary(layer_name, outcome_counts, outcome_examples, skipped_reasons)
+    fallback_poly = (
+        pv.PolyData(np.asarray(fallback_pts, dtype=np.float64)) if fallback_pts else pv.PolyData()
+    )
     if not all_pts:
-        return pv.PolyData()
+        return _PolygonBuildResult(
+            pv.PolyData(),
+            fallback_poly,
+            tuple(fallback_feature_idx),
+        )
     poly = pv.PolyData(np.vstack(all_pts), faces=np.asarray(face_cells, dtype=np.int64))
     poly.cell_data["feature_idx"] = np.asarray(tri_feature_idx, dtype=np.int32)
-    return poly
+    return _PolygonBuildResult(poly, fallback_poly, tuple(fallback_feature_idx))
 
 
 def _triangulated_ring_xy(
-    layer_name: str, feature_id: str, ring: NDArray[np.float64]
-) -> list[NDArray[np.float64]]:
+    ring: NDArray[np.float64],
+) -> tuple[list[NDArray[np.float64]], Literal["direct", "repaired", "skipped"], str]:
     polygon = ShapelyPolygon(ring[:, :2])
+    reason = shapely.is_valid_reason(polygon)
     triangles = _constrained_triangle_xys(polygon)
     if triangles:
-        return triangles
+        return triangles, "direct", reason
 
     repaired_triangles: list[NDArray[np.float64]] = []
     for repaired in _polygonal_repair_candidates(polygon):
-        repaired_triangles.extend(_constrained_triangle_xys(repaired))
-        if not repaired_triangles:
+        constrained = _constrained_triangle_xys(repaired)
+        if constrained:
+            repaired_triangles.extend(constrained)
+        else:
             repaired_triangles.extend(_unconstrained_triangle_xys(repaired))
     if repaired_triangles:
-        log.warning(
-            "render polygon repaired for display: %s %s (%s)",
-            layer_name,
-            feature_id,
-            shapely.is_valid_reason(polygon),
-        )
-        return repaired_triangles
-
-    log.warning(
-        "render polygon skipped: %s %s cannot be triangulated (%s)",
-        layer_name,
-        feature_id,
-        shapely.is_valid_reason(polygon),
-    )
-    return []
+        return repaired_triangles, "repaired", reason
+    return [], "skipped", reason
 
 
 def _constrained_triangle_xys(polygon: ShapelyPolygon) -> list[NDArray[np.float64]]:
@@ -848,6 +1054,71 @@ def _nearest_ring_z(ring: NDArray[np.float64], x: float, y: float) -> float:
     return float(ring[idx, 2])
 
 
+def _fallback_point_from_ring(ring: NDArray[np.float64]) -> NDArray[np.float64] | None:
+    finite = ring[np.isfinite(ring).all(axis=1)]
+    if len(finite) == 0:
+        return None
+    if len(finite) > 1 and np.allclose(finite[0, :2], finite[-1, :2]):
+        finite = finite[:-1]
+    if len(finite) == 0:
+        return None
+    _, unique_indices = np.unique(finite[:, :2], axis=0, return_index=True)
+    unique = finite[np.sort(unique_indices)]
+    if len(unique) == 0:
+        return None
+    return np.asarray(
+        (
+            float(np.mean(unique[:, 0])),
+            float(np.mean(unique[:, 1])),
+            float(np.median(unique[:, 2])),
+        ),
+        dtype=np.float64,
+    )
+
+
+def _append_example(examples: list[str], feature_id: str) -> None:
+    if len(examples) < 8:
+        examples.append(feature_id)
+
+
+def _log_polygon_render_summary(
+    layer_name: str,
+    outcome_counts: dict[str, int],
+    outcome_examples: dict[str, list[str]],
+    skipped_reasons: dict[str, int],
+) -> None:
+    noteworthy = (
+        outcome_counts["repaired"] or outcome_counts["fallback_point"] or outcome_counts["skipped"]
+    )
+    if not noteworthy:
+        return
+    detail = (
+        f"direct={outcome_counts['direct']}, repaired={outcome_counts['repaired']}, "
+        f"fallback_point={outcome_counts['fallback_point']}, skipped={outcome_counts['skipped']}"
+    )
+    for outcome in ("repaired", "fallback_point", "skipped"):
+        examples = outcome_examples[outcome]
+        if examples:
+            detail += f"; {outcome}_examples={', '.join(examples)}"
+    if skipped_reasons:
+        reasons = ", ".join(f"{reason}: {count}" for reason, count in skipped_reasons.items())
+        detail += f"; skipped_reasons={reasons}"
+    if outcome_counts["skipped"]:
+        log.warning("render polygon summary: %s %s", layer_name, detail)
+    else:
+        log.info("render polygon summary: %s %s", layer_name, detail)
+
+
+def _display_distance2(point: NDArray[np.float64], x: int, y: int, renderer: Any) -> float:
+    coordinate = vtk.vtkCoordinate()
+    coordinate.SetCoordinateSystemToWorld()
+    coordinate.SetValue(float(point[0]), float(point[1]), float(point[2]))
+    display = coordinate.GetComputedDoubleDisplayValue(renderer)
+    dx = float(display[0] - x)
+    dy = float(display[1] - y)
+    return dx * dx + dy * dy
+
+
 def _point_feature_xyz(feature: NGIIFeature) -> NDArray[np.float64] | None:
     if isinstance(feature, PointFeature):
         return feature.point
@@ -885,3 +1156,14 @@ def _point_layer_priority(layer_attr: str) -> int:
         "b1_safetysign": 2,
     }
     return priority.get(layer_attr, 10)
+
+
+def _selection_detail(ref: FeatureRef | None, *, extra: str = "") -> str:
+    detail = "ref=None" if ref is None else f"ref={ref.layer_attr}:{ref.feature_id}"
+    if extra:
+        return f"{detail}; {extra}"
+    return detail
+
+
+def _detail_suffix(detail: str) -> str:
+    return f" ({detail})" if detail else ""

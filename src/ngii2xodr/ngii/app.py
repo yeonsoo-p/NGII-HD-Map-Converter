@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ngii2xodr.ngii.data.dataset import NGIIDataset
-from ngii2xodr.ngii.profile import PerformanceProfile
+from ngii2xodr.profile import PerformanceProfile
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,3 +25,4 @@ class LoadedMap:
     render_registry: object
     load_profile: PerformanceProfile
     segmentation_profile: PerformanceProfile
+    viewport_profile: PerformanceProfile

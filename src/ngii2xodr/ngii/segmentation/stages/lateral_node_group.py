@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import ClassVar, Literal
 
 from ngii2xodr.ngii.app import FeatureRef
-from ngii2xodr.ngii.data.layers.a2_link import A2_LINK
+from ngii2xodr.ngii.data.v2023.layers.a2_link import A2_LINK
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
 from ngii2xodr.ngii.segmentation.model import LateralLinkGroup, LateralNodeGroup, StageResult
 from ngii2xodr.ngii.segmentation.stage import empty_result

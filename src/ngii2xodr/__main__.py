@@ -21,6 +21,7 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 from PySide6.QtWidgets import QApplication
 
+from ngii2xodr.gui import HdMapWindow
 from ngii2xodr.ngii.data import (
     NGIIConfig,
     NGIISanityConfig,
@@ -29,9 +30,9 @@ from ngii2xodr.ngii.data import (
     NGIITextCorrection,
     NGIITextCorrectionConfig,
 )
-from ngii2xodr.ngii.gui import HdMapWindow
 from ngii2xodr.ngii.segmentation import SegmentationConfig
-from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig
+from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig, VizPointConfig
+from ngii2xodr.profile import ViewportProfilingConfig
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,8 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         poly_depth_offset_units=float(raw["poly_depth_offset_units"]),
         segmentation_seed=int(raw["segmentation_seed"]),
         camera_focus=_build_camera_focus_cfg(raw["camera_focus"]),
+        points=_build_point_cfg(raw["points"]),
+        profiling=_build_viewport_profiling_cfg(raw["profiling"]),
         layers={
             str(attr): _build_viz_layer_cfg(value)
             for attr, value in layers_raw.items()
@@ -101,6 +104,24 @@ def _build_camera_focus_cfg(raw: object) -> VizCameraFocusConfig:
         padding_m=float(cast(Any, raw["padding_m"])),
         min_scale_m=float(cast(Any, raw["min_scale_m"])),
         max_scale_m=float(cast(Any, raw["max_scale_m"])),
+    )
+
+
+def _build_point_cfg(raw: object) -> VizPointConfig:
+    if not isinstance(raw, dict):
+        msg = f"viz.points config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
+    return VizPointConfig(render_as_spheres=bool(cast(Any, raw["render_as_spheres"])))
+
+
+def _build_viewport_profiling_cfg(raw: object) -> ViewportProfilingConfig:
+    if not isinstance(raw, dict):
+        msg = f"viz.profiling config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
+    return ViewportProfilingConfig(
+        enabled=bool(cast(Any, raw["enabled"])),
+        slow_frame_ms=float(cast(Any, raw["slow_frame_ms"])),
+        log_every_n_interactions=int(cast(Any, raw["log_every_n_interactions"])),
     )
 
 
