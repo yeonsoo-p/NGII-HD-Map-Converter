@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    LineFeature,
+    common_kwargs,
+    relation_property,
+)
 
 
 @dataclass(slots=True)
@@ -63,13 +68,8 @@ class B2_SURFACELINEMARK(LineFeature):
     r_link_id: str | None
     l_link_id: str | None
 
-    @property
-    def right_link(self) -> object | None:
-        return self.resolve_relation("R_LinkID")
-
-    @property
-    def left_link(self) -> object | None:
-        return self.resolve_relation("L_LinkID")
+    right_link = relation_property("R_LinkID")
+    left_link = relation_property("L_LinkID")
 
 
 def make_feature(record: FeatureRecord) -> B2_SURFACELINEMARK:

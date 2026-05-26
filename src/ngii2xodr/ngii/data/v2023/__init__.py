@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from ngii2xodr.ngii.data.schema import FieldRule, LayerSpec, RelationshipRule
+from ngii2xodr.ngii.data.v2023.definitions import (
+    LAYER_SPECS,
+    SCHEMA,
+    SPECS_BY_FILENAME,
+    SPECS_BY_LAYER_NAME,
+)
+from ngii2xodr.ngii.data.v2023.loader import load_ngii
 
 __all__ = [
     "LAYER_SPECS",
+    "SCHEMA",
     "SPECS_BY_FILENAME",
     "SPECS_BY_LAYER_NAME",
     "FieldRule",
@@ -13,23 +21,3 @@ __all__ = [
     "RelationshipRule",
     "load_ngii",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name == "load_ngii":
-        from ngii2xodr.ngii.data.v2023.loader import load_ngii  # noqa: PLC0415
-
-        return load_ngii
-    if name in {
-        "FieldRule",
-        "LAYER_SPECS",
-        "LayerSpec",
-        "RelationshipRule",
-        "SPECS_BY_FILENAME",
-        "SPECS_BY_LAYER_NAME",
-    }:
-        from ngii2xodr.ngii.data.v2023 import definitions  # noqa: PLC0415
-
-        return getattr(definitions, name)
-    msg = f"module {__name__!r} has no attribute {name!r}"
-    raise AttributeError(msg)

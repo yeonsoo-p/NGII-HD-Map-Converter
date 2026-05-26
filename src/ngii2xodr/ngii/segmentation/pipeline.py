@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from time import perf_counter
 from typing import Any
 
 from ngii2xodr.ngii.app import FeatureRef
@@ -71,14 +70,13 @@ class Segmentation(SegmentationResult):
                 by_id[result.stage_id] = result
                 continue
             stage = stage_cls()
-            started_at = perf_counter()
-            result = stage.run(context, by_id)
-            elapsed = perf_counter() - started_at
-            profile.add(stage_cls.id, elapsed, f"{len(result.entities)} entities")
+            with profile.timed(stage_cls.id) as timer:
+                result = stage.run(context, by_id)
+                timer.detail = f"{len(result.entities)} entities"
             log.info(
                 "%s: %.3fs, %d %s entity(s)",
                 stage_cls.__name__,
-                elapsed,
+                timer.duration_s,
                 len(result.entities),
                 stage_cls.entity_label,
             )

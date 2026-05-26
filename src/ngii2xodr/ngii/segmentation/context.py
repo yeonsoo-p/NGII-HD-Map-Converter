@@ -54,21 +54,21 @@ class SegmentationContext:
         )
 
         self.link_refs = tuple(
-            FeatureRef(self.link_attr, feature.id) for feature in self.link_store
+            FeatureRef(self.link_attr, feature.id) for feature in self.link_store.features
         )
         self.lane_line_refs = (
             ()
             if self.lane_line_store is None
             else tuple(
                 FeatureRef(self.lane_line_attr or "", feature.id)
-                for feature in self.lane_line_store
+                for feature in self.lane_line_store.features
             )
         )
-        self.link_lines = tuple(_line_or_none(feature) for feature in self.link_store)
+        self.link_lines = tuple(_line_or_none(feature) for feature in self.link_store.features)
         self.lane_line_lines = (
             ()
             if self.lane_line_store is None
-            else tuple(_line_or_none(feature) for feature in self.lane_line_store)
+            else tuple(_line_or_none(feature) for feature in self.lane_line_store.features)
         )
         self.link_line_rows = tuple(i for i, line in enumerate(self.link_lines) if line is not None)
         self.lane_line_rows = tuple(
@@ -76,7 +76,7 @@ class SegmentationContext:
         )
         self.link_line_tree = self._line_tree(self.link_lines, self.link_line_rows)
         self.lane_line_tree = self._line_tree(self.lane_line_lines, self.lane_line_rows)
-        self.node_points = tuple(shapely.Point(node.point[:2]) for node in self.node_store)
+        self.node_points = tuple(shapely.Point(node.point[:2]) for node in self.node_store.features)
         self.node_point_tree = shapely.STRtree(self.node_points) if self.node_points else None
         self._rows_by_filter = self._build_rows_by_filter()
         self.junction_node_indices = self._rows_by_filter.get("junction_node", ())

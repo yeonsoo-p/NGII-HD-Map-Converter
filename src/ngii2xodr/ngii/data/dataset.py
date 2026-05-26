@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -37,7 +37,7 @@ class AmbiguousFeatureIDError(KeyError):
 
 
 @dataclass(slots=True)
-class LayerStore[T: NGIIFeature]:
+class LayerStore[T: NGIIFeature](Mapping[str, T]):
     spec: LayerSpec
     features: list[T] = field(default_factory=list)
     by_id: dict[str, T] = field(default_factory=dict)
@@ -53,16 +53,11 @@ class LayerStore[T: NGIIFeature]:
     def __getitem__(self, feature_id: str) -> T:
         return self.by_id[feature_id]
 
-    def __iter__(self) -> Iterator[T]:
-        return iter(self.features)
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.by_id)
 
     def __len__(self) -> int:
         return len(self.features)
-
-    def get(self, feature_id: str | None) -> T | None:
-        if feature_id is None:
-            return None
-        return self.by_id.get(feature_id)
 
     def rebuild_index(self) -> None:
         self.by_id = {feature.id: feature for feature in self.features}
@@ -117,7 +112,7 @@ class LayerStore[T: NGIIFeature]:
 
 
 @dataclass(slots=True)
-class NGIIDataset:
+class NGIIDataset(Mapping[str, NGIIFeature]):
     root: Path
     coordinate: str
     schema: SchemaDefinition
@@ -141,19 +136,29 @@ class NGIIDataset:
             raise AmbiguousFeatureIDError(msg)
         return self._global_index[feature_id]
 
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._global_index)
+
+    def __len__(self) -> int:
+        return len(self._global_index)
+
     def bind(self) -> None:
         self._global_index.clear()
         self._ambiguous_global_ids.clear()
+        first_by_id: dict[str, NGIIFeature] = {}
         for store in self.layer_stores:
             store.rebuild_index()
             for feature in store.features:
                 feature.bind_dataset(self)
-                existing = self._global_index.get(feature.id)
+                existing = first_by_id.get(feature.id)
                 if existing is None:
+                    first_by_id[feature.id] = feature
                     self._global_index[feature.id] = feature
                 elif existing.layer_name != feature.layer_name:
+                    self._global_index.pop(feature.id, None)
+                    already_ambiguous = feature.id in self._ambiguous_global_ids
                     self._ambiguous_global_ids.add(feature.id)
-                    if self.warn_global_id_collision:
+                    if self.warn_global_id_collision and not already_ambiguous:
                         self.sanity.warn(
                             "global-id-collision",
                             f"ID {feature.id!r} exists in both {existing.layer_name} and "

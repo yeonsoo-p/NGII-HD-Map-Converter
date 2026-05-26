@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PointFeature, common_kwargs
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    PointFeature,
+    common_kwargs,
+    relation_property,
+)
 
 
 @dataclass(slots=True)
@@ -15,9 +20,7 @@ class C2_KILOPOST(PointFeature):
     link_id: str | None
     ref_lane: int
 
-    @property
-    def link(self) -> object | None:
-        return self.resolve_relation("LinkID")
+    link = relation_property("LinkID")
 
 
 def make_feature(record: FeatureRecord) -> C2_KILOPOST:

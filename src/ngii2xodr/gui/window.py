@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
-from time import perf_counter
 from typing import Any, override
 
 import shapely
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -48,6 +47,7 @@ from ngii2xodr.ngii.data.features import (
 from ngii2xodr.ngii.data.schema import RelationshipRule
 from ngii2xodr.ngii.segmentation import SegmentationConfig, SelectedField
 from ngii2xodr.ngii.viz import HdMapViz, VizConfig
+from ngii2xodr.profile import ProfileTimer
 
 log = logging.getLogger(__name__)
 
@@ -133,10 +133,7 @@ class HdMapWindow(QMainWindow):
         self.viz: HdMapViz | None = None
 
         self._layer_items: dict[str, QTreeWidgetItem] = {}
-        self._updating_layer_items = False
-        self._updating_layer_master = False
         self._item_by_ref: dict[FeatureRef, QTreeWidgetItem] = {}
-        self._updating_item_selection = False
         self._selected_ref: FeatureRef | None = None
         self._segmentation_level = 0
         self._segmentation_button_group: QButtonGroup | None = None
@@ -313,36 +310,35 @@ class HdMapWindow(QMainWindow):
         )
 
     def _rebuild_layers_tab(self, viz: HdMapViz) -> None:
-        self._updating_layer_items = True
-        self._layer_items.clear()
-        self._layer_tree.clear()
-        for attr, store in _layer_store_items(viz):
-            layer = viz.registry.layers.get(attr)
-            count = len(store)
-            geometry = (
-                "empty/missing"
-                if count == 0
-                else layer.geometry_label
-                if layer is not None
-                else _store_geometry_label(store)
-            )
-            item = QTreeWidgetItem(("", store.layer_name, geometry, str(count)))
-            item.setData(0, Qt.ItemDataRole.UserRole, attr)
-            item.setCheckState(
-                0,
-                Qt.CheckState.Checked
-                if layer is not None and count > 0 and layer.config.visible
-                else Qt.CheckState.Unchecked,
-            )
-            if layer is None or count == 0:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
-                for column in range(4):
-                    item.setForeground(column, QBrush(QColor(145, 145, 150)))
-            self._layer_tree.addTopLevelItem(item)
-            self._layer_items[attr] = item
-        _fit_tree_to_rows(self._layer_tree, len(viz.dataset.schema.layer_specs))
+        with QSignalBlocker(self._layer_tree):
+            self._layer_items.clear()
+            self._layer_tree.clear()
+            for attr, store in _layer_store_items(viz):
+                layer = viz.registry.layers.get(attr)
+                count = len(store)
+                geometry = (
+                    "empty/missing"
+                    if count == 0
+                    else layer.geometry_label
+                    if layer is not None
+                    else _store_geometry_label(store)
+                )
+                item = QTreeWidgetItem(("", store.layer_name, geometry, str(count)))
+                item.setData(0, Qt.ItemDataRole.UserRole, attr)
+                item.setCheckState(
+                    0,
+                    Qt.CheckState.Checked
+                    if layer is not None and count > 0 and layer.config.visible
+                    else Qt.CheckState.Unchecked,
+                )
+                if layer is None or count == 0:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                    for column in range(4):
+                        item.setForeground(column, QBrush(QColor(145, 145, 150)))
+                self._layer_tree.addTopLevelItem(item)
+                self._layer_items[attr] = item
+            _fit_tree_to_rows(self._layer_tree, len(viz.dataset.schema.layer_specs))
         self._sync_layer_master_checkbox()
-        self._updating_layer_items = False
 
         _clear_layout(self._segmentation_layout)
         self._segmentation_button_group = QButtonGroup(self._segmentation_group)
@@ -354,26 +350,25 @@ class HdMapWindow(QMainWindow):
         self._segmentation_button_group.idToggled.connect(self._on_segmentation_level_changed)
 
     def _rebuild_items_tab(self, viz: HdMapViz) -> None:
-        self._item_by_ref.clear()
-        self._updating_item_selection = True
-        self._item_tree.clear()
-        for attr, store in _layer_store_items(viz):
-            parent = QTreeWidgetItem((store.layer_name, f"{len(store)} items"))
-            parent.setData(0, Qt.ItemDataRole.UserRole, None)
-            self._item_tree.addTopLevelItem(parent)
-            for feature in store.features:
-                ref = FeatureRef(attr, feature.id)
-                child = QTreeWidgetItem((feature.id, _feature_summary(feature)))
-                child.setData(0, Qt.ItemDataRole.UserRole, ref)
-                parent.addChild(child)
-                self._item_by_ref[ref] = child
-            parent.setExpanded(False)
-        self._item_tree.resizeColumnToContents(1)
-        self._updating_item_selection = False
+        with QSignalBlocker(self._item_tree):
+            self._item_by_ref.clear()
+            self._item_tree.clear()
+            for attr, store in _layer_store_items(viz):
+                parent = QTreeWidgetItem((store.layer_name, f"{len(store)} items"))
+                parent.setData(0, Qt.ItemDataRole.UserRole, None)
+                self._item_tree.addTopLevelItem(parent)
+                for feature in store.features:
+                    ref = FeatureRef(attr, feature.id)
+                    child = QTreeWidgetItem((feature.id, _feature_summary(feature)))
+                    child.setData(0, Qt.ItemDataRole.UserRole, ref)
+                    parent.addChild(child)
+                    self._item_by_ref[ref] = child
+                parent.setExpanded(False)
+            self._item_tree.resizeColumnToContents(1)
         self._filter_items(self._item_search.text())
 
     def _on_layer_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        if self._updating_layer_items or column != 0 or self.viz is None:
+        if column != 0 or self.viz is None:
             return
         attr = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(attr, str):
@@ -381,24 +376,22 @@ class HdMapWindow(QMainWindow):
             self._sync_layer_master_checkbox()
 
     def _on_layer_master_clicked(self) -> None:
-        if self._updating_layer_master or self.viz is None:
+        if self.viz is None:
             return
         items = self._toggleable_layer_items()
         visible = not items or not all(
             item.checkState(0) == Qt.CheckState.Checked for item in items
         )
-        self._updating_layer_items = True
-        for item in items:
-            item.setCheckState(0, Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
-            attr = item.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(attr, str):
-                self.viz.set_layer_visible(attr, visible)
-        self._updating_layer_items = False
+        with QSignalBlocker(self._layer_tree):
+            for item in items:
+                item.setCheckState(0, Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
+                attr = item.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(attr, str):
+                    self.viz.set_layer_visible(attr, visible)
         self._sync_layer_master_checkbox()
 
     def _sync_layer_master_checkbox(self) -> None:
         items = self._toggleable_layer_items()
-        self._updating_layer_master = True
         if not items:
             self._layer_header.set_master_state(Qt.CheckState.Unchecked, checkable=False)
         elif all(item.checkState(0) == Qt.CheckState.Checked for item in items):
@@ -407,7 +400,6 @@ class HdMapWindow(QMainWindow):
             self._layer_header.set_master_state(Qt.CheckState.Unchecked, checkable=True)
         else:
             self._layer_header.set_master_state(Qt.CheckState.PartiallyChecked, checkable=True)
-        self._updating_layer_master = False
 
     def _toggleable_layer_items(self) -> tuple[QTreeWidgetItem, ...]:
         return tuple(
@@ -443,8 +435,6 @@ class HdMapWindow(QMainWindow):
             parent.setExpanded(bool(query) and any_visible)
 
     def _on_item_selection_changed(self) -> None:
-        if self._updating_item_selection:
-            return
         item = self._item_tree.currentItem()
         ref = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(ref, FeatureRef):
@@ -459,31 +449,34 @@ class HdMapWindow(QMainWindow):
         viz = self.viz
         if viz is None:
             return
-        started_at = perf_counter()
         self._selected_ref = ref
-        if update_viz:
-            viz.select_feature(ref, emit=False)
-            viz.focus_feature(ref)
-        _log_gui_profile(viz, "selection_update_viz", started_at, _ref_detail(ref, update_viz))
-        started_at = perf_counter()
-        self._sync_item_selection(ref)
-        _log_gui_profile(viz, "selection_sync_items", started_at, _ref_detail(ref, False))
-        started_at = perf_counter()
-        self._populate_selected_panel(viz, ref)
-        _log_gui_profile(viz, "selection_selected_table", started_at, _ref_detail(ref, False))
+        with viz.viewport_profile.timed(
+            "selection_update_viz", _ref_detail(ref, update_viz)
+        ) as timer:
+            if update_viz:
+                viz.select_feature(ref, emit=False)
+                viz.focus_feature(ref)
+        _log_gui_profile(viz, timer)
+        with viz.viewport_profile.timed("selection_sync_items", _ref_detail(ref, False)) as timer:
+            self._sync_item_selection(ref)
+        _log_gui_profile(viz, timer)
+        with viz.viewport_profile.timed(
+            "selection_selected_table", _ref_detail(ref, False)
+        ) as timer:
+            self._populate_selected_panel(viz, ref)
+        _log_gui_profile(viz, timer)
         log.info("selected %s:%s", ref.layer_attr, ref.feature_id)
 
     def _sync_item_selection(self, ref: FeatureRef) -> None:
         item = self._item_by_ref.get(ref)
         if item is None:
             return
-        self._updating_item_selection = True
-        parent = item.parent()
-        if parent is not None:
-            parent.setExpanded(True)
-        self._item_tree.setCurrentItem(item)
-        self._item_tree.scrollToItem(item)
-        self._updating_item_selection = False
+        with QSignalBlocker(self._item_tree):
+            parent = item.parent()
+            if parent is not None:
+                parent.setExpanded(True)
+            self._item_tree.setCurrentItem(item)
+            self._item_tree.scrollToItem(item)
 
     def _reset_select_panel(self, header_text: str) -> None:
         self._select_header.setText(header_text)
@@ -532,7 +525,8 @@ class HdMapWindow(QMainWindow):
             self.select_feature(ref, update_viz=True)
             self._tabs.setCurrentWidget(self._selected_tab)
 
-    def closeEvent(self, event: object) -> None:  # noqa: N802
+    @override
+    def closeEvent(self, event: object) -> None:
         if self.viz is not None:
             self.viz.detach()
             self.viz = None
@@ -774,11 +768,9 @@ def _compact_selected_fields(fields_: tuple[SelectedField, ...]) -> tuple[Select
     return tuple(compacted)
 
 
-def _log_gui_profile(viz: HdMapViz, name: str, started_at: float, detail: str) -> None:
-    elapsed = perf_counter() - started_at
-    viz.viewport_profile.add(name, elapsed, detail)
+def _log_gui_profile(viz: HdMapViz, timer: ProfileTimer) -> None:
     if viz.viz_cfg.profiling.enabled:
-        log.info("gui %s: %.1fms (%s)", name, elapsed * 1000.0, detail)
+        log.info("gui %s: %.1fms (%s)", timer.name, timer.duration_s * 1000.0, timer.detail)
 
 
 def _ref_detail(ref: FeatureRef, update_viz: bool) -> str:

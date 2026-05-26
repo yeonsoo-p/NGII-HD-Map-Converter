@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PolygonFeature, common_kwargs
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    PolygonFeature,
+    common_kwargs,
+    relation_property,
+)
 
 
 @dataclass(slots=True)
@@ -23,9 +28,7 @@ class A5_PARKINGLOT(PolygonFeature):
     type: str
     section_id: str | None
 
-    @property
-    def section(self) -> object | None:
-        return self.resolve_relation("SectionID")
+    section = relation_property("SectionID")
 
 
 def make_feature(record: FeatureRecord) -> A5_PARKINGLOT:

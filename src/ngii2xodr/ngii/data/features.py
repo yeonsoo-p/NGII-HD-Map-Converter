@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -21,8 +21,8 @@ FeatureGeometryKind = Literal["point", "line", "polygon"]
 @dataclass(slots=True, frozen=True)
 class FeatureRecord:
     layer_name: str
-    source_path: Path
-    source_row: int
+    source_path: Path = field(compare=False)
+    source_row: int = field(compare=False)
     attributes: dict[str, Any]
     geometry_kind: FeatureGeometryKind
     geometry: NDArray[np.float64]
@@ -55,8 +55,8 @@ class NGIIFeature:
     remark: str
     hist_type: str
     hist_remark: str
-    source_path: Path
-    source_row: int
+    source_path: Path = field(compare=False)
+    source_row: int = field(compare=False)
     layer_name: ClassVar[str]
     _dataset: NGIIDataset | None = field(default=None, init=False, repr=False, compare=False)
 
@@ -97,10 +97,15 @@ class NGIIFeature:
                 return cast(NGIIFeature, feature)
         return None
 
+    @property
+    def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
+        msg = f"{self.layer_name} {self.id!r} has no supported geometry signature"
+        raise TypeError(msg)
+
 
 @dataclass(slots=True)
 class PointFeature(NGIIFeature):
-    point: NDArray[np.float64]
+    point: NDArray[np.float64] = field(compare=False)
 
     @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
@@ -109,7 +114,7 @@ class PointFeature(NGIIFeature):
 
 @dataclass(slots=True)
 class LineFeature(NGIIFeature):
-    polyline: NDArray[np.float64]
+    polyline: NDArray[np.float64] = field(compare=False)
 
     @property
     def xy_line(self) -> shapely.LineString:
@@ -122,7 +127,7 @@ class LineFeature(NGIIFeature):
 
 @dataclass(slots=True)
 class PolygonFeature(NGIIFeature):
-    ring: NDArray[np.float64]
+    ring: NDArray[np.float64] = field(compare=False)
 
     @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
@@ -131,8 +136,8 @@ class PolygonFeature(NGIIFeature):
 
 @dataclass(slots=True)
 class PointOrPolygonFeature(NGIIFeature):
-    point: NDArray[np.float64] | None
-    ring: NDArray[np.float64] | None
+    point: NDArray[np.float64] | None = field(compare=False)
+    ring: NDArray[np.float64] | None = field(compare=False)
 
     @property
     def geometry_kind(self) -> Literal["point", "polygon"]:
@@ -170,32 +175,11 @@ def common_kwargs(record: FeatureRecord) -> dict[str, Any]:
 
 
 def same_feature(a: NGIIFeature, b: NGIIFeature) -> bool:
-    return (
-        a.layer_name == b.layer_name
-        and _field_signature(a) == _field_signature(b)
-        and _geometry_signature(a) == _geometry_signature(b)
-    )
+    return type(a) is type(b) and a == b and a.geometry_signature == b.geometry_signature
 
 
-def _geometry_signature(feature: NGIIFeature) -> tuple[tuple[float, ...], ...]:
-    if isinstance(feature, PointFeature | LineFeature | PolygonFeature | PointOrPolygonFeature):
-        return feature.geometry_signature
-    msg = f"{feature.layer_name} {feature.id!r} has no supported geometry signature"
-    raise TypeError(msg)
+def relation_property(column_or_attr: str) -> property:
+    def _resolve(self: NGIIFeature) -> NGIIFeature | None:
+        return self.resolve_relation(column_or_attr)
 
-
-def _field_signature(feature: NGIIFeature) -> tuple[tuple[str, object], ...]:
-    skipped = {
-        "source_path",
-        "source_row",
-        "_dataset",
-        "point",
-        "polyline",
-        "ring",
-    }
-    values = []
-    for field_ in fields(feature):
-        if field_.name in skipped:
-            continue
-        values.append((field_.name, getattr(feature, field_.name)))
-    return tuple(values)
+    return property(_resolve)

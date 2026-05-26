@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 import numpy as np
 import pyvista as pv
@@ -32,6 +33,7 @@ from ngii2xodr.ngii.data.features import (
 from ngii2xodr.ngii.segmentation import Segmentation, SegmentationConfig
 from ngii2xodr.profile import (
     PerformanceProfile,
+    ProfileTimer,
     ViewportInteractionProfiler,
     ViewportProfilingConfig,
 )
@@ -108,7 +110,7 @@ class RenderRegistry:
 
 
 @dataclass(slots=True)
-class RenderLayer:
+class RenderLayer(ABC):
     layer_attr: str
     store: LayerStore[Any]
     kind: LayerGeometryKind
@@ -166,8 +168,8 @@ class RenderLayer:
             return (self,)
         return ()
 
-    def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
-        raise NotImplementedError
+    @abstractmethod
+    def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None: ...
 
     def set_visible(self, on: bool) -> None:
         if self.actor is not None:
@@ -177,11 +179,11 @@ class RenderLayer:
         self.selected_index = None if ref is None else self.index_for_ref(ref)
         self.refresh_colors()
 
-    def refresh_colors(self) -> None:
-        raise NotImplementedError
+    @abstractmethod
+    def refresh_colors(self) -> None: ...
 
-    def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
-        raise NotImplementedError
+    @abstractmethod
+    def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None: ...
 
     def try_point_select(
         self, x: int, y: int, renderer: Any, radius_px: float
@@ -207,6 +209,7 @@ class PointRenderLayer(RenderLayer):
         self.selector.SetTolerance(self.selector_tolerance)
         self.selector.PickFromListOn()
 
+    @override
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
         del polygon_selector
         if self.poly.n_points == 0:
@@ -223,6 +226,7 @@ class PointRenderLayer(RenderLayer):
         self.actor.SetVisibility(int(self.config.visible))
         self.selector.AddPickList(self.actor)
 
+    @override
     def refresh_colors(self) -> None:
         if self.poly.n_points == 0:
             return
@@ -233,12 +237,14 @@ class PointRenderLayer(RenderLayer):
         self.poly.point_data["rgb"] = rgb
         self.poly.Modified()
 
+    @override
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         if self.actor is None or not self.selector.Pick(x, y, 0, renderer):
             return None
         index = self.selector.GetPointId()
         return self.feature_ref_at(index) if 0 <= index < self.poly.n_points else None
 
+    @override
     def try_point_select(
         self, x: int, y: int, renderer: Any, radius_px: float
     ) -> tuple[FeatureRef, float] | None:
@@ -282,6 +288,7 @@ class LineRenderLayer(RenderLayer):
         self.selector.SetTolerance(self.selector_tolerance)
         self.selector.PickFromListOn()
 
+    @override
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
         del polygon_selector
         if self.poly.n_cells == 0:
@@ -297,6 +304,7 @@ class LineRenderLayer(RenderLayer):
         self.actor.SetVisibility(int(self.config.visible))
         self.selector.AddPickList(self.actor)
 
+    @override
     def refresh_colors(self) -> None:
         if self.poly.n_cells == 0:
             return
@@ -307,6 +315,7 @@ class LineRenderLayer(RenderLayer):
         self.poly.cell_data["rgb"] = rgb
         self.poly.Modified()
 
+    @override
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         if self.actor is None or not self.selector.Pick(x, y, 0, renderer):
             return None
@@ -344,11 +353,13 @@ class PolygonRenderLayer(RenderLayer):
         self.fallback_selector.PickFromListOn()
 
     @property
+    @override
     def geometry_label(self) -> str:
         if self.fallback_point_poly.n_points > 0:
             return "polygon+point"
         return self.kind
 
+    @override
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
         self.refresh_colors()
         if self.poly.n_cells > 0:
@@ -378,11 +389,13 @@ class PolygonRenderLayer(RenderLayer):
             self.fallback_actor.SetVisibility(int(self.config.visible))
             self.fallback_selector.AddPickList(self.fallback_actor)
 
+    @override
     def set_visible(self, on: bool) -> None:
         RenderLayer.set_visible(self, on)
         if self.fallback_actor is not None:
             self.fallback_actor.SetVisibility(int(on))
 
+    @override
     def refresh_colors(self) -> None:
         face_rgb = self.color_fn()
         if self.poly.n_cells > 0:
@@ -400,10 +413,12 @@ class PolygonRenderLayer(RenderLayer):
             self.fallback_point_poly.point_data["rgb"] = rgb
             self.fallback_point_poly.Modified()
 
+    @override
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         del x, y, renderer
         return None
 
+    @override
     def try_point_select(
         self, x: int, y: int, renderer: Any, radius_px: float
     ) -> tuple[FeatureRef, float] | None:
@@ -424,6 +439,7 @@ class PolygonRenderLayer(RenderLayer):
         feature_idx = self.fallback_feature_indices[index]
         return FeatureRef(self.layer_attr, self.store.features[feature_idx].id), dist2
 
+    @override
     def render_layers(self, kind: GeometryKind | None = None) -> tuple[RenderLayer, ...]:
         if kind == "point" and self.fallback_point_poly.n_points > 0:
             return (self,)
@@ -435,26 +451,32 @@ class CompositeRenderLayer(RenderLayer):
     sublayers: tuple[RenderLayer, ...] = ()
 
     @property
+    @override
     def geometry_label(self) -> str:
         return "+".join(layer.kind for layer in self.sublayers if layer.kind != "mixed")
 
+    @override
     def attach(self, plotter: pv.Plotter, polygon_selector: vtk.vtkCellPicker) -> None:
         for layer in self.sublayers:
             layer.attach(plotter, polygon_selector)
 
+    @override
     def set_visible(self, on: bool) -> None:
         for layer in self.sublayers:
             layer.set_visible(on)
 
+    @override
     def set_selected_ref(self, ref: FeatureRef | None) -> None:
         self.selected_index = None if ref is None else self.index_for_ref(ref)
         for layer in self.sublayers:
             layer.set_selected_ref(ref)
 
+    @override
     def refresh_colors(self) -> None:
         for layer in self.sublayers:
             layer.refresh_colors()
 
+    @override
     def try_select(self, x: int, y: int, renderer: Any) -> FeatureRef | None:
         for layer in self.sublayers:
             ref = layer.try_select(x, y, renderer)
@@ -462,6 +484,7 @@ class CompositeRenderLayer(RenderLayer):
                 return ref
         return None
 
+    @override
     def render_layers(self, kind: GeometryKind | None = None) -> tuple[RenderLayer, ...]:
         layers: list[RenderLayer] = []
         for layer in self.sublayers:
@@ -515,6 +538,7 @@ class HdMapViz:
         self._left_press_tag: int | None = None
         self._vtk_observer_tags: list[tuple[Any, int]] = []
         self._key_events_bound: tuple[str, ...] = ()
+        self._attached = False
 
     def _build_registry(self) -> RenderRegistry:
         layers: dict[str, RenderLayer] = {}
@@ -616,26 +640,48 @@ class HdMapViz:
         return rgb
 
     def attach(self) -> None:
-        self.plotter.background_color = self.viz_cfg.background_color
-        for layer in self.registry.selectable_layers():
-            layer.attach(self.plotter, self.polygon_selector)
-        self.plotter.add_axes()
-        self._add_view_keys()
-        self._left_press_tag = self.plotter.iren.add_observer(
-            "LeftButtonPressEvent", self._on_left_press
-        )
-        self._attach_viewport_profile_observers()
+        if self._attached:
+            return
+        attached = False
+        try:
+            self.plotter.background_color = self.viz_cfg.background_color
+            for layer in self.registry.selectable_layers():
+                layer.attach(self.plotter, self.polygon_selector)
+            self.plotter.add_axes()
+            self._add_view_keys()
+            self._left_press_tag = self.plotter.iren.add_observer(
+                "LeftButtonPressEvent", self._on_left_press
+            )
+            self._attach_viewport_profile_observers()
+            attached = True
+        finally:
+            if attached:
+                self._attached = True
+            else:
+                self.detach()
+
+    @contextmanager
+    def attached(self) -> Iterator[None]:
+        already_attached = self._attached
+        self.attach()
+        try:
+            yield
+        finally:
+            if not already_attached:
+                self.detach()
 
     def show(self) -> None:
-        self.attach()
-        self.plotter.show()
+        with self.attached():
+            self.plotter.show()
 
     def detach(self) -> None:
         for layer in self.registry.render_layers():
             if layer.actor is not None:
                 self.plotter.remove_actor(layer.actor)
+                layer.actor = None
             if isinstance(layer, PolygonRenderLayer) and layer.fallback_actor is not None:
                 self.plotter.remove_actor(layer.fallback_actor)
+                layer.fallback_actor = None
         if self._left_press_tag is not None:
             self.plotter.iren.remove_observer(self._left_press_tag)
             self._left_press_tag = None
@@ -644,6 +690,7 @@ class HdMapViz:
             self.plotter.clear_events_for_key(key)
         self._key_events_bound = ()
         self.plotter.hide_axes()
+        self._attached = False
 
     def _attach_viewport_profile_observers(self) -> None:
         if not self.viz_cfg.profiling.enabled:
@@ -718,23 +765,20 @@ class HdMapViz:
         self.plotter.render()
 
     def select_feature(self, ref: FeatureRef | None, *, emit: bool = True) -> None:
-        started_at = perf_counter()
-        previous_ref = self._selected_ref
-        self._selected_ref = ref
-        touched_attrs = {
-            selected_ref.layer_attr
-            for selected_ref in (previous_ref, ref)
-            if selected_ref is not None
-        }
-        for attr in touched_attrs:
-            layer = self.registry.layers.get(attr)
-            if layer is not None:
-                layer.set_selected_ref(ref)
-        self._log_profile_step(
-            "selection_highlight",
-            started_at,
-            _selection_detail(ref, extra=f"layers={len(touched_attrs)}"),
-        )
+        with self.viewport_profile.timed("selection_highlight") as timer:
+            previous_ref = self._selected_ref
+            self._selected_ref = ref
+            touched_attrs = {
+                selected_ref.layer_attr
+                for selected_ref in (previous_ref, ref)
+                if selected_ref is not None
+            }
+            for attr in touched_attrs:
+                layer = self.registry.layers.get(attr)
+                if layer is not None:
+                    layer.set_selected_ref(ref)
+            timer.detail = _selection_detail(ref, extra=f"layers={len(touched_attrs)}")
+        self._log_profile_step(timer)
         self.plotter.render()
         if emit and ref is not None and self.on_select is not None:
             self.on_select(ref)
@@ -777,25 +821,28 @@ class HdMapViz:
             return
         x, y = iren.GetEventPosition()
         renderer = self.plotter.renderer
-        started_at = perf_counter()
-        point_ref = self._try_point_priority_select(x, y, renderer)
-        self._log_profile_step("selection_pick_points", started_at, f"hit={point_ref is not None}")
+        with self.viewport_profile.timed("selection_pick_points") as timer:
+            point_ref = self._try_point_priority_select(x, y, renderer)
+            timer.detail = f"hit={point_ref is not None}"
+        self._log_profile_step(timer)
         if point_ref is not None:
             self.select_feature(point_ref)
             return
-        started_at = perf_counter()
-        for layer in self.registry.render_layers("line"):
-            ref = layer.try_select(x, y, renderer)
-            if ref is not None:
-                self._log_profile_step("selection_pick_lines", started_at, "hit=True")
-                self.select_feature(ref)
-                return
-        self._log_profile_step("selection_pick_lines", started_at, "hit=False")
-        started_at = perf_counter()
-        polygon_ref = self._try_polygon_select(x, y, renderer)
-        self._log_profile_step(
-            "selection_pick_polygons", started_at, f"hit={polygon_ref is not None}"
-        )
+        line_ref: FeatureRef | None = None
+        with self.viewport_profile.timed("selection_pick_lines") as timer:
+            for layer in self.registry.render_layers("line"):
+                line_ref = layer.try_select(x, y, renderer)
+                if line_ref is not None:
+                    break
+            timer.detail = f"hit={line_ref is not None}"
+        self._log_profile_step(timer)
+        if line_ref is not None:
+            self.select_feature(line_ref)
+            return
+        with self.viewport_profile.timed("selection_pick_polygons") as timer:
+            polygon_ref = self._try_polygon_select(x, y, renderer)
+            timer.detail = f"hit={polygon_ref is not None}"
+        self._log_profile_step(timer)
         if polygon_ref is not None:
             self.select_feature(polygon_ref)
 
@@ -829,11 +876,14 @@ class HdMapViz:
             return FeatureRef(layer.layer_attr, layer.store.features[feature_idx].id)
         return None
 
-    def _log_profile_step(self, name: str, started_at: float, detail: str) -> None:
-        elapsed = perf_counter() - started_at
-        self.viewport_profile.add(name, elapsed, detail)
+    def _log_profile_step(self, timer: ProfileTimer) -> None:
         if self.viz_cfg.profiling.enabled:
-            log.info("viewport %s: %.1fms%s", name, elapsed * 1000.0, _detail_suffix(detail))
+            log.info(
+                "viewport %s: %.1fms%s",
+                timer.name,
+                timer.duration_s * 1000.0,
+                _detail_suffix(timer.detail),
+            )
 
 
 def _dataset_layer_items(dataset: NGIIDataset) -> tuple[tuple[str, LayerStore[Any]], ...]:

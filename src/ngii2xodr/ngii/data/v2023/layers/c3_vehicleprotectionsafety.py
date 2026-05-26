@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    LineFeature,
+    common_kwargs,
+    relation_property,
+)
 
 
 @dataclass(slots=True)
@@ -33,9 +38,7 @@ class C3_VEHICLEPROTECTIONSAFETY(LineFeature):
     low_high: str
     ref_id: str | None
 
-    @property
-    def reference(self) -> object | None:
-        return self.resolve_relation("Ref_ID")
+    reference = relation_property("Ref_ID")
 
 
 def make_feature(record: FeatureRecord) -> C3_VEHICLEPROTECTIONSAFETY:

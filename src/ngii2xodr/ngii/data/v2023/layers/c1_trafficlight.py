@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, PointFeature, common_kwargs
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    PointFeature,
+    common_kwargs,
+    relation_property,
+)
 
 
 @dataclass(slots=True)
@@ -33,13 +38,8 @@ class C1_TRAFFICLIGHT(PointFeature):
     ref_lane: int
     post_id: str | None
 
-    @property
-    def link(self) -> object | None:
-        return self.resolve_relation("LinkID")
-
-    @property
-    def post(self) -> object | None:
-        return self.resolve_relation("PostID")
+    link = relation_property("LinkID")
+    post = relation_property("PostID")
 
 
 def make_feature(record: FeatureRecord) -> C1_TRAFFICLIGHT:

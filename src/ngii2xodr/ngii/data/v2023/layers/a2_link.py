@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, LineFeature, common_kwargs
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    LineFeature,
+    common_kwargs,
+    relation_property,
+)
 
 
 @dataclass(slots=True)
@@ -58,21 +63,10 @@ class A2_LINK(LineFeature):
     length_m: float
     its_link_id: str
 
-    @property
-    def from_node(self) -> object | None:
-        return self.resolve_relation("FromNodeID")
-
-    @property
-    def to_node(self) -> object | None:
-        return self.resolve_relation("ToNodeID")
-
-    @property
-    def right_link(self) -> object | None:
-        return self.resolve_relation("R_LinkID")
-
-    @property
-    def left_link(self) -> object | None:
-        return self.resolve_relation("L_LinkID")
+    from_node = relation_property("FromNodeID")
+    to_node = relation_property("ToNodeID")
+    right_link = relation_property("R_LinkID")
+    left_link = relation_property("L_LinkID")
 
 
 def _optional_id(value: str) -> str | None:

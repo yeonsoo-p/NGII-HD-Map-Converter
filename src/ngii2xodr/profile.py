@@ -17,16 +17,25 @@ class ProfileEvent:
 
 
 @dataclass(slots=True)
+class ProfileTimer:
+    name: str
+    detail: str = ""
+    duration_s: float = 0.0
+
+
+@dataclass(slots=True)
 class PerformanceProfile:
     events: list[ProfileEvent] = field(default_factory=list)
 
     @contextmanager
-    def timed(self, name: str, detail: str = "") -> Iterator[None]:
+    def timed(self, name: str, detail: str = "") -> Iterator[ProfileTimer]:
+        timer = ProfileTimer(name=name, detail=detail)
         started_at = perf_counter()
         try:
-            yield
+            yield timer
         finally:
-            self.events.append(ProfileEvent(name, perf_counter() - started_at, detail))
+            timer.duration_s = perf_counter() - started_at
+            self.events.append(ProfileEvent(name, timer.duration_s, timer.detail))
 
     def add(self, name: str, duration_s: float, detail: str = "") -> None:
         self.events.append(ProfileEvent(name, duration_s, detail))
