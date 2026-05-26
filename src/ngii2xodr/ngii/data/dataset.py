@@ -20,69 +20,16 @@ from ngii2xodr.ngii.data.features import (
 )
 from ngii2xodr.ngii.data.geometry import xy_line
 from ngii2xodr.ngii.data.sanity import SanityReport
-from ngii2xodr.ngii.data.schema import LayerRole, SchemaDefinition
+from ngii2xodr.ngii.data.schema import (
+    FieldRule,
+    LayerRole,
+    LayerSpec,
+    SchemaDefinition,
+    column_to_attr,
+)
 from ngii2xodr.profile import PerformanceProfile
 
-_ARRAY_ATTRS = {
-    "node_types": "node_type",
-    "its_node_ids": "its_node_id",
-    "road_ranks": "road_rank",
-    "road_types": "road_type",
-    "road_nos": "road_no",
-    "road_names": "road_name",
-    "m_road_ranks": "m_road_rank",
-    "m_road_nos": "m_road_no",
-    "m_road_names": "m_road_name",
-    "remarks": "remark",
-    "link_types": "link_type",
-    "lane_nos": "lane_no",
-    "r_link_ids": "r_link_id",
-    "l_link_ids": "l_link_id",
-    "from_node_ids": "from_node_id",
-    "to_node_ids": "to_node_id",
-    "section_ids": "section_id",
-    "lengths_m": "length_m",
-    "its_link_ids": "its_link_id",
-    "kinds": "kind",
-    "subtypes": "subtype",
-    "names": "name",
-    "directions": "direction",
-    "gas_stations": "gas_station",
-    "lpg_stations": "lpg_station",
-    "ev_chargers": "ev_charger",
-    "toilets": "toilet",
-    "types": "type",
-    "is_central": "is_central",
-    "low_high": "low_high",
-    "ref_ids": "ref_id",
-    "node_type1s": "node_type1",
-    "node_type2s": "node_type2",
-    "node_type3s": "node_type3",
-    "start_end1s": "start_end1",
-    "start_end2s": "start_end2",
-    "start_end3s": "start_end3",
-    "pseudos": "pseudo",
-    "group_ids": "group_id",
-    "max_speeds": "max_speed",
-    "turns": "turn",
-    "road_type_ids": "road_type_id",
-    "kerbs": "kerb",
-    "tfc_islands": "tfc_island",
-    "pathway_ids": "pathway_id",
-    "rs_types": "rs_type",
-    "subs_types": "subs_type",
-    "path_types": "path_type",
-    "line_types": "line_type",
-    "line_kinds": "line_kind",
-    "mark_types": "mark_type",
-    "mark_kinds": "mark_kind",
-    "pl_types": "pl_type",
-    "barr_types": "barr_type",
-    "sign_types": "sign_type",
-    "light_types": "light_type",
-    "post_ids": "post_id",
-    "post_types": "post_type",
-}
+_ARRAY_UNIT_SUFFIXES = ("_per_m", "_m", "_mm", "_rad", "_deg")
 
 
 class AmbiguousFeatureIDError(KeyError):
@@ -91,13 +38,17 @@ class AmbiguousFeatureIDError(KeyError):
 
 @dataclass(slots=True)
 class LayerStore[T: NGIIFeature]:
-    layer_name: str
+    spec: LayerSpec
     features: list[T] = field(default_factory=list)
     by_id: dict[str, T] = field(default_factory=dict)
     id_to_index: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.rebuild_index()
+
+    @property
+    def layer_name(self) -> str:
+        return self.spec.layer_name
 
     def __getitem__(self, feature_id: str) -> T:
         return self.by_id[feature_id]
@@ -152,14 +103,15 @@ class LayerStore[T: NGIIFeature]:
         return rings
 
     def __getattr__(self, name: str) -> NDArray[Any]:
-        attr = _ARRAY_ATTRS.get(name)
-        if attr is None:
+        rule = _array_rule_for(self.spec, name)
+        if rule is None:
             msg = f"{type(self).__name__!s} has no attribute {name!r}"
             raise AttributeError(msg)
+        attr = rule.attr
         values = [getattr(feature, attr) for feature in self.features]
-        if attr in {"lane_no"}:
+        if rule.field_type == "integer":
             return np.asarray(values, dtype=np.int32)
-        if attr in {"length_m"}:
+        if rule.field_type == "float":
             return np.asarray(values, dtype=np.float64)
         return np.asarray(["" if value is None else value for value in values], dtype=np.str_)
 
@@ -177,9 +129,7 @@ class NGIIDataset:
     _ambiguous_global_ids: set[str] = field(default_factory=set, init=False)
 
     def __post_init__(self) -> None:
-        self._stores = {
-            spec.python_attr: LayerStore(spec.layer_name) for spec in self.schema.layer_specs
-        }
+        self._stores = {spec.python_attr: LayerStore(spec) for spec in self.schema.layer_specs}
 
     @property
     def layer_stores(self) -> tuple[LayerStore[Any], ...]:
@@ -239,3 +189,29 @@ class NGIIDataset:
             return stores[name]
         msg = f"{type(self).__name__!s} has no attribute {name!r}"
         raise AttributeError(msg)
+
+
+def _array_rule_for(spec: LayerSpec, name: str) -> FieldRule | None:
+    for rule in spec.field_rules:
+        if rule.name == "ID":
+            continue
+        if name in _array_names_for_rule(rule):
+            return rule
+    return None
+
+
+def _array_names_for_rule(rule: FieldRule) -> tuple[str, ...]:
+    names = list(rule.array_aliases or (_array_name(rule.attr),))
+    for column_alias in rule.column_aliases:
+        alias_attr = column_to_attr(column_alias)
+        alias_name = _array_name(alias_attr)
+        if alias_attr != rule.attr and alias_name not in names:
+            names.append(alias_name)
+    return tuple(names)
+
+
+def _array_name(attr: str) -> str:
+    for suffix in _ARRAY_UNIT_SUFFIXES:
+        if attr.endswith(suffix):
+            return f"{attr[: -len(suffix)]}s{suffix}"
+    return f"{attr}s"

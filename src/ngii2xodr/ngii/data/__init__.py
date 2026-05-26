@@ -2,6 +2,8 @@
 
 from ngii2xodr.ngii.data.config import (
     NGIIConfig,
+    NGIIEncodingConfig,
+    NGIIGeometryConfig,
     NGIISanityConfig,
     NGIISanityRepairConfig,
     NGIISanityWarningConfig,
@@ -26,6 +28,8 @@ __all__ = [
     "LayerStore",
     "NGIIConfig",
     "NGIIDataset",
+    "NGIIEncodingConfig",
+    "NGIIGeometryConfig",
     "NGIISanityConfig",
     "NGIISanityRepairConfig",
     "NGIISanityWarningConfig",

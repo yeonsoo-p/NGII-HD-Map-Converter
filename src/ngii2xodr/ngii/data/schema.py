@@ -21,10 +21,16 @@ class FieldRule:
     max_length: int | None = None
     code_list: dict[str, str] | None = None
     attr_name: str = ""
+    column_aliases: tuple[str, ...] = ()
+    array_aliases: tuple[str, ...] = ()
 
     @property
     def attr(self) -> str:
         return self.attr_name or column_to_attr(self.name)
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return (self.name, *self.column_aliases)
 
 
 @dataclass(slots=True, frozen=True)
@@ -68,7 +74,11 @@ class LayerSpec:
 
     @property
     def field_attrs_by_column(self) -> dict[str, str]:
-        return {rule.name: rule.attr for rule in self.field_rules}
+        return {column: rule.attr for rule in self.field_rules for column in rule.columns}
+
+    @property
+    def field_rules_by_column(self) -> dict[str, FieldRule]:
+        return {column: rule for rule in self.field_rules for column in rule.columns}
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,16 +136,55 @@ def text_rule(
     required: bool,
     code_list: dict[str, str] | None = None,
     attr_name: str = "",
+    column_aliases: tuple[str, ...] = (),
+    array_aliases: tuple[str, ...] = (),
 ) -> FieldRule:
-    return FieldRule(name, required, "text", max_length, code_list, attr_name)
+    return FieldRule(
+        name,
+        required,
+        "text",
+        max_length,
+        code_list,
+        attr_name,
+        column_aliases,
+        array_aliases,
+    )
 
 
-def integer_rule(name: str, *, required: bool, attr_name: str = "") -> FieldRule:
-    return FieldRule(name, required, "integer", attr_name=attr_name)
+def integer_rule(
+    name: str,
+    *,
+    required: bool,
+    attr_name: str = "",
+    column_aliases: tuple[str, ...] = (),
+    array_aliases: tuple[str, ...] = (),
+) -> FieldRule:
+    return FieldRule(
+        name,
+        required,
+        "integer",
+        attr_name=attr_name,
+        column_aliases=column_aliases,
+        array_aliases=array_aliases,
+    )
 
 
-def float_rule(name: str, *, required: bool, attr_name: str = "") -> FieldRule:
-    return FieldRule(name, required, "float", attr_name=attr_name)
+def float_rule(
+    name: str,
+    *,
+    required: bool,
+    attr_name: str = "",
+    column_aliases: tuple[str, ...] = (),
+    array_aliases: tuple[str, ...] = (),
+) -> FieldRule:
+    return FieldRule(
+        name,
+        required,
+        "float",
+        attr_name=attr_name,
+        column_aliases=column_aliases,
+        array_aliases=array_aliases,
+    )
 
 
 def column_to_attr(column_name: str) -> str:

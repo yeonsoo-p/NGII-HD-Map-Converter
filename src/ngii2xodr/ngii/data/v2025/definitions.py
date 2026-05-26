@@ -108,7 +108,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("LinkType", 3, required=True, code_list=NT2_LINK.LINK_TYPE_LABEL),
             text_rule("Turn", 1, required=False, code_list=NT2_LINK.TURN_LABEL),
             text_rule("R_LinkID", 13, required=False),
-            text_rule("L_LinkID", 13, required=False),
+            text_rule("L_LinkID", 13, required=False, column_aliases=("L_LinKID",)),
             text_rule("FromNodeID", 13, required=True),
             text_rule("ToNodeID", 13, required=True),
             text_rule("RoadTypeID", 13, required=False),
@@ -139,9 +139,15 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("Kerb", 1, required=True, code_list=BINARY_LABEL),
-            text_rule("TFCIsland", 1, required=True, code_list=BINARY_LABEL),
+            text_rule(
+                "TFCIsland",
+                1,
+                required=True,
+                code_list=BINARY_LABEL,
+                column_aliases=("TFCIsLand",),
+            ),
             text_rule("R_LinkID", 13, required=False),
-            text_rule("L_LinkID", 13, required=False),
+            text_rule("L_LinkID", 13, required=False, column_aliases=("L_LinKID",)),
             text_rule("PathwayID", 13, required=False),
         ),
         relationships=(
@@ -196,7 +202,13 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         field_rules=(
             *COMMON_FIELD_RULES,
             text_rule("PathType", 3, required=True, code_list=PW1_PATHWAY.PATH_TYPE_LABEL),
-            text_rule("TFCIsland", 1, required=True, code_list=BINARY_LABEL),
+            text_rule(
+                "TFCIsland",
+                1,
+                required=True,
+                code_list=BINARY_LABEL,
+                column_aliases=("TFCIsLand",),
+            ),
         ),
     ),
     LayerSpec(
@@ -212,8 +224,8 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             *COMMON_FIELD_RULES,
             text_rule("LineType", 3, required=True, code_list=RM1_LANELINE.LINE_TYPE_LABEL),
             text_rule("LineKind", 4, required=True, code_list=RM1_LANELINE.LINE_KIND_LABEL),
-            text_rule("R_LinkID", 13, required=False),
-            text_rule("L_LinkID", 13, required=False),
+            text_rule("R_LinkID", 13, required=False, column_aliases=("R_linkID",)),
+            text_rule("L_LinkID", 13, required=False, column_aliases=("L_linkID",)),
         ),
         relationships=(
             RelationshipRule("R_LinkID", "r_link_id", ("nt2_link",), False),
@@ -262,7 +274,12 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             *COMMON_FIELD_RULES,
             text_rule("BarrType", 3, required=True, code_list=SF1_BARRIER.BARR_TYPE_LABEL),
             text_rule("R_LinkID", 13, required=False),
-            text_rule("L_LinkID", 13, required=False),
+            text_rule(
+                "L_LinkID",
+                13,
+                required=False,
+                column_aliases=("L_LinKID", "L_linkID"),
+            ),
         ),
         relationships=(
             RelationshipRule("R_LinkID", "r_link_id", ("nt2_link",), False),

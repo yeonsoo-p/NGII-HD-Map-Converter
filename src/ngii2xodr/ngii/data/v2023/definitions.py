@@ -89,11 +89,13 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("LinkType", 2, required=True, code_list=A2_LINK.LINK_TYPE_LABEL),
             integer_rule("LaneNo", required=False),
             text_rule("R_LinkID", 12, required=False),
-            text_rule("L_LinkID", 12, required=False),
+            text_rule("L_LinkID", 12, required=False, column_aliases=("L_LinKID",)),
             text_rule("FromNodeID", 12, required=True),
-            text_rule("ToNodeID", 12, required=True),
+            text_rule("ToNodeID", 12, required=True, column_aliases=("ToNodeId",)),
             text_rule("SectionID", 12, required=False),
-            float_rule("Length", required=False),
+            float_rule(
+                "Length", required=False, attr_name="length_m", array_aliases=("lengths_m",)
+            ),
             text_rule("ITSLinkID", 30, required=False),
         ),
         relationships=(
@@ -135,7 +137,13 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         roles=("subsidiary_section",),
         field_rules=(
             *COMMON_FIELD_RULES,
-            text_rule("SubType", 1, required=True, code_list=A4_SUBSIDIARYSECTION.SUBTYPE_LABEL),
+            text_rule(
+                "SubType",
+                1,
+                required=True,
+                code_list=A4_SUBSIDIARYSECTION.SUBTYPE_LABEL,
+                attr_name="subtype",
+            ),
             text_rule("Name", 30, required=True),
             text_rule(
                 "Direction", 1, required=True, code_list=A4_SUBSIDIARYSECTION.DIRECTION_LABEL
@@ -199,8 +207,8 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             *COMMON_FIELD_RULES,
             text_rule("Type", 3, required=True, code_list=B2_SURFACELINEMARK.TYPE_LABEL),
             text_rule("Kind", 5, required=True, code_list=B2_SURFACELINEMARK.KIND_LABEL),
-            text_rule("R_LinkID", 12, required=False),
-            text_rule("L_LinkID", 12, required=False),
+            text_rule("R_LinkID", 12, required=False, column_aliases=("R_linkID",)),
+            text_rule("L_LinkID", 12, required=False, column_aliases=("L_linkID",)),
         ),
         relationships=(
             RelationshipRule("R_LinkID", "r_link_id", ("a2_link",), False),
@@ -228,6 +236,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
         layer_name="C1_TRAFFICLIGHT",
         python_attr="c1_trafficlight",
         filename="C1_TRAFFICLIGHT.shp",
+        filename_aliases=("C1_TRAFFICLIGH.shp",),
         geometry_kind="point",
         feature_type=C1_TRAFFICLIGHT,
         factory=make_c1,
@@ -238,7 +247,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("Type", 2, required=True, code_list=C1_TRAFFICLIGHT.TYPE_LABEL),
             text_rule("LinkID", 12, required=True),
             integer_rule("Ref_Lane", required=True),
-            text_rule("PostID", 12, required=False),
+            text_rule("PostID", 12, required=False, column_aliases=("postID",)),
         ),
         relationships=(
             RelationshipRule("LinkID", "link_id", ("a2_link",), True),
@@ -280,12 +289,15 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
                 1,
                 required=True,
                 code_list=C3_VEHICLEPROTECTIONSAFETY.IS_CENTRAL_LABEL,
+                column_aliases=("isCentral",),
+                array_aliases=("is_central",),
             ),
             text_rule(
                 "LowHigh",
                 1,
                 required=False,
                 code_list=C3_VEHICLEPROTECTIONSAFETY.LOW_HIGH_LABEL,
+                array_aliases=("low_high",),
             ),
             text_rule("Ref_ID", 12, required=False),
         ),

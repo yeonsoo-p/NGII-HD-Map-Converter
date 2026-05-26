@@ -44,6 +44,20 @@ class NGIISanityConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class NGIIGeometryConfig:
+    """Geometry conversion thresholds."""
+
+    multipart_snap_tolerance_m: float
+
+
+@dataclass(slots=True, frozen=True)
+class NGIIEncodingConfig:
+    """Text decoding heuristics."""
+
+    utf8_dbf_invalid_non_ascii_ratio_max: float
+
+
+@dataclass(slots=True, frozen=True)
 class NGIITextCorrection:
     layer_name: str
     feature_id: str
@@ -66,4 +80,6 @@ class NGIIConfig:
     """Configuration consumed by :func:`ngii2xodr.ngii.data.load_ngii`."""
 
     sanity: NGIISanityConfig
+    geometry: NGIIGeometryConfig
+    encoding: NGIIEncodingConfig
     text_repair: NGIITextCorrectionConfig

@@ -7,6 +7,12 @@ ngii:
   # Required coordinate product. The loader refuses to silently ingest all
   # coordinate variants in a section.
   coordinate: HDMap_UTMK_정표고
+  geometry:
+    # Snap tolerance (m) used only when multipart line geometries need merging.
+    multipart_snap_tolerance_m: 0.1
+  encoding:
+    # Max malformed/non-ASCII text-cell ratio before UTF-8 DBF overlay is skipped.
+    utf8_dbf_invalid_non_ascii_ratio_max: 0.5
   sanity:
     # Max XY distance (m) for node-reference repair actions.
     node_match_tolerance_m: 0.5

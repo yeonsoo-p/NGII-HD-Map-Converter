@@ -38,10 +38,10 @@ log = logging.getLogger(__name__)
 class DiscoveredLayerFile:
     spec: LayerSpec
     path: Path
+    is_filename_alias: bool
 
 
 _REPLACEMENT_CHAR = "\ufffd"
-_UTF8_DBF_INVALID_NON_ASCII_RATIO_MAX = 0.5
 
 
 def load_schema(
@@ -114,8 +114,9 @@ def _warn_missing_required_layers(
 
 def _layer_file_sort_key(
     layer_file: DiscoveredLayerFile, layer_order: dict[str, int]
-) -> tuple[int, str]:
-    return (layer_order[layer_file.spec.layer_name], str(layer_file.path))
+) -> tuple[int, int, str]:
+    alias_order = 1 if layer_file.is_filename_alias else 0
+    return (layer_order[layer_file.spec.layer_name], alias_order, str(layer_file.path))
 
 
 def discover_layer_files(
@@ -139,6 +140,7 @@ def discover_layer_files(
     specs_by_filename = schema.specs_by_filename
     discovered: list[DiscoveredLayerFile] = []
     for coordinate_dir in coordinate_dirs:
+        candidates: dict[str, list[DiscoveredLayerFile]] = defaultdict(list)
         for shp_path in sorted(coordinate_dir.rglob("*.shp")):
             spec = specs_by_filename.get(shp_path.name.upper())
             if spec is None:
@@ -149,7 +151,16 @@ def discover_layer_files(
                         source_path=shp_path,
                     )
                 continue
-            discovered.append(DiscoveredLayerFile(spec=spec, path=shp_path))
+            candidates[spec.layer_name].append(
+                DiscoveredLayerFile(
+                    spec=spec,
+                    path=shp_path,
+                    is_filename_alias=shp_path.name.upper() != spec.filename.upper(),
+                )
+            )
+        for layer_candidates in candidates.values():
+            canonical = [item for item in layer_candidates if not item.is_filename_alias]
+            discovered.extend(canonical or layer_candidates)
     return discovered
 
 
@@ -173,7 +184,7 @@ def _warn_missing_sidecars(shp_path: Path, sanity: SanityReport) -> None:
 def _read_layer_file(
     layer_file: DiscoveredLayerFile, sanity: SanityReport, cfg: NGIIConfig
 ) -> list[NGIIFeature]:
-    gdf = _load_gdf(layer_file.path, layer_file.spec, sanity)
+    gdf = _load_gdf(layer_file.path, layer_file.spec, sanity, cfg)
     gdf = _normalize_columns(
         gdf,
         layer_file.path,
@@ -204,7 +215,9 @@ def _read_layer_file(
         }
         row_id = str(attrs.get("ID", ""))
         try:
-            geometry_kind, converted_geometry = _convert_geometry(layer_file.spec, geometry, row_id)
+            geometry_kind, converted_geometry = _convert_geometry(
+                layer_file.spec, geometry, row_id, cfg
+            )
             feature = layer_file.spec.factory(
                 FeatureRecord(
                     layer_name=layer_file.spec.layer_name,
@@ -229,7 +242,9 @@ def _read_layer_file(
     return features
 
 
-def _load_gdf(shp_path: Path, spec: LayerSpec, sanity: SanityReport) -> gpd.GeoDataFrame:
+def _load_gdf(
+    shp_path: Path, spec: LayerSpec, sanity: SanityReport, cfg: NGIIConfig
+) -> gpd.GeoDataFrame:
     overlay_utf8_dbf_text = False
     try:
         gdf = gpd.read_file(shp_path)
@@ -241,7 +256,13 @@ def _load_gdf(shp_path: Path, spec: LayerSpec, sanity: SanityReport) -> gpd.GeoD
         log.debug("retrying %s with cp949 after %s", shp_path.name, retry_reason)
         gdf = gpd.read_file(shp_path, encoding="cp949")
         if overlay_utf8_dbf_text:
-            _overlay_utf8_dbf_text(gdf, shp_path, spec, sanity)
+            _overlay_utf8_dbf_text(
+                gdf,
+                shp_path,
+                spec,
+                sanity,
+                cfg.encoding.utf8_dbf_invalid_non_ascii_ratio_max,
+            )
     return gdf
 
 
@@ -259,16 +280,14 @@ def _overlay_utf8_dbf_text(
     shp_path: Path,
     spec: LayerSpec,
     sanity: SanityReport,
+    invalid_non_ascii_ratio_max: float,
 ) -> None:
     records, replacements, non_ascii_cells = _read_utf8_dbf_text_records(
         shp_path.with_suffix(".dbf"), spec
     )
     if not records:
         return
-    if (
-        non_ascii_cells > 0
-        and len(replacements) / non_ascii_cells > _UTF8_DBF_INVALID_NON_ASCII_RATIO_MAX
-    ):
+    if non_ascii_cells > 0 and len(replacements) / non_ascii_cells > invalid_non_ascii_ratio_max:
         log.debug(
             "skipping UTF-8 DBF text overlay for %s: %d/%d non-ASCII text cells "
             "decode with replacement characters",
@@ -312,9 +331,7 @@ def _read_utf8_dbf_text_records(
     num_records = struct.unpack_from("<I", data, 4)[0]
     header_len = struct.unpack_from("<H", data, 8)[0]
     record_len = struct.unpack_from("<H", data, 10)[0]
-    text_field_by_lower = {
-        rule.name.lower(): rule.name for rule in spec.field_rules if rule.field_type == "text"
-    }
+    text_field_by_lower = _text_field_by_lower(spec)
     fields: list[tuple[str, str, int, int]] = []
     row_offset = 1
     pos = 32
@@ -356,6 +373,16 @@ def _read_utf8_dbf_text_records(
     return records, replacements, non_ascii_cells
 
 
+def _text_field_by_lower(spec: LayerSpec) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for rule in spec.field_rules:
+        if rule.field_type != "text":
+            continue
+        for column in rule.columns:
+            result[column.lower()] = rule.name
+    return result
+
+
 def _looks_like_cp949_mojibake(gdf: gpd.GeoDataFrame) -> bool:
     obj_cols = gdf.select_dtypes(include=["object", "str"]).columns.drop(
         "geometry", errors="ignore"
@@ -373,13 +400,12 @@ def _normalize_columns(
     *,
     warn_duplicate_columns: bool,
 ) -> gpd.GeoDataFrame:
-    canonical_columns = {
-        column.lower(): column
-        for column in (
-            *(rule.name for rule in spec.field_rules),
-            *(rel.column_name for rel in spec.relationships),
-        )
-    }
+    canonical_columns = {}
+    for rule in spec.field_rules:
+        for column in rule.columns:
+            canonical_columns[column.lower()] = rule.name
+    for rel in spec.relationships:
+        canonical_columns[rel.column_name.lower()] = rel.column_name
     canonical_columns["geometry"] = "geometry"
     by_lower: dict[str, list[str]] = {}
     for col in gdf.columns:
@@ -478,14 +504,21 @@ def _is_valid_hist_type(spec: LayerSpec, value: str) -> bool:
 
 
 def _convert_geometry(
-    spec: LayerSpec, geometry: shapely.geometry.base.BaseGeometry, row_id: str
+    spec: LayerSpec,
+    geometry: shapely.geometry.base.BaseGeometry,
+    row_id: str,
+    cfg: NGIIConfig,
 ) -> tuple[FeatureGeometryKind, np.ndarray]:
     if "point" in spec.geometry_kinds and isinstance(geometry, shapely.Point):
         return "point", point_xyz(geometry, row_id=row_id)
     if spec.geometry_kind == "point":
         return "point", point_xyz(geometry, row_id=row_id)
     if spec.geometry_kind == "line":
-        return "line", polyline_xyz(geometry, row_id=row_id)
+        return "line", polyline_xyz(
+            geometry,
+            row_id=row_id,
+            multipart_snap_tolerance_m=cfg.geometry.multipart_snap_tolerance_m,
+        )
     return "polygon", polygon_outer_ring_xyz(geometry, row_id=row_id)
 
 

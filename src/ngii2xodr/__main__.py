@@ -24,6 +24,8 @@ from PySide6.QtWidgets import QApplication
 from ngii2xodr.gui import HdMapWindow
 from ngii2xodr.ngii.data import (
     NGIIConfig,
+    NGIIEncodingConfig,
+    NGIIGeometryConfig,
     NGIISanityConfig,
     NGIISanityRepairConfig,
     NGIISanityWarningConfig,
@@ -179,6 +181,18 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 ),
             ),
         ),
+        geometry=NGIIGeometryConfig(
+            multipart_snap_tolerance_m=_non_negative_float(
+                cfg.ngii.geometry.multipart_snap_tolerance_m,
+                "ngii.geometry.multipart_snap_tolerance_m",
+            ),
+        ),
+        encoding=NGIIEncodingConfig(
+            utf8_dbf_invalid_non_ascii_ratio_max=_ratio_float(
+                cfg.ngii.encoding.utf8_dbf_invalid_non_ascii_ratio_max,
+                "ngii.encoding.utf8_dbf_invalid_non_ascii_ratio_max",
+            ),
+        ),
         text_repair=_build_text_correction_cfg(cfg),
     )
 
@@ -189,6 +203,22 @@ def _cfg_bool(raw: DictConfig, name: str, *, legacy_name: str | None = None) -> 
     if legacy_name is not None and legacy_name in raw:
         return bool(raw[legacy_name])
     raise KeyError(name)
+
+
+def _non_negative_float(raw: object, name: str) -> float:
+    value = float(cast(Any, raw))
+    if value < 0.0:
+        msg = f"{name} must be >= 0.0, got {value}"
+        raise ValueError(msg)
+    return value
+
+
+def _ratio_float(raw: object, name: str) -> float:
+    value = float(cast(Any, raw))
+    if value < 0.0 or value > 1.0:
+        msg = f"{name} must be between 0.0 and 1.0, got {value}"
+        raise ValueError(msg)
+    return value
 
 
 def _build_text_correction_cfg(cfg: DictConfig) -> NGIITextCorrectionConfig:

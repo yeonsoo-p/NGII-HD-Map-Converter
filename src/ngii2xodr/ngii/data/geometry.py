@@ -8,8 +8,6 @@ import shapely.ops
 from numpy import float64
 from numpy.typing import NDArray
 
-_MULTIPART_SNAP_TOL_M = 0.1
-
 
 def _ensure_xyz(coords: NDArray[np.float64]) -> NDArray[np.float64]:
     if coords.ndim != 2:
@@ -32,8 +30,16 @@ def point_xyz(g: shapely.geometry.base.BaseGeometry, *, row_id: str) -> NDArray[
     return np.asarray(coords[0], dtype=np.float64)
 
 
-def polyline_xyz(g: shapely.geometry.base.BaseGeometry, *, row_id: str) -> NDArray[np.float64]:
-    return _ensure_xyz(np.asarray(_as_single_linestring(g, row_id=row_id).coords, dtype=float64))
+def polyline_xyz(
+    g: shapely.geometry.base.BaseGeometry,
+    *,
+    row_id: str,
+    multipart_snap_tolerance_m: float,
+) -> NDArray[np.float64]:
+    line = _as_single_linestring(
+        g, row_id=row_id, multipart_snap_tolerance_m=multipart_snap_tolerance_m
+    )
+    return _ensure_xyz(np.asarray(line.coords, dtype=float64))
 
 
 def polygon_outer_ring_xyz(
@@ -57,7 +63,10 @@ def xy_distance(a_xyz: NDArray[np.float64], b_xyz: NDArray[np.float64]) -> float
 
 
 def _as_single_linestring(
-    g: shapely.geometry.base.BaseGeometry, *, row_id: str
+    g: shapely.geometry.base.BaseGeometry,
+    *,
+    row_id: str,
+    multipart_snap_tolerance_m: float,
 ) -> shapely.LineString:
     if isinstance(g, shapely.LineString):
         return g
@@ -67,13 +76,13 @@ def _as_single_linestring(
         merged = shapely.ops.linemerge(g)
         if isinstance(merged, shapely.LineString):
             return merged
-        snapped = shapely.snap(g, g, _MULTIPART_SNAP_TOL_M)
+        snapped = shapely.snap(g, g, multipart_snap_tolerance_m)
         merged = shapely.ops.linemerge(shapely.ops.unary_union(snapped))
         if isinstance(merged, shapely.LineString):
             return merged
         msg = (
             f"row ID={row_id!r}: MultiLineString with {len(g.geoms)} parts could not be "
-            f"merged into one polyline at {_MULTIPART_SNAP_TOL_M} m tolerance"
+            f"merged into one polyline at {multipart_snap_tolerance_m} m tolerance"
         )
         raise ValueError(msg)
     msg = f"row ID={row_id!r}: unexpected geometry {type(g).__name__}; expected LineString"
