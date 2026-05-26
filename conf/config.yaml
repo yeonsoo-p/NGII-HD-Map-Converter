@@ -1,3 +1,7 @@
+defaults:
+  - viz_layers
+  - _self_
+
 # NGII root folder to auto-open on startup. null = open empty; the user selects
 # a folder via File > Open NGII folder. Relative paths resolve against the
 # invocation cwd, not Hydra's run directory.
@@ -44,14 +48,7 @@ ngii:
   text_repair:
     enabled: true
     repair_mojibake: true
-    apply_exact_corrections: false
     warn_unrepaired_replacement_chars: true
-    corrections:
-      - layer_name: A1_NODE
-        feature_id: A1199J720003
-        field: Maker
-        old: 올포랜드컨소��
-        new: 올포랜드컨소시엄
 
 segmentation:
   enable_node_link_relations: true
@@ -93,91 +90,6 @@ viz:
     enabled: true
     slow_frame_ms: 33.0
     log_every_n_interactions: 1
-  layers:
-    a1_node:
-      visible: true
-      rgb: [35, 35, 40]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 1.0
-    a2_link:
-      visible: true
-      rgb: [100, 100, 115]
-      point_size: 4.0
-      line_width: 2.5
-      opacity: 1.0
-    a3_drivewaysection:
-      visible: true
-      rgb: [185, 188, 190]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 0.70
-    a4_subsidiarysection:
-      visible: true
-      rgb: [112, 184, 125]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 0.65
-    a5_parkinglot:
-      visible: true
-      rgb: [145, 145, 205]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 0.65
-    b1_safetysign:
-      visible: true
-      rgb: [210, 80, 70]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 0.80
-    b2_surfacelinemark:
-      visible: true
-      rgb: [255, 255, 255]
-      point_size: 4.0
-      line_width: 1.4
-      opacity: 1.0
-    b3_surfacemark:
-      visible: true
-      rgb: [245, 178, 65]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 0.85
-    c1_trafficlight:
-      visible: true
-      rgb: [20, 170, 70]
-      point_size: 6.0
-      line_width: 1.0
-      opacity: 1.0
-    c2_kilopost:
-      visible: true
-      rgb: [70, 115, 220]
-      point_size: 5.0
-      line_width: 1.0
-      opacity: 1.0
-    c3_vehicleprotectionsafety:
-      visible: true
-      rgb: [135, 135, 145]
-      point_size: 4.0
-      line_width: 1.8
-      opacity: 1.0
-    c4_speedbump:
-      visible: true
-      rgb: [210, 125, 35]
-      point_size: 4.0
-      line_width: 1.0
-      opacity: 0.80
-    c5_heightbarrier:
-      visible: true
-      rgb: [155, 85, 195]
-      point_size: 4.0
-      line_width: 1.8
-      opacity: 1.0
-    c6_postpoint:
-      visible: true
-      rgb: [75, 75, 80]
-      point_size: 5.0
-      line_width: 1.0
-      opacity: 1.0
 
 hydra:
   job_logging:

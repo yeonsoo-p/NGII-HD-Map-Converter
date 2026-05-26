@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import shapely
@@ -184,16 +184,6 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
 
     def feature_ref_attr(self, feature: NGIIFeature) -> str | None:
         return self.schema.attr_for_layer_name(feature.layer_name)
-
-    def __getattr__(self, name: str) -> LayerStore[Any]:
-        try:
-            stores = cast(dict[str, LayerStore[Any]], object.__getattribute__(self, "_stores"))
-        except AttributeError:
-            stores = {}
-        if name in stores:
-            return stores[name]
-        msg = f"{type(self).__name__!s} has no attribute {name!r}"
-        raise AttributeError(msg)
 
 
 def _array_rule_for(spec: LayerSpec, name: str) -> FieldRule | None:

@@ -54,7 +54,7 @@ class LayerSpec:
     layer_name: str
     python_attr: str
     filename: str
-    geometry_kind: FeatureGeometryKind
+    geometry_kinds: tuple[FeatureGeometryKind, ...]
     feature_type: type[NGIIFeature]
     factory: Callable[[FeatureRecord], NGIIFeature]
     required_layer: bool
@@ -62,15 +62,10 @@ class LayerSpec:
     relationships: tuple[RelationshipRule, ...] = ()
     roles: tuple[LayerRole, ...] = ()
     filename_aliases: tuple[str, ...] = ()
-    accepted_geometry_kinds: tuple[FeatureGeometryKind, ...] = ()
 
     @property
     def filenames(self) -> tuple[str, ...]:
         return (self.filename, *self.filename_aliases)
-
-    @property
-    def geometry_kinds(self) -> tuple[FeatureGeometryKind, ...]:
-        return self.accepted_geometry_kinds or (self.geometry_kind,)
 
     @property
     def field_attrs_by_column(self) -> dict[str, str]:
@@ -121,12 +116,6 @@ class SchemaDefinition:
             msg = f"schema {self.version} has multiple layers for role {role!r}: {attrs}"
             raise KeyError(msg)
         return attrs[0]
-
-    def role_filter(self, name: str) -> RoleFilter | None:
-        for role_filter in self.role_filters:
-            if role_filter.name == name:
-                return role_filter
-        return None
 
 
 def text_rule(

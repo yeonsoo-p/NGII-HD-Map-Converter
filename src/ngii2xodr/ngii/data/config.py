@@ -58,21 +58,10 @@ class NGIIEncodingConfig:
 
 
 @dataclass(slots=True, frozen=True)
-class NGIITextCorrection:
-    layer_name: str
-    feature_id: str
-    field: str
-    old: str
-    new: str
-
-
-@dataclass(slots=True, frozen=True)
 class NGIITextCorrectionConfig:
     enabled: bool
     repair_mojibake: bool
-    apply_exact_corrections: bool
     warn_unrepaired_replacement_chars: bool
-    corrections: tuple[NGIITextCorrection, ...]
 
 
 @dataclass(slots=True, frozen=True)

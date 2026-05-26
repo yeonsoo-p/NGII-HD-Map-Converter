@@ -7,7 +7,6 @@ from ngii2xodr.ngii.data.config import (
     NGIISanityConfig,
     NGIISanityRepairConfig,
     NGIISanityWarningConfig,
-    NGIITextCorrection,
     NGIITextCorrectionConfig,
 )
 from ngii2xodr.ngii.data.dataset import AmbiguousFeatureIDError, LayerStore, NGIIDataset
@@ -33,7 +32,6 @@ __all__ = [
     "NGIISanityConfig",
     "NGIISanityRepairConfig",
     "NGIISanityWarningConfig",
-    "NGIITextCorrection",
     "NGIITextCorrectionConfig",
     "NGIIVersion",
     "RelationshipRule",

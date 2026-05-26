@@ -29,7 +29,6 @@ from ngii2xodr.ngii.data import (
     NGIISanityConfig,
     NGIISanityRepairConfig,
     NGIISanityWarningConfig,
-    NGIITextCorrection,
     NGIITextCorrectionConfig,
 )
 from ngii2xodr.ngii.segmentation import SegmentationConfig
@@ -226,29 +225,10 @@ def _build_text_correction_cfg(cfg: DictConfig) -> NGIITextCorrectionConfig:
     if not isinstance(raw, dict):
         msg = f"ngii.text_repair config: expected dict, got {type(raw).__name__}"
         raise TypeError(msg)
-    corrections_raw = raw.get("corrections", ())
-    if not isinstance(corrections_raw, list):
-        msg = (
-            "ngii.text_repair.corrections config: expected list, "
-            f"got {type(corrections_raw).__name__}"
-        )
-        raise TypeError(msg)
     return NGIITextCorrectionConfig(
         enabled=bool(raw["enabled"]),
         repair_mojibake=bool(raw["repair_mojibake"]),
-        apply_exact_corrections=bool(raw["apply_exact_corrections"]),
         warn_unrepaired_replacement_chars=bool(raw["warn_unrepaired_replacement_chars"]),
-        corrections=tuple(
-            NGIITextCorrection(
-                layer_name=str(correction["layer_name"]),
-                feature_id=str(correction["feature_id"]),
-                field=str(correction["field"]),
-                old=str(correction["old"]),
-                new=str(correction["new"]),
-            )
-            for correction in corrections_raw
-            if isinstance(correction, dict)
-        ),
     )
 
 

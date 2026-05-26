@@ -546,7 +546,7 @@ class HdMapViz:
             kinds = _geometry_kinds(self.dataset, store)
             if not kinds:
                 continue
-            config = self.viz_cfg.layers.get(attr, _default_layer_config(attr))
+            config = _required_layer_config(self.viz_cfg.layers, attr, store)
             color_fn = self._color_fn(attr, store, config)
             if len(kinds) == 1:
                 layers[attr] = self._make_render_layer(
@@ -893,10 +893,22 @@ def _dataset_layer_items(dataset: NGIIDataset) -> tuple[tuple[str, LayerStore[An
     )
 
 
+def _required_layer_config(
+    configs: dict[str, VizLayerConfig], attr: str, store: LayerStore[Any]
+) -> VizLayerConfig:
+    try:
+        return configs[attr]
+    except KeyError:
+        msg = f"viz.layers is missing config for {attr!r} ({store.layer_name})"
+        raise KeyError(msg) from None
+
+
 def _geometry_kinds(dataset: NGIIDataset, store: LayerStore[Any]) -> tuple[GeometryKind, ...]:
     if not store.features:
         spec = dataset.schema.spec_for_layer_name(store.layer_name)
-        return () if spec is None else (spec.geometry_kind,)
+        if spec is None:
+            return ()
+        return tuple(kind for kind in ("point", "line", "polygon") if kind in spec.geometry_kinds)
     kinds = {_feature_geometry_kind(feature) for feature in store.features}
     return tuple(kind for kind in ("point", "line", "polygon") if kind in kinds)
 
@@ -920,46 +932,6 @@ def _feature_geometry_kind(feature: NGIIFeature) -> GeometryKind:
         return feature.geometry_kind
     msg = f"{feature.layer_name} {feature.id!r} has no renderable geometry"
     raise TypeError(msg)
-
-
-def _default_layer_config(attr: str) -> VizLayerConfig:
-    rgb_by_attr = {
-        "a1_node": (40, 40, 40),
-        "a2_link": (110, 110, 120),
-        "a3_drivewaysection": (180, 180, 180),
-        "a4_subsidiarysection": (120, 200, 120),
-        "a5_parkinglot": (160, 160, 220),
-        "b1_safetysign": (200, 80, 80),
-        "b2_surfacelinemark": (255, 255, 255),
-        "b3_surfacemark": (255, 180, 60),
-        "c1_trafficlight": (30, 180, 60),
-        "c2_kilopost": (80, 120, 220),
-        "c3_vehicleprotectionsafety": (140, 140, 140),
-        "c4_speedbump": (200, 120, 40),
-        "c5_heightbarrier": (160, 80, 200),
-        "c6_postpoint": (80, 80, 80),
-        "nt1_node": (40, 40, 40),
-        "nt2_link": (110, 110, 120),
-        "rs1_roadborder": (120, 120, 120),
-        "rs2_roadstructure": (180, 180, 180),
-        "rs3_subsidiarysection": (120, 200, 120),
-        "pw1_pathway": (95, 165, 120),
-        "rm1_laneline": (255, 255, 255),
-        "rm2_roadmarking": (255, 180, 60),
-        "rm3_parkinglot": (160, 160, 220),
-        "sf1_barrier": (140, 140, 140),
-        "sf2_trafficsign": (200, 80, 80),
-        "sf3_trafficlight": (30, 180, 60),
-        "sf4_supportpost": (80, 80, 80),
-        "sf5_speedbump": (200, 120, 40),
-    }
-    return VizLayerConfig(
-        visible=True,
-        rgb=rgb_by_attr.get(attr, (160, 160, 160)),
-        point_size=4.0,
-        line_width=1.8,
-        opacity=0.85,
-    )
 
 
 def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:

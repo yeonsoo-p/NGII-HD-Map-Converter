@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import shapely
 
-from ngii2xodr.ngii.data.config import NGIIConfig, NGIITextCorrection
+from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 from ngii2xodr.ngii.data.features import (
     FeatureGeometryKind,
@@ -509,17 +509,36 @@ def _convert_geometry(
     row_id: str,
     cfg: NGIIConfig,
 ) -> tuple[FeatureGeometryKind, np.ndarray]:
-    if "point" in spec.geometry_kinds and isinstance(geometry, shapely.Point):
-        return "point", point_xyz(geometry, row_id=row_id)
-    if spec.geometry_kind == "point":
-        return "point", point_xyz(geometry, row_id=row_id)
-    if spec.geometry_kind == "line":
-        return "line", polyline_xyz(
+    geometry_kind = _geometry_kind_for(geometry, row_id)
+    if geometry_kind not in spec.geometry_kinds:
+        expected = ", ".join(spec.geometry_kinds)
+        msg = (
+            f"row ID={row_id!r}: {spec.layer_name} does not accept "
+            f"{type(geometry).__name__}; expected {expected}"
+        )
+        raise TypeError(msg)
+    if geometry_kind == "point":
+        return geometry_kind, point_xyz(geometry, row_id=row_id)
+    if geometry_kind == "line":
+        return geometry_kind, polyline_xyz(
             geometry,
             row_id=row_id,
             multipart_snap_tolerance_m=cfg.geometry.multipart_snap_tolerance_m,
         )
-    return "polygon", polygon_outer_ring_xyz(geometry, row_id=row_id)
+    return geometry_kind, polygon_outer_ring_xyz(geometry, row_id=row_id)
+
+
+def _geometry_kind_for(
+    geometry: shapely.geometry.base.BaseGeometry, row_id: str
+) -> FeatureGeometryKind:
+    if isinstance(geometry, shapely.Point):
+        return "point"
+    if isinstance(geometry, (shapely.LineString, shapely.MultiLineString)):
+        return "line"
+    if isinstance(geometry, (shapely.Polygon, shapely.MultiPolygon)):
+        return "polygon"
+    msg = f"row ID={row_id!r}: unsupported geometry {type(geometry).__name__}"
+    raise TypeError(msg)
 
 
 def _manual_columns(spec: LayerSpec) -> set[str]:
@@ -593,9 +612,6 @@ def _apply_text_corrections(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
         return
     if cfg.text_repair.repair_mojibake:
         _repair_mojibake_text(dataset)
-    if cfg.text_repair.apply_exact_corrections:
-        for correction in cfg.text_repair.corrections:
-            _apply_text_correction(dataset, correction)
     if cfg.text_repair.warn_unrepaired_replacement_chars:
         _warn_unrepaired_replacement_chars(dataset)
 
@@ -644,32 +660,6 @@ def _hangul_count(value: str) -> int:
 
 def _mojibake_marker_count(value: str) -> int:
     return sum(1 for char in value if "\u00a1" <= char <= "\u00ff" or "\uff61" <= char <= "\uff9f")
-
-
-def _apply_text_correction(dataset: NGIIDataset, correction: NGIITextCorrection) -> None:
-    feature = _feature_for_layer_name(dataset, correction.layer_name, correction.feature_id)
-    if feature is None:
-        return
-    current = _value_text(_feature_value_for_column(feature, correction.field))
-    if current != correction.old:
-        return
-    _set_feature_column(feature, correction.field, correction.new)
-    dataset.sanity.action(
-        "known-text-correction",
-        f"{feature.layer_name} {feature.id} {correction.field} repaired from exact text map",
-        before={correction.field: correction.old},
-        after={correction.field: correction.new},
-        layer_name=feature.layer_name,
-        feature_id=feature.id,
-        source_path=feature.source_path,
-    )
-
-
-def _feature_for_layer_name(
-    dataset: NGIIDataset, layer_name: str, feature_id: str
-) -> NGIIFeature | None:
-    store = dataset.store_for_layer_name(layer_name)
-    return None if store is None else store.get(feature_id)
 
 
 def _warn_unrepaired_replacement_chars(dataset: NGIIDataset) -> None:

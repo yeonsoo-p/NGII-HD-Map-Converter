@@ -1,0 +1,170 @@
+viz:
+  layers:
+    a1_node:
+      visible: true
+      rgb: [35, 35, 40]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 1.0
+    a2_link:
+      visible: true
+      rgb: [100, 100, 115]
+      point_size: 4.0
+      line_width: 2.5
+      opacity: 1.0
+    a3_drivewaysection:
+      visible: true
+      rgb: [185, 188, 190]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.70
+    a4_subsidiarysection:
+      visible: true
+      rgb: [112, 184, 125]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.65
+    a5_parkinglot:
+      visible: true
+      rgb: [145, 145, 205]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.65
+    b1_safetysign:
+      visible: true
+      rgb: [210, 80, 70]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.80
+    b2_surfacelinemark:
+      visible: true
+      rgb: [255, 255, 255]
+      point_size: 4.0
+      line_width: 1.4
+      opacity: 1.0
+    b3_surfacemark:
+      visible: true
+      rgb: [245, 178, 65]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.85
+    c1_trafficlight:
+      visible: true
+      rgb: [20, 170, 70]
+      point_size: 6.0
+      line_width: 1.0
+      opacity: 1.0
+    c2_kilopost:
+      visible: true
+      rgb: [70, 115, 220]
+      point_size: 5.0
+      line_width: 1.0
+      opacity: 1.0
+    c3_vehicleprotectionsafety:
+      visible: true
+      rgb: [135, 135, 145]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 1.0
+    c4_speedbump:
+      visible: true
+      rgb: [210, 125, 35]
+      point_size: 4.0
+      line_width: 1.0
+      opacity: 0.80
+    c5_heightbarrier:
+      visible: true
+      rgb: [155, 85, 195]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 1.0
+    c6_postpoint:
+      visible: true
+      rgb: [75, 75, 80]
+      point_size: 5.0
+      line_width: 1.0
+      opacity: 1.0
+    nt1_node:
+      visible: true
+      rgb: [40, 40, 40]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    nt2_link:
+      visible: true
+      rgb: [110, 110, 120]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    rs1_roadborder:
+      visible: true
+      rgb: [120, 120, 120]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    rs2_roadstructure:
+      visible: true
+      rgb: [180, 180, 180]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    rs3_subsidiarysection:
+      visible: true
+      rgb: [120, 200, 120]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    pw1_pathway:
+      visible: true
+      rgb: [95, 165, 120]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    rm1_laneline:
+      visible: true
+      rgb: [255, 255, 255]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    rm2_roadmarking:
+      visible: true
+      rgb: [255, 180, 60]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    rm3_parkinglot:
+      visible: true
+      rgb: [160, 160, 220]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    sf1_barrier:
+      visible: true
+      rgb: [140, 140, 140]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    sf2_trafficsign:
+      visible: true
+      rgb: [200, 80, 80]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    sf3_trafficlight:
+      visible: true
+      rgb: [30, 180, 60]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    sf4_supportpost:
+      visible: true
+      rgb: [80, 80, 80]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
+    sf5_speedbump:
+      visible: true
+      rgb: [200, 120, 40]
+      point_size: 4.0
+      line_width: 1.8
+      opacity: 0.85
