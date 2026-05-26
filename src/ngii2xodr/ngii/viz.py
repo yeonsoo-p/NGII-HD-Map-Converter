@@ -509,7 +509,9 @@ class HdMapViz:
         self.viz_cfg = viz_cfg
         self.plotter = plotter if plotter is not None else pv.Plotter()
         self.on_select = on_select
-        self.dataset: NGIIDataset = load_ngii(ngii_dir, coordinate, ngii_cfg)
+        load_result = load_ngii(ngii_dir, coordinate, ngii_cfg)
+        self.dataset = load_result.dataset
+        self.sanity = load_result.sanity
         self.segmentation = Segmentation.from_dataset(self.dataset, seg_cfg)
         self.viewport_profile = PerformanceProfile()
         self._viewport_profiler = ViewportInteractionProfiler(
@@ -529,6 +531,7 @@ class HdMapViz:
         self.registry = self._build_registry()
         self.loaded_map = LoadedMap(
             dataset=self.dataset,
+            sanity=self.sanity,
             segmentation=self.segmentation,
             render_registry=self.registry,
             load_profile=self.dataset.load_profile,

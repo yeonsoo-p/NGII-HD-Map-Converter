@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.features import FeatureRecord
 from ngii2xodr.ngii.data.v2023.features import V2023PointOrPolygonFeature, common_kwargs
 
 
@@ -28,9 +28,6 @@ class B1_SAFETYSIGN(V2023PointOrPolygonFeature):
     link_id: str | None
     ref_lane: int
     post_id: str | None
-
-    link = relation_property("LinkID")
-    post = relation_property("PostID")
 
 
 def make_feature(record: FeatureRecord) -> B1_SAFETYSIGN:

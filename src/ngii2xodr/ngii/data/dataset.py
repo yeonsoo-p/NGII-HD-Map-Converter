@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import shapely
@@ -19,17 +19,15 @@ from ngii2xodr.ngii.data.features import (
     PolygonFeature,
 )
 from ngii2xodr.ngii.data.geometry import xy_line
-from ngii2xodr.ngii.data.sanity import SanityReport
 from ngii2xodr.ngii.data.schema import (
-    FieldRule,
     LayerRole,
     LayerSpec,
     SchemaDefinition,
-    column_to_attr,
 )
 from ngii2xodr.profile import PerformanceProfile
 
-_ARRAY_UNIT_SUFFIXES = ("_per_m", "_m", "_mm", "_rad", "_deg")
+if TYPE_CHECKING:
+    from ngii2xodr.ngii.data.sanity import SanityReport
 
 
 class AmbiguousFeatureIDError(KeyError):
@@ -97,18 +95,61 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
                 rings.append(ring)
         return rings
 
-    def __getattr__(self, name: str) -> NDArray[Any]:
-        rule = _array_rule_for(self.spec, name)
-        if rule is None:
-            msg = f"{type(self).__name__!s} has no attribute {name!r}"
-            raise AttributeError(msg)
-        attr = rule.attr
-        values = [getattr(feature, attr) for feature in self.features]
-        if rule.field_type == "integer":
-            return np.asarray(values, dtype=np.int32)
-        if rule.field_type == "float":
-            return np.asarray(values, dtype=np.float64)
-        return np.asarray(["" if value is None else value for value in values], dtype=np.str_)
+    def related_feature(
+        self, feature: T, column_or_attr: str, dataset: NGIIDataset
+    ) -> NGIIFeature | None:
+        relationship = next(
+            (
+                item
+                for item in self.spec.relationships
+                if column_or_attr in {item.column_name, item.source_attr}
+            ),
+            None,
+        )
+        if relationship is None:
+            return None
+        value = getattr(feature, relationship.source_attr, "")
+        if value is None:
+            return None
+        feature_id = str(value)
+        if not feature_id:
+            return None
+        for target_attr in relationship.target_attrs:
+            related = dataset.store_for_attr(target_attr).get(feature_id)
+            if isinstance(related, NGIIFeature):
+                return related
+        return None
+
+    def iter_text_fields(self, feature: T) -> Iterator[tuple[str, str]]:
+        for rule in self.spec.field_rules:
+            if rule.name == "ID" or rule.field_type != "text":
+                continue
+            attr_name = rule.attr
+            if not hasattr(feature, attr_name):
+                continue
+            value = getattr(feature, attr_name)
+            if isinstance(value, str):
+                yield rule.name, value
+
+    def value_for_column(self, feature: T, column_name: str) -> Any:
+        attr_name = self._attr_for_column(column_name)
+        if attr_name and hasattr(feature, attr_name):
+            return getattr(feature, attr_name)
+        return ""
+
+    def set_column(self, feature: T, column_name: str, value: Any) -> None:
+        attr_name = self._attr_for_column(column_name)
+        if attr_name and hasattr(feature, attr_name):
+            setattr(feature, attr_name, value)
+
+    def _attr_for_column(self, column_name: str) -> str:
+        for rule in self.spec.field_rules:
+            if rule.name == column_name:
+                return rule.attr
+        for relationship in self.spec.relationships:
+            if relationship.column_name == column_name:
+                return relationship.source_attr
+        return ""
 
 
 @dataclass(slots=True)
@@ -116,8 +157,6 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
     root: Path
     coordinate: str
     schema: SchemaDefinition
-    sanity: SanityReport
-    warn_global_id_collision: bool = True
     load_profile: PerformanceProfile = field(default_factory=PerformanceProfile)
     _stores: dict[str, LayerStore[Any]] = field(default_factory=dict, init=False)
     _global_index: dict[str, NGIIFeature] = field(default_factory=dict, init=False)
@@ -142,14 +181,13 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
     def __len__(self) -> int:
         return len(self._global_index)
 
-    def bind(self) -> None:
+    def bind(self, sanity: SanityReport, *, warn_global_id_collision: bool = True) -> None:
         self._global_index.clear()
         self._ambiguous_global_ids.clear()
         first_by_id: dict[str, NGIIFeature] = {}
         for store in self.layer_stores:
             store.rebuild_index()
             for feature in store.features:
-                feature.bind_dataset(self)
                 existing = first_by_id.get(feature.id)
                 if existing is None:
                     first_by_id[feature.id] = feature
@@ -158,8 +196,8 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
                     self._global_index.pop(feature.id, None)
                     already_ambiguous = feature.id in self._ambiguous_global_ids
                     self._ambiguous_global_ids.add(feature.id)
-                    if self.warn_global_id_collision and not already_ambiguous:
-                        self.sanity.warn(
+                    if warn_global_id_collision and not already_ambiguous:
+                        sanity.warn(
                             "global-id-collision",
                             f"ID {feature.id!r} exists in both {existing.layer_name} and "
                             f"{feature.layer_name}; dataset[id] is ambiguous",
@@ -184,29 +222,3 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
 
     def feature_ref_attr(self, feature: NGIIFeature) -> str | None:
         return self.schema.attr_for_layer_name(feature.layer_name)
-
-
-def _array_rule_for(spec: LayerSpec, name: str) -> FieldRule | None:
-    for rule in spec.field_rules:
-        if rule.name == "ID":
-            continue
-        if name in _array_names_for_rule(rule):
-            return rule
-    return None
-
-
-def _array_names_for_rule(rule: FieldRule) -> tuple[str, ...]:
-    names = list(rule.array_aliases or (_array_name(rule.attr),))
-    for column_alias in rule.column_aliases:
-        alias_attr = column_to_attr(column_alias)
-        alias_name = _array_name(alias_attr)
-        if alias_attr != rule.attr and alias_name not in names:
-            names.append(alias_name)
-    return tuple(names)
-
-
-def _array_name(attr: str) -> str:
-    for suffix in _ARRAY_UNIT_SUFFIXES:
-        if attr.endswith(suffix):
-            return f"{attr[: -len(suffix)]}s{suffix}"
-    return f"{attr}s"

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.features import FeatureRecord
 from ngii2xodr.ngii.data.v2023.features import V2023LineFeature, common_kwargs
 
 
@@ -19,8 +19,6 @@ class C5_HEIGHTBARRIER(V2023LineFeature):
     type: str
     link_id: str | None
     ref_lane: int
-
-    link = relation_property("LinkID")
 
 
 def make_feature(record: FeatureRecord) -> C5_HEIGHTBARRIER:

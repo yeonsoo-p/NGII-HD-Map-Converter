@@ -1,13 +1,14 @@
-"""Version-dispatching public NGII loader facade and SHP row IO helpers."""
+"""Schema-dispatching public NGII loader facade and SHP row IO helpers."""
 
 from __future__ import annotations
 
 import logging
 import struct
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import geopandas as gpd
 import numpy as np
@@ -39,7 +40,6 @@ from ngii2xodr.profile import log_profile_events
 
 log = logging.getLogger(__name__)
 
-NGIIVersion = Literal["v2023", "v2025"]
 _REPLACEMENT_CHAR = "\ufffd"
 
 
@@ -50,6 +50,12 @@ class DiscoveredLayerFile:
     is_filename_alias: bool
 
 
+@dataclass(slots=True, frozen=True)
+class NGIILoadResult:
+    dataset: NGIIDataset
+    sanity: SanityReport
+
+
 def load_schema(
     root: Path,
     coordinate: str,
@@ -57,11 +63,10 @@ def load_schema(
     schema: SchemaDefinition,
     *,
     repair_hooks: tuple[tuple[str, RepairHook], ...] = DEFAULT_REPAIR_HOOKS,
-) -> NGIIDataset:
+) -> NGIILoadResult:
     """Load one NGII coordinate product into a canonical object dataset."""
     sanity = SanityReport()
-    dataset = NGIIDataset(root=root, coordinate=coordinate, schema=schema, sanity=sanity)
-    dataset.warn_global_id_collision = cfg.sanity.warnings.global_id_collision
+    dataset = NGIIDataset(root=root, coordinate=coordinate, schema=schema)
 
     with dataset.load_profile.timed("discover", coordinate):
         discovered = discover_layer_files(
@@ -87,52 +92,47 @@ def load_schema(
             )
 
     with dataset.load_profile.timed("bind_initial"):
-        dataset.bind()
+        dataset.bind(sanity, warn_global_id_collision=cfg.sanity.warnings.global_id_collision)
     with dataset.load_profile.timed("text_repair"):
-        apply_text_repairs(dataset, cfg)
+        apply_text_repairs(dataset, sanity, cfg)
     if cfg.sanity.warnings.manual_field_rules or cfg.sanity.warnings.invalid_code_values:
         with dataset.load_profile.timed("manual_validation"):
-            warn_manual_field_values(dataset, cfg)
+            warn_manual_field_values(dataset, sanity, cfg)
     for hook_name, hook in repair_hooks:
         with dataset.load_profile.timed(hook_name):
-            hook(dataset, cfg)
+            hook(dataset, sanity, cfg)
     with dataset.load_profile.timed("bind_final"):
-        dataset.bind()
+        dataset.bind(sanity, warn_global_id_collision=cfg.sanity.warnings.global_id_collision)
     if cfg.sanity.warnings.unresolved_relationships:
         with dataset.load_profile.timed("relationship_validation"):
-            warn_unresolved_relationships(dataset)
-    log_sanity_report(dataset, log)
+            warn_unresolved_relationships(dataset, sanity)
+    log_sanity_report(dataset, sanity, log)
     log_profile_events(
         dataset.load_profile,
         log,
         title="NGII load profile",
         context=f"{dataset.root} [{dataset.coordinate}]",
     )
-    return dataset
+    return NGIILoadResult(dataset=dataset, sanity=sanity)
 
 
-def load_ngii(root: Path, coordinate: str, cfg: NGIIConfig) -> NGIIDataset:
-    """Load one NGII coordinate product using the detected manual version."""
-    version = detect_ngii_version(root, coordinate)
-    if version == "v2023":
-        from ngii2xodr.ngii.data.v2023.loader import load_ngii as load_ngii_v2023  # noqa: PLC0415
+def load_ngii(
+    root: Path,
+    coordinate: str,
+    cfg: NGIIConfig,
+    schemas: Sequence[SchemaDefinition],
+    *,
+    repair_hooks: tuple[tuple[str, RepairHook], ...] = DEFAULT_REPAIR_HOOKS,
+) -> NGIILoadResult:
+    """Load one NGII coordinate product using a schema selected from ``schemas``."""
+    schema = detect_schema(root, coordinate, schemas)
+    return load_schema(root, coordinate, cfg, schema, repair_hooks=repair_hooks)
 
-        return load_ngii_v2023(root, coordinate, cfg)
 
-    from ngii2xodr.ngii.data.v2025.loader import load_ngii as load_ngii_v2025  # noqa: PLC0415
-
-    return load_ngii_v2025(root, coordinate, cfg)
-
-
-def detect_ngii_version(root: Path, coordinate: str) -> NGIIVersion:
-    """Infer the NGII manual version for the requested coordinate product."""
-    from ngii2xodr.ngii.data.v2023.definitions import (  # noqa: PLC0415
-        SPECS_BY_FILENAME as V2023_FILENAMES,
-    )
-    from ngii2xodr.ngii.data.v2025.definitions import (  # noqa: PLC0415
-        SPECS_BY_FILENAME as V2025_FILENAMES,
-    )
-
+def detect_schema(
+    root: Path, coordinate: str, schemas: Sequence[SchemaDefinition]
+) -> SchemaDefinition:
+    """Infer the matching NGII manual schema for the requested coordinate product."""
     if not root.exists():
         raise FileNotFoundError(root)
     if not root.is_dir():
@@ -148,20 +148,17 @@ def detect_ngii_version(root: Path, coordinate: str) -> NGIIVersion:
         for coordinate_dir in coordinate_dirs
         for shp_path in coordinate_dir.rglob("*.shp")
     }
-    has_v2023 = bool(found_names & set(V2023_FILENAMES))
-    has_v2025 = bool(found_names & set(V2025_FILENAMES))
-    if has_v2023 and has_v2025:
+    matches = [schema for schema in schemas if found_names & set(schema.specs_by_filename)]
+    if len(matches) > 1:
         msg = (
-            f"ambiguous NGII manual version for {root} [{coordinate}]: "
-            "both 2023 and 2025 layer signatures were found"
+            f"ambiguous NGII schema for {root} [{coordinate}]: "
+            f"{tuple(schema.version for schema in matches)!r}"
         )
         raise ValueError(msg)
-    if has_v2023:
-        return "v2023"
-    if has_v2025:
-        return "v2025"
+    if matches:
+        return matches[0]
 
-    msg = f"could not detect an implemented NGII manual version for {root} [{coordinate}]"
+    msg = f"could not detect an implemented NGII schema for {root} [{coordinate}]"
     raise ValueError(msg)
 
 

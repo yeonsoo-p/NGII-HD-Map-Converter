@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.features import FeatureRecord
 from ngii2xodr.ngii.data.v2023.features import V2023PolygonFeature, common_kwargs
 
 
@@ -37,8 +37,6 @@ class B3_SURFACEMARK(V2023PolygonFeature):
     type: str
     kind: str
     link_id: str | None
-
-    link = relation_property("LinkID")
 
 
 def make_feature(record: FeatureRecord) -> B3_SURFACEMARK:

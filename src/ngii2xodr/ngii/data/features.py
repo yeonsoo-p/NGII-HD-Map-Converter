@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 import shapely
 from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.geometry import xy_line
-
-if TYPE_CHECKING:
-    from ngii2xodr.ngii.data.dataset import NGIIDataset
 
 FeatureGeometryKind = Literal["point", "line", "polygon"]
 
@@ -50,44 +47,6 @@ class NGIIFeature:
     source_path: Path = field(compare=False)
     source_row: int = field(compare=False)
     layer_name: ClassVar[str]
-    _dataset: NGIIDataset | None = field(default=None, init=False, repr=False, compare=False)
-
-    def bind_dataset(self, dataset: NGIIDataset) -> None:
-        self._dataset = dataset
-
-    def _require_dataset(self) -> NGIIDataset:
-        if self._dataset is None:
-            msg = f"{self.layer_name} {self.id!r} is not bound to an NGII dataset"
-            raise RuntimeError(msg)
-        return self._dataset
-
-    def resolve_relation(self, column_or_attr: str) -> NGIIFeature | None:
-        """Resolve one documented relationship through the bound dataset schema."""
-        dataset = self._require_dataset()
-        spec = dataset.schema.spec_for_layer_name(self.layer_name)
-        if spec is None:
-            return None
-        relationship = next(
-            (
-                item
-                for item in spec.relationships
-                if column_or_attr in {item.column_name, item.source_attr}
-            ),
-            None,
-        )
-        if relationship is None:
-            return None
-        value = getattr(self, relationship.source_attr, "")
-        if value is None:
-            return None
-        feature_id = str(value)
-        if not feature_id:
-            return None
-        for target_attr in relationship.target_attrs:
-            feature = dataset.store_for_attr(target_attr).get(feature_id)
-            if feature is not None:
-                return cast(NGIIFeature, feature)
-        return None
 
     @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
@@ -160,55 +119,3 @@ def base_kwargs(record: FeatureRecord) -> dict[str, Any]:
 
 def same_feature(a: NGIIFeature, b: NGIIFeature) -> bool:
     return type(a) is type(b) and a == b and a.geometry_signature == b.geometry_signature
-
-
-def relation_property(column_or_attr: str) -> property:
-    def _resolve(self: NGIIFeature) -> NGIIFeature | None:
-        return self.resolve_relation(column_or_attr)
-
-    return property(_resolve)
-
-
-def iter_feature_text_fields(feature: NGIIFeature) -> list[tuple[str, str]]:
-    dataset = feature._require_dataset()
-    spec = dataset.schema.spec_for_layer_name(feature.layer_name)
-    if spec is None:
-        return []
-    values: list[tuple[str, str]] = []
-    for rule in spec.field_rules:
-        if rule.name == "ID" or rule.field_type != "text":
-            continue
-        attr_name = rule.attr
-        if not hasattr(feature, attr_name):
-            continue
-        value = getattr(feature, attr_name)
-        if isinstance(value, str):
-            values.append((rule.name, value))
-    return values
-
-
-def feature_value_for_column(feature: NGIIFeature, column_name: str) -> Any:
-    attr_name = _attr_for_feature_column(feature, column_name)
-    if attr_name and hasattr(feature, attr_name):
-        return getattr(feature, attr_name)
-    return ""
-
-
-def set_feature_column(feature: NGIIFeature, column_name: str, value: Any) -> None:
-    attr_name = _attr_for_feature_column(feature, column_name)
-    if attr_name and hasattr(feature, attr_name):
-        setattr(feature, attr_name, value)
-
-
-def _attr_for_feature_column(feature: NGIIFeature, column_name: str) -> str:
-    dataset = feature._require_dataset()
-    spec = dataset.schema.spec_for_layer_name(feature.layer_name)
-    if spec is None:
-        return ""
-    for rule in spec.field_rules:
-        if rule.name == column_name:
-            return rule.attr
-    for relationship in spec.relationships:
-        if relationship.column_name == column_name:
-            return relationship.source_attr
-    return ""

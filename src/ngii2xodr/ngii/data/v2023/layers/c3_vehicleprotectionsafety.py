@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.features import FeatureRecord
 from ngii2xodr.ngii.data.v2023.features import V2023LineFeature, common_kwargs
 
 
@@ -33,8 +33,6 @@ class C3_VEHICLEPROTECTIONSAFETY(V2023LineFeature):
     is_central: str
     low_high: str
     ref_id: str | None
-
-    reference = relation_property("Ref_ID")
 
 
 def make_feature(record: FeatureRecord) -> C3_VEHICLEPROTECTIONSAFETY:

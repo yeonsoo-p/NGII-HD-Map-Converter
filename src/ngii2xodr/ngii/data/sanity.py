@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ngii2xodr.ngii.data.config import NGIIConfig
-from ngii2xodr.ngii.data.features import NGIIFeature, feature_value_for_column
+from ngii2xodr.ngii.data.features import NGIIFeature
 from ngii2xodr.ngii.data.schema import FieldRule, LayerSpec, SchemaDefinition
 
 if TYPE_CHECKING:
-    from ngii2xodr.ngii.data.dataset import NGIIDataset
+    from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 
 
 @dataclass(slots=True, frozen=True)
@@ -133,26 +133,28 @@ def warn_unknown_columns(gdf: Any, spec: LayerSpec, shp_path: Path, sanity: Sani
     )
 
 
-def warn_manual_field_values(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
-    for spec in dataset.schema.layer_specs:
-        store = dataset.store_for_attr(spec.python_attr)
+def warn_manual_field_values(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+    for store in dataset.layer_stores:
+        spec = store.spec
         for feature in store.features:
             for rule in spec.field_rules:
-                _warn_manual_field_value(dataset, spec, feature, rule, cfg)
+                _warn_manual_field_value(dataset, sanity, store, feature, rule, cfg)
 
 
 def _warn_manual_field_value(
     dataset: NGIIDataset,
-    spec: LayerSpec,
+    sanity: SanityReport,
+    store: LayerStore[Any],
     feature: NGIIFeature,
     rule: FieldRule,
     cfg: NGIIConfig,
 ) -> None:
-    value = feature_value_for_column(feature, rule.name)
+    spec = store.spec
+    value = store.value_for_column(feature, rule.name)
     value_text = _value_text(value)
     if not value_text:
         if rule.required and cfg.sanity.warnings.manual_field_rules:
-            dataset.sanity.warn(
+            sanity.warn(
                 "empty-required-field",
                 f"{spec.layer_name} {feature.id}: {rule.name} is required by the "
                 f"{dataset.schema.version} manual",
@@ -166,7 +168,7 @@ def _warn_manual_field_value(
         and len(value_text) > rule.max_length
         and cfg.sanity.warnings.manual_field_rules
     ):
-        dataset.sanity.warn(
+        sanity.warn(
             "field-too-long",
             f"{spec.layer_name} {feature.id}: {rule.name}={value_text!r} exceeds "
             f"VARCHAR2({rule.max_length})",
@@ -177,13 +179,13 @@ def _warn_manual_field_value(
     invalid_integer = rule.field_type == "integer" and not _is_integer(value)
     invalid_float = rule.field_type == "float" and not _is_float(value)
     if (invalid_integer or invalid_float) and cfg.sanity.warnings.manual_field_rules:
-        _warn_invalid_type(dataset, spec, feature, rule, value_text)
+        _warn_invalid_type(sanity, spec, feature, rule, value_text)
     if (
         rule.code_list is not None
         and value_text not in rule.code_list
         and cfg.sanity.warnings.invalid_code_values
     ):
-        dataset.sanity.warn(
+        sanity.warn(
             "invalid-code",
             f"{spec.layer_name} {feature.id}: {rule.name}={value_text!r} is not "
             f"in the {dataset.schema.version} code list",
@@ -197,7 +199,7 @@ def _warn_manual_field_value(
         and cfg.sanity.warnings.manual_field_rules
     ):
         expected = _expected_hist_type_label(spec, rule)
-        dataset.sanity.warn(
+        sanity.warn(
             "invalid-hist-type",
             f"{spec.layer_name} {feature.id}: HistType={value_text!r} must be {expected}",
             layer_name=spec.layer_name,
@@ -206,9 +208,9 @@ def _warn_manual_field_value(
         )
 
 
-def warn_unresolved_relationships(dataset: NGIIDataset) -> None:
-    for spec in dataset.schema.layer_specs:
-        store = dataset.store_for_attr(spec.python_attr)
+def warn_unresolved_relationships(dataset: NGIIDataset, sanity: SanityReport) -> None:
+    for store in dataset.layer_stores:
+        spec = store.spec
         for feature in store.features:
             for relationship in spec.relationships:
                 value = getattr(feature, relationship.source_attr)
@@ -217,7 +219,7 @@ def warn_unresolved_relationships(dataset: NGIIDataset) -> None:
                 if not value_text:
                     if relationship.required:
                         _warn_missing_relation(
-                            dataset,
+                            sanity,
                             feature,
                             relationship.column_name,
                             target_layer,
@@ -225,16 +227,16 @@ def warn_unresolved_relationships(dataset: NGIIDataset) -> None:
                     continue
                 if not _relationship_resolves(dataset, relationship.target_attrs, value_text):
                     _warn_missing_relation(
-                        dataset,
+                        sanity,
                         feature,
                         relationship.column_name,
                         target_layer,
                     )
 
 
-def log_sanity_report(dataset: NGIIDataset, logger: logging.Logger) -> None:
-    warning_count = len(dataset.sanity.warnings)
-    action_count = len(dataset.sanity.actions)
+def log_sanity_report(dataset: NGIIDataset, sanity: SanityReport, logger: logging.Logger) -> None:
+    warning_count = len(sanity.warnings)
+    action_count = len(sanity.actions)
     if warning_count == 0 and action_count == 0:
         logger.info(
             "NGII sanity: no warnings or repairs for %s [%s]",
@@ -250,16 +252,16 @@ def log_sanity_report(dataset: NGIIDataset, logger: logging.Logger) -> None:
         dataset.root,
         dataset.coordinate,
     )
-    _log_warning_summaries(dataset, logger)
-    _log_action_summaries(dataset, logger)
-    for warning in dataset.sanity.warnings:
+    _log_warning_summaries(dataset, sanity, logger)
+    _log_action_summaries(dataset, sanity, logger)
+    for warning in sanity.warnings:
         logger.debug(
             "NGII sanity warning detail [%s] %s: %s",
             warning.code,
             _sanity_location(warning.layer_name, warning.feature_id, warning.source_path),
             warning.message,
         )
-    for action in dataset.sanity.actions:
+    for action in sanity.actions:
         logger.debug(
             "NGII sanity repair detail [%s] %s: %s before=%s after=%s",
             action.code,
@@ -312,13 +314,13 @@ def _expected_hist_type_label(spec: LayerSpec, rule: FieldRule) -> str:
 
 
 def _warn_invalid_type(
-    dataset: NGIIDataset,
+    sanity: SanityReport,
     spec: LayerSpec,
     feature: NGIIFeature,
     rule: FieldRule,
     value_text: str,
 ) -> None:
-    dataset.sanity.warn(
+    sanity.warn(
         "invalid-field-type",
         f"{spec.layer_name} {feature.id}: {rule.name}={value_text!r} is not "
         f"a valid {rule.field_type}",
@@ -342,9 +344,9 @@ def _relationship_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ..
 
 
 def _warn_missing_relation(
-    dataset: NGIIDataset, feature: NGIIFeature, column_name: str, target_layer: str
+    sanity: SanityReport, feature: NGIIFeature, column_name: str, target_layer: str
 ) -> None:
-    dataset.sanity.warn(
+    sanity.warn(
         "missing-relation",
         f"{feature.layer_name} {feature.id} {column_name} does not resolve to {target_layer}",
         layer_name=feature.layer_name,
@@ -353,9 +355,11 @@ def _warn_missing_relation(
     )
 
 
-def _log_warning_summaries(dataset: NGIIDataset, logger: logging.Logger) -> None:
+def _log_warning_summaries(
+    dataset: NGIIDataset, sanity: SanityReport, logger: logging.Logger
+) -> None:
     grouped: dict[tuple[str, str, str, str], list[SanityWarning]] = defaultdict(list)
-    for warning in dataset.sanity.warnings:
+    for warning in sanity.warnings:
         key = (
             warning.code,
             warning.layer_name or "-",
@@ -378,9 +382,11 @@ def _log_warning_summaries(dataset: NGIIDataset, logger: logging.Logger) -> None
         )
 
 
-def _log_action_summaries(dataset: NGIIDataset, logger: logging.Logger) -> None:
+def _log_action_summaries(
+    dataset: NGIIDataset, sanity: SanityReport, logger: logging.Logger
+) -> None:
     grouped: dict[tuple[str, str, str], list[SanityAction]] = defaultdict(list)
-    for action in dataset.sanity.actions:
+    for action in sanity.actions:
         key = (action.code, action.layer_name or "-", _action_summary_reason(dataset, action))
         grouped[key].append(action)
 

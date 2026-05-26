@@ -5,9 +5,18 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from typing import Literal
 
-from ngii2xodr.ngii.data.features import FeatureGeometryKind, FeatureRecord, NGIIFeature
+from ngii2xodr.ngii.data.features import (
+    FeatureGeometryKind,
+    FeatureRecord,
+    LineFeature,
+    NGIIFeature,
+    PointFeature,
+    PointOrPolygonFeature,
+    PolygonFeature,
+)
 
 FieldType = Literal["text", "integer", "float"]
 LayerRole = str
@@ -62,6 +71,9 @@ class LayerSpec:
     relationships: tuple[RelationshipRule, ...] = ()
     roles: tuple[LayerRole, ...] = ()
     filename_aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_feature_type(self)
 
     @property
     def filenames(self) -> tuple[str, ...]:
@@ -187,6 +199,62 @@ def column_to_attr(column_name: str) -> str:
         return "id"
     parts = column_name.split("_")
     return "_".join(_camel_to_snake(part) for part in parts if part).lower()
+
+
+def _validate_feature_type(spec: LayerSpec) -> None:
+    feature_type_object: object = spec.feature_type
+    if not isinstance(feature_type_object, type) or not issubclass(
+        feature_type_object, NGIIFeature
+    ):
+        msg = f"{spec.layer_name}: feature_type must be an NGIIFeature subclass"
+        raise ValueError(msg)  # noqa: TRY004
+    actual_layer_name = getattr(spec.feature_type, "layer_name", None)
+    if actual_layer_name != spec.layer_name:
+        msg = (
+            f"{spec.layer_name}: feature_type {spec.feature_type.__name__} declares "
+            f"layer_name={actual_layer_name!r}"
+        )
+        raise ValueError(msg)
+
+    expected_base = _geometry_base_for(spec.geometry_kinds)
+    if not issubclass(spec.feature_type, expected_base):
+        msg = (
+            f"{spec.layer_name}: feature_type {spec.feature_type.__name__} must inherit "
+            f"{expected_base.__name__} for geometry_kinds={spec.geometry_kinds!r}"
+        )
+        raise ValueError(msg)  # noqa: TRY004
+
+    feature_fields = {field.name for field in dataclass_fields(spec.feature_type)}
+    missing_field_attrs = sorted({rule.attr for rule in spec.field_rules} - feature_fields)
+    missing_relationship_attrs = sorted(
+        {relationship.source_attr for relationship in spec.relationships} - feature_fields
+    )
+    if missing_field_attrs or missing_relationship_attrs:
+        parts: list[str] = []
+        if missing_field_attrs:
+            parts.append(f"field attrs missing from feature_type: {missing_field_attrs}")
+        if missing_relationship_attrs:
+            parts.append(
+                f"relationship attrs missing from feature_type: {missing_relationship_attrs}"
+            )
+        msg = f"{spec.layer_name}: {'; '.join(parts)}"
+        raise ValueError(msg)
+
+
+def _geometry_base_for(
+    geometry_kinds: tuple[FeatureGeometryKind, ...],
+) -> type[NGIIFeature]:
+    kind_set = frozenset(geometry_kinds)
+    if kind_set == frozenset({"point"}):
+        return PointFeature
+    if kind_set == frozenset({"line"}):
+        return LineFeature
+    if kind_set == frozenset({"polygon"}):
+        return PolygonFeature
+    if kind_set == frozenset({"point", "polygon"}):
+        return PointOrPolygonFeature
+    msg = f"unsupported geometry_kinds={geometry_kinds!r}"
+    raise ValueError(msg)
 
 
 def _camel_to_snake(value: str) -> str:

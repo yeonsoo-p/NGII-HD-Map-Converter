@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ngii2xodr.ngii.data.features import FeatureRecord, relation_property
+from ngii2xodr.ngii.data.features import FeatureRecord
 from ngii2xodr.ngii.data.v2025.features import V2025LineFeature, common_kwargs
 
 
@@ -60,11 +60,6 @@ class NT2_LINK(V2025LineFeature):
     from_node_id: str | None
     to_node_id: str | None
     road_type_id: str | None
-
-    from_node = relation_property("FromNodeID")
-    to_node = relation_property("ToNodeID")
-    right_link = relation_property("R_LinkID")
-    left_link = relation_property("L_LinkID")
 
 
 def _optional_id(value: str) -> str | None:

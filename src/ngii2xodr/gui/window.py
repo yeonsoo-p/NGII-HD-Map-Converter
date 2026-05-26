@@ -305,8 +305,8 @@ class HdMapWindow(QMainWindow):
         log.info(
             "loaded %s: %d warnings, %d repairs",
             ngii_dir,
-            len(viz.dataset.sanity.warnings),
-            len(viz.dataset.sanity.actions),
+            len(viz.sanity.warnings),
+            len(viz.sanity.actions),
         )
 
     def _rebuild_layers_tab(self, viz: HdMapViz) -> None:

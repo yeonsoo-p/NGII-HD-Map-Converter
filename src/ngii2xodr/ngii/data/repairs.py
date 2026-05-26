@@ -11,16 +11,11 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import (
-    NGIIFeature,
-    iter_feature_text_fields,
-    same_feature,
-    set_feature_column,
-)
+from ngii2xodr.ngii.data.features import NGIIFeature, same_feature
 from ngii2xodr.ngii.data.geometry import xy_distance
 from ngii2xodr.ngii.data.sanity import SanityReport
 
-RepairHook = Callable[[NGIIDataset, NGIIConfig], None]
+RepairHook = Callable[[NGIIDataset, SanityReport, NGIIConfig], None]
 _REPLACEMENT_CHAR = "\ufffd"
 
 
@@ -84,24 +79,24 @@ def merge_features(
             )
 
 
-def apply_text_repairs(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
+def apply_text_repairs(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     if not cfg.text_repair.enabled:
         return
     if cfg.text_repair.repair_mojibake:
-        _repair_mojibake_text(dataset)
+        _repair_mojibake_text(dataset, sanity)
     if cfg.text_repair.warn_unrepaired_replacement_chars:
-        _warn_unrepaired_replacement_chars(dataset)
+        _warn_unrepaired_replacement_chars(dataset, sanity)
 
 
-def _repair_mojibake_text(dataset: NGIIDataset) -> None:
+def _repair_mojibake_text(dataset: NGIIDataset, sanity: SanityReport) -> None:
     for store in dataset.layer_stores:
         for feature in store.features:
-            for field_name, value in iter_feature_text_fields(feature):
+            for field_name, value in store.iter_text_fields(feature):
                 repaired = _repair_cp949_latin1_mojibake(value)
                 if repaired is None:
                     continue
-                set_feature_column(feature, field_name, repaired)
-                dataset.sanity.action(
+                store.set_column(feature, field_name, repaired)
+                sanity.action(
                     "text-mojibake-repaired",
                     f"{feature.layer_name} {feature.id} {field_name} repaired by "
                     "latin1-to-cp949 mojibake rule",
@@ -139,12 +134,12 @@ def _mojibake_marker_count(value: str) -> int:
     return sum(1 for char in value if "\u00a1" <= char <= "\u00ff" or "\uff61" <= char <= "\uff9f")
 
 
-def _warn_unrepaired_replacement_chars(dataset: NGIIDataset) -> None:
+def _warn_unrepaired_replacement_chars(dataset: NGIIDataset, sanity: SanityReport) -> None:
     for store in dataset.layer_stores:
         for feature in store.features:
-            for field_name, value in iter_feature_text_fields(feature):
+            for field_name, value in store.iter_text_fields(feature):
                 if _REPLACEMENT_CHAR in value:
-                    dataset.sanity.warn(
+                    sanity.warn(
                         "corrupt-text-unrepaired",
                         f"{feature.layer_name} {feature.id}: {field_name} contains "
                         "Unicode replacement characters",
@@ -154,7 +149,9 @@ def _warn_unrepaired_replacement_chars(dataset: NGIIDataset) -> None:
                     )
 
 
-def repair_reversed_link_endpoints(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
+def repair_reversed_link_endpoints(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
     link_store = dataset.store_for_role("link")
     node_store = dataset.store_for_role("node")
     tolerance_m = cfg.sanity.node_match_tolerance_m
@@ -176,6 +173,7 @@ def repair_reversed_link_endpoints(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
         if reversed_alignment and not normal:
             _swap_endpoint_ids(
                 dataset,
+                sanity,
                 link,
                 "link-direction-swapped",
                 "had reversed FromNodeID/ToNodeID relative to geometry order",
@@ -183,7 +181,7 @@ def repair_reversed_link_endpoints(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
                 warn_disabled=cfg.sanity.warnings.link_endpoint_alignment,
             )
         elif reversed_alignment and normal and cfg.sanity.warnings.link_direction_ambiguous:
-            dataset.sanity.warn(
+            sanity.warn(
                 "link-direction-ambiguous",
                 f"{link.layer_name} {link.id} endpoints match both normal and reversed "
                 "node ordering",
@@ -192,7 +190,7 @@ def repair_reversed_link_endpoints(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
                 source_path=link.source_path,
             )
         elif not normal and cfg.sanity.warnings.link_endpoint_alignment:
-            dataset.sanity.warn(
+            sanity.warn(
                 "link-endpoint-alignment-mismatch",
                 f"{link.layer_name} {link.id} endpoint nodes do not match polyline endpoints "
                 f"within {tolerance_m:.3f} m",
@@ -202,7 +200,9 @@ def repair_reversed_link_endpoints(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
             )
 
 
-def repair_missing_link_node_refs(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
+def repair_missing_link_node_refs(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
     node_store = dataset.store_for_role("node")
     tolerance_m = cfg.sanity.node_match_tolerance_m
     for link in dataset.store_for_role("link").features:
@@ -210,6 +210,7 @@ def repair_missing_link_node_refs(dataset: NGIIDataset, cfg: NGIIConfig) -> None
             continue
         _repair_endpoint(
             dataset,
+            sanity,
             node_store,
             link,
             "from_node_id",
@@ -220,6 +221,7 @@ def repair_missing_link_node_refs(dataset: NGIIDataset, cfg: NGIIConfig) -> None
         )
         _repair_endpoint(
             dataset,
+            sanity,
             node_store,
             link,
             "to_node_id",
@@ -232,6 +234,7 @@ def repair_missing_link_node_refs(dataset: NGIIDataset, cfg: NGIIConfig) -> None
 
 def _repair_endpoint(
     dataset: NGIIDataset,
+    sanity: SanityReport,
     node_store: LayerStore[Any],
     link: Any,
     attr_name: str,
@@ -251,7 +254,7 @@ def _repair_endpoint(
         repaired_id = nearby[0].id
         if cfg.sanity.repairs.link_missing_node_ref_nearest:
             setattr(link, attr_name, repaired_id)
-            dataset.sanity.action(
+            sanity.action(
                 "link-node-ref-nearest",
                 f"{link.layer_name} {link.id} {column_name} repaired to nearby "
                 f"{node_store.layer_name} {repaired_id}",
@@ -262,7 +265,7 @@ def _repair_endpoint(
                 source_path=link.source_path,
             )
         elif cfg.sanity.warnings.link_endpoint_alignment:
-            dataset.sanity.warn(
+            sanity.warn(
                 "link-node-ref-nearest-disabled",
                 f"{link.layer_name} {link.id} {column_name} could be repaired to nearby "
                 f"{node_store.layer_name} {repaired_id}, but nearest-node repair is disabled",
@@ -272,7 +275,7 @@ def _repair_endpoint(
             )
         return
     if len(nearby) > 1 and cfg.sanity.warnings.link_endpoint_alignment:
-        dataset.sanity.warn(
+        sanity.warn(
             "link-node-ref-ambiguous",
             f"{link.layer_name} {link.id} {column_name} has {len(nearby)} nearby "
             f"{node_store.layer_name} candidates",
@@ -282,7 +285,7 @@ def _repair_endpoint(
         )
     if cfg.sanity.repairs.link_missing_node_ref_remove:
         setattr(link, attr_name, None)
-        dataset.sanity.action(
+        sanity.action(
             "link-node-ref-removed",
             f"{link.layer_name} {link.id} {column_name} could not be resolved and was removed",
             before=before,
@@ -292,7 +295,7 @@ def _repair_endpoint(
             source_path=link.source_path,
         )
     elif cfg.sanity.warnings.link_endpoint_alignment:
-        dataset.sanity.warn(
+        sanity.warn(
             "link-node-ref-remove-disabled",
             f"{link.layer_name} {link.id} {column_name} could not be resolved, but relation "
             "removal is disabled",
@@ -302,7 +305,9 @@ def _repair_endpoint(
         )
 
 
-def repair_link_topology_direction(dataset: NGIIDataset, cfg: NGIIConfig) -> None:
+def repair_link_topology_direction(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
     desired_flip = _desired_flips_from_leaf_flow(dataset)
     candidates: list[Any] = []
     for link in dataset.store_for_role("link").features:
@@ -318,7 +323,7 @@ def repair_link_topology_direction(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
     link_store = dataset.store_for_role("link")
     if len(candidates) > 1:
         if cfg.sanity.warnings.link_topology_direction:
-            dataset.sanity.warn(
+            sanity.warn(
                 "link-topology-direction-ambiguous",
                 "topology flow and R/L same-direction evidence found multiple possible "
                 f"backward {link_store.layer_name} features: "
@@ -330,6 +335,7 @@ def repair_link_topology_direction(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
     if cfg.sanity.repairs.link_topology_direction_swap:
         _swap_endpoint_ids(
             dataset,
+            sanity,
             link,
             "link-topology-direction-swapped",
             "was reversed by topology flow and R/L same-direction evidence",
@@ -337,7 +343,7 @@ def repair_link_topology_direction(dataset: NGIIDataset, cfg: NGIIConfig) -> Non
             warn_disabled=False,
         )
     elif cfg.sanity.warnings.link_topology_direction:
-        dataset.sanity.warn(
+        sanity.warn(
             "link-topology-direction-swap-disabled",
             f"{link.layer_name} {link.id} appears reversed by topology flow and R/L "
             "same-direction evidence, but topology repair is disabled",
@@ -438,6 +444,7 @@ def _unit_vector(link: Any) -> NDArray[np.float64] | None:
 
 def _swap_endpoint_ids(
     dataset: NGIIDataset,
+    sanity: SanityReport,
     link: Any,
     code: str,
     reason: str,
@@ -448,7 +455,7 @@ def _swap_endpoint_ids(
     before = {"from_node_id": link.from_node_id, "to_node_id": link.to_node_id}
     if not enabled:
         if warn_disabled:
-            dataset.sanity.warn(
+            sanity.warn(
                 f"{code}-disabled",
                 f"{link.layer_name} {link.id} {reason}, but direction swap is disabled",
                 layer_name=link.layer_name,
@@ -457,7 +464,7 @@ def _swap_endpoint_ids(
             )
         return
     link.from_node_id, link.to_node_id = link.to_node_id, link.from_node_id
-    dataset.sanity.action(
+    sanity.action(
         code,
         f"{link.layer_name} {link.id} {reason}",
         before=before,

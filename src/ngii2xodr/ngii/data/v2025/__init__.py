@@ -9,7 +9,6 @@ from ngii2xodr.ngii.data.v2025.definitions import (
     SPECS_BY_FILENAME,
     SPECS_BY_LAYER_NAME,
 )
-from ngii2xodr.ngii.data.v2025.loader import load_ngii
 
 __all__ = [
     "LAYER_SPECS",
@@ -19,5 +18,4 @@ __all__ = [
     "FieldRule",
     "LayerSpec",
     "RelationshipRule",
-    "load_ngii",
 ]
