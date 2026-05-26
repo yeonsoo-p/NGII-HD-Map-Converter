@@ -117,5 +117,46 @@ def base_kwargs(record: FeatureRecord) -> dict[str, Any]:
     }
 
 
+def feature_geometry_kind(feature: NGIIFeature) -> FeatureGeometryKind:
+    if isinstance(feature, PointFeature):
+        return "point"
+    if isinstance(feature, LineFeature):
+        return "line"
+    if isinstance(feature, PolygonFeature):
+        return "polygon"
+    if isinstance(feature, PointOrPolygonFeature):
+        return feature.geometry_kind
+    msg = f"{feature.layer_name} {feature.id!r} has no supported geometry"
+    raise TypeError(msg)
+
+
+def feature_point_xyz(feature: NGIIFeature) -> NDArray[np.float64] | None:
+    if isinstance(feature, PointFeature):
+        return feature.point
+    if isinstance(feature, PointOrPolygonFeature):
+        return feature.point
+    return None
+
+
+def feature_polygon_ring(feature: NGIIFeature) -> NDArray[np.float64] | None:
+    if isinstance(feature, PolygonFeature):
+        return feature.ring
+    if isinstance(feature, PointOrPolygonFeature):
+        return feature.ring
+    return None
+
+
+def feature_points(feature: NGIIFeature) -> NDArray[np.float64] | None:
+    point = feature_point_xyz(feature)
+    if point is not None:
+        return point.reshape(1, 3)
+    if isinstance(feature, LineFeature):
+        return feature.polyline
+    ring = feature_polygon_ring(feature)
+    if ring is not None:
+        return ring
+    return None
+
+
 def same_feature(a: NGIIFeature, b: NGIIFeature) -> bool:
     return type(a) is type(b) and a == b and a.geometry_signature == b.geometry_signature

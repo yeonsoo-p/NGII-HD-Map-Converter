@@ -12,11 +12,12 @@ import shapely
 from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.features import (
+    FeatureGeometryKind,
     LineFeature,
     NGIIFeature,
-    PointFeature,
-    PointOrPolygonFeature,
-    PolygonFeature,
+    feature_geometry_kind,
+    feature_point_xyz,
+    feature_polygon_ring,
 )
 from ngii2xodr.ngii.data.geometry import xy_line
 from ngii2xodr.ngii.data.schema import (
@@ -69,9 +70,7 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
     def points(self) -> NDArray[np.float64]:
         points: list[NDArray[np.float64]] = []
         for feature in self.features:
-            point: NDArray[np.float64] | None = None
-            if isinstance(feature, (PointFeature, PointOrPolygonFeature)):
-                point = feature.point
+            point = feature_point_xyz(feature)
             if point is not None:
                 points.append(point)
         return np.asarray(points, dtype=np.float64)
@@ -88,12 +87,24 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
     def rings(self) -> list[NDArray[np.float64]]:
         rings: list[NDArray[np.float64]] = []
         for feature in self.features:
-            ring: NDArray[np.float64] | None = None
-            if isinstance(feature, (PolygonFeature, PointOrPolygonFeature)):
-                ring = feature.ring
+            ring = feature_polygon_ring(feature)
             if ring is not None:
                 rings.append(ring)
         return rings
+
+    @property
+    def geometry_kinds(self) -> tuple[FeatureGeometryKind, ...]:
+        if not self.features:
+            return self.spec.geometry_kinds
+        present = {feature_geometry_kind(feature) for feature in self.features}
+        return tuple(kind for kind in self.spec.geometry_kinds if kind in present)
+
+    def feature_indices_for_geometry_kind(self, kind: FeatureGeometryKind) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, feature in enumerate(self.features)
+            if feature_geometry_kind(feature) == kind
+        )
 
     def related_feature(
         self, feature: T, column_or_attr: str, dataset: NGIIDataset
@@ -168,6 +179,12 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
     @property
     def layer_stores(self) -> tuple[LayerStore[Any], ...]:
         return tuple(self._stores[spec.python_attr] for spec in self.schema.layer_specs)
+
+    @property
+    def layer_items(self) -> tuple[tuple[str, LayerStore[Any]], ...]:
+        return tuple(
+            (spec.python_attr, self._stores[spec.python_attr]) for spec in self.schema.layer_specs
+        )
 
     def __getitem__(self, feature_id: str) -> NGIIFeature:
         if feature_id in self._ambiguous_global_ids:

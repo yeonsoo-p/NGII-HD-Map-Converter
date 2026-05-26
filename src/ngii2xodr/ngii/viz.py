@@ -22,13 +22,14 @@ from shapely.geometry import Polygon as ShapelyPolygon
 
 from ngii2xodr.ngii.app import FeatureRef, LoadedMap
 from ngii2xodr.ngii.data import NGIIConfig, load_ngii
-from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
+from ngii2xodr.ngii.data.dataset import LayerStore
 from ngii2xodr.ngii.data.features import (
+    FeatureGeometryKind,
     LineFeature,
     NGIIFeature,
-    PointFeature,
-    PointOrPolygonFeature,
-    PolygonFeature,
+    feature_point_xyz,
+    feature_points,
+    feature_polygon_ring,
 )
 from ngii2xodr.ngii.segmentation import Segmentation, SegmentationConfig
 from ngii2xodr.profile import (
@@ -43,7 +44,7 @@ log = logging.getLogger(__name__)
 vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
 
 SelectCallback = Callable[[FeatureRef], None]
-GeometryKind = Literal["point", "line", "polygon"]
+GeometryKind = FeatureGeometryKind
 LayerGeometryKind = Literal["point", "line", "polygon", "mixed"]
 
 
@@ -200,7 +201,7 @@ class PointRenderLayer(RenderLayer):
     def __post_init__(self) -> None:
         points: list[NDArray[np.float64]] = []
         for index in self._iter_feature_indices():
-            point = _point_feature_xyz(self.store.features[index])
+            point = feature_point_xyz(self.store.features[index])
             if point is not None:
                 points.append(point)
         xyz = np.asarray(points, dtype=np.float64) if points else np.empty((0, 3), dtype=np.float64)
@@ -545,8 +546,8 @@ class HdMapViz:
 
     def _build_registry(self) -> RenderRegistry:
         layers: dict[str, RenderLayer] = {}
-        for attr, store in _dataset_layer_items(self.dataset):
-            kinds = _geometry_kinds(self.dataset, store)
+        for attr, store in self.dataset.layer_items:
+            kinds = store.geometry_kinds
             if not kinds:
                 continue
             config = _required_layer_config(self.viz_cfg.layers, attr, store)
@@ -563,7 +564,7 @@ class HdMapViz:
                     kind,
                     config,
                     color_fn,
-                    _feature_indices_for_kind(store, kind),
+                    store.feature_indices_for_geometry_kind(kind),
                 )
                 for kind in kinds
             )
@@ -790,7 +791,7 @@ class HdMapViz:
         feature = self.dataset.store_for_attr(ref.layer_attr).get(ref.feature_id)
         if feature is None:
             return
-        points = _feature_points(feature)
+        points = feature_points(feature)
         if points is None or len(points) == 0:
             return
         mins = np.min(points, axis=0)
@@ -889,13 +890,6 @@ class HdMapViz:
             )
 
 
-def _dataset_layer_items(dataset: NGIIDataset) -> tuple[tuple[str, LayerStore[Any]], ...]:
-    return tuple(
-        (spec.python_attr, dataset.store_for_attr(spec.python_attr))
-        for spec in dataset.schema.layer_specs
-    )
-
-
 def _required_layer_config(
     configs: dict[str, VizLayerConfig], attr: str, store: LayerStore[Any]
 ) -> VizLayerConfig:
@@ -904,37 +898,6 @@ def _required_layer_config(
     except KeyError:
         msg = f"viz.layers is missing config for {attr!r} ({store.layer_name})"
         raise KeyError(msg) from None
-
-
-def _geometry_kinds(dataset: NGIIDataset, store: LayerStore[Any]) -> tuple[GeometryKind, ...]:
-    if not store.features:
-        spec = dataset.schema.spec_for_layer_name(store.layer_name)
-        if spec is None:
-            return ()
-        return tuple(kind for kind in ("point", "line", "polygon") if kind in spec.geometry_kinds)
-    kinds = {_feature_geometry_kind(feature) for feature in store.features}
-    return tuple(kind for kind in ("point", "line", "polygon") if kind in kinds)
-
-
-def _feature_indices_for_kind(store: LayerStore[Any], kind: GeometryKind) -> tuple[int, ...]:
-    return tuple(
-        index
-        for index, feature in enumerate(store.features)
-        if _feature_geometry_kind(feature) == kind
-    )
-
-
-def _feature_geometry_kind(feature: NGIIFeature) -> GeometryKind:
-    if isinstance(feature, PointFeature):
-        return "point"
-    if isinstance(feature, LineFeature):
-        return "line"
-    if isinstance(feature, PolygonFeature):
-        return "polygon"
-    if isinstance(feature, PointOrPolygonFeature):
-        return feature.geometry_kind
-    msg = f"{feature.layer_name} {feature.id!r} has no renderable geometry"
-    raise TypeError(msg)
 
 
 def _random_palette(n: int, seed: int) -> NDArray[np.uint8]:
@@ -977,7 +940,7 @@ def _polygon_polydata(
     vert_offset = 0
     for feature_idx in feature_indices:
         feature = features[feature_idx]
-        ring = _polygon_feature_ring(feature)
+        ring = feature_polygon_ring(feature)
         if ring is None:
             continue
         tri_result = _triangulated_ring_xy(ring)
@@ -1159,34 +1122,6 @@ def _display_distance2(point: NDArray[np.float64], x: int, y: int, renderer: Any
     dx = float(display[0] - x)
     dy = float(display[1] - y)
     return dx * dx + dy * dy
-
-
-def _point_feature_xyz(feature: NGIIFeature) -> NDArray[np.float64] | None:
-    if isinstance(feature, PointFeature):
-        return feature.point
-    if isinstance(feature, PointOrPolygonFeature):
-        return feature.point
-    return None
-
-
-def _polygon_feature_ring(feature: NGIIFeature) -> NDArray[np.float64] | None:
-    if isinstance(feature, PolygonFeature):
-        return feature.ring
-    if isinstance(feature, PointOrPolygonFeature):
-        return feature.ring
-    return None
-
-
-def _feature_points(feature: NGIIFeature) -> NDArray[np.float64] | None:
-    point = _point_feature_xyz(feature)
-    if point is not None:
-        return point.reshape(1, 3)
-    if isinstance(feature, LineFeature):
-        return feature.polyline
-    ring = _polygon_feature_ring(feature)
-    if ring is not None:
-        return ring
-    return None
 
 
 def _point_layer_priority(layer_attr: str) -> int:
