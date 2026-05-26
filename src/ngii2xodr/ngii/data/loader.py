@@ -7,6 +7,7 @@ from typing import Literal
 
 from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import NGIIDataset
+from ngii2xodr.ngii.data.engine import coordinate_dirs_for
 from ngii2xodr.ngii.data.v2023.definitions import SPECS_BY_FILENAME as V2023_FILENAMES
 from ngii2xodr.ngii.data.v2023.loader import load_ngii as load_ngii_v2023
 from ngii2xodr.ngii.data.v2025.definitions import SPECS_BY_FILENAME as V2025_FILENAMES
@@ -30,7 +31,7 @@ def detect_ngii_version(root: Path, coordinate: str) -> NGIIVersion:
     if not root.is_dir():
         raise NotADirectoryError(root)
 
-    coordinate_dirs = _coordinate_dirs(root, coordinate)
+    coordinate_dirs = coordinate_dirs_for(root, coordinate)
     if not coordinate_dirs:
         msg = f"coordinate folder {coordinate!r} was not found under {root}"
         raise FileNotFoundError(msg)
@@ -55,9 +56,3 @@ def detect_ngii_version(root: Path, coordinate: str) -> NGIIVersion:
 
     msg = f"could not detect an implemented NGII manual version for {root} [{coordinate}]"
     raise ValueError(msg)
-
-
-def _coordinate_dirs(root: Path, coordinate: str) -> list[Path]:
-    if root.name == coordinate or any(root.glob("*.shp")):
-        return [root]
-    return sorted(path for path in root.rglob(coordinate) if path.is_dir())

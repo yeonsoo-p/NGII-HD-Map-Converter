@@ -126,43 +126,69 @@ def _build_viewport_profiling_cfg(raw: object) -> ViewportProfilingConfig:
 
 
 def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
+    warning_cfg = cfg.ngii.sanity.warnings
+    repair_cfg = cfg.ngii.sanity.repairs
     return NGIIConfig(
         sanity=NGIISanityConfig(
             node_match_tolerance_m=float(cfg.ngii.sanity.node_match_tolerance_m),
             direction_parallel_dot_min=float(cfg.ngii.sanity.direction_parallel_dot_min),
             warnings=NGIISanityWarningConfig(
-                missing_required_layers=bool(cfg.ngii.sanity.warnings.missing_required_layers),
-                missing_sidecars=bool(cfg.ngii.sanity.warnings.missing_sidecars),
-                duplicate_column_capitalization=bool(
-                    cfg.ngii.sanity.warnings.duplicate_column_capitalization
+                missing_required_layers=bool(warning_cfg.missing_required_layers),
+                missing_sidecars=bool(warning_cfg.missing_sidecars),
+                duplicate_column_capitalization=bool(warning_cfg.duplicate_column_capitalization),
+                manual_field_rules=bool(warning_cfg.manual_field_rules),
+                unknown_manual_columns=bool(warning_cfg.unknown_manual_columns),
+                invalid_code_values=bool(warning_cfg.invalid_code_values),
+                unsupported_geometry=bool(warning_cfg.unsupported_geometry),
+                unknown_layers=bool(warning_cfg.unknown_layers),
+                unresolved_relationships=bool(warning_cfg.unresolved_relationships),
+                global_id_collision=bool(warning_cfg.global_id_collision),
+                duplicate_identical_ids=bool(warning_cfg.duplicate_identical_ids),
+                duplicate_conflicting_ids=bool(warning_cfg.duplicate_conflicting_ids),
+                link_endpoint_alignment=_cfg_bool(
+                    warning_cfg, "link_endpoint_alignment", legacy_name="a2_endpoint_alignment"
                 ),
-                manual_field_rules=bool(cfg.ngii.sanity.warnings.manual_field_rules),
-                unknown_manual_columns=bool(cfg.ngii.sanity.warnings.unknown_manual_columns),
-                invalid_code_values=bool(cfg.ngii.sanity.warnings.invalid_code_values),
-                unsupported_geometry=bool(cfg.ngii.sanity.warnings.unsupported_geometry),
-                unknown_layers=bool(cfg.ngii.sanity.warnings.unknown_layers),
-                unresolved_relationships=bool(cfg.ngii.sanity.warnings.unresolved_relationships),
-                global_id_collision=bool(cfg.ngii.sanity.warnings.global_id_collision),
-                duplicate_identical_ids=bool(cfg.ngii.sanity.warnings.duplicate_identical_ids),
-                duplicate_conflicting_ids=bool(cfg.ngii.sanity.warnings.duplicate_conflicting_ids),
-                a2_endpoint_alignment=bool(cfg.ngii.sanity.warnings.a2_endpoint_alignment),
-                a2_direction_ambiguous=bool(cfg.ngii.sanity.warnings.a2_direction_ambiguous),
-                a2_topology_direction=bool(cfg.ngii.sanity.warnings.a2_topology_direction),
+                link_direction_ambiguous=_cfg_bool(
+                    warning_cfg, "link_direction_ambiguous", legacy_name="a2_direction_ambiguous"
+                ),
+                link_topology_direction=_cfg_bool(
+                    warning_cfg, "link_topology_direction", legacy_name="a2_topology_direction"
+                ),
             ),
             repairs=NGIISanityRepairConfig(
-                duplicate_conflicting_id_drop=bool(
-                    cfg.ngii.sanity.repairs.duplicate_conflicting_id_drop
+                duplicate_conflicting_id_drop=bool(repair_cfg.duplicate_conflicting_id_drop),
+                link_endpoint_direction_swap=_cfg_bool(
+                    repair_cfg,
+                    "link_endpoint_direction_swap",
+                    legacy_name="a2_endpoint_direction_swap",
                 ),
-                a2_endpoint_direction_swap=bool(cfg.ngii.sanity.repairs.a2_endpoint_direction_swap),
-                a2_missing_node_ref_nearest=bool(
-                    cfg.ngii.sanity.repairs.a2_missing_node_ref_nearest
+                link_missing_node_ref_nearest=_cfg_bool(
+                    repair_cfg,
+                    "link_missing_node_ref_nearest",
+                    legacy_name="a2_missing_node_ref_nearest",
                 ),
-                a2_missing_node_ref_remove=bool(cfg.ngii.sanity.repairs.a2_missing_node_ref_remove),
-                a2_topology_direction_swap=bool(cfg.ngii.sanity.repairs.a2_topology_direction_swap),
+                link_missing_node_ref_remove=_cfg_bool(
+                    repair_cfg,
+                    "link_missing_node_ref_remove",
+                    legacy_name="a2_missing_node_ref_remove",
+                ),
+                link_topology_direction_swap=_cfg_bool(
+                    repair_cfg,
+                    "link_topology_direction_swap",
+                    legacy_name="a2_topology_direction_swap",
+                ),
             ),
         ),
         text_repair=_build_text_correction_cfg(cfg),
     )
+
+
+def _cfg_bool(raw: DictConfig, name: str, *, legacy_name: str | None = None) -> bool:
+    if name in raw:
+        return bool(raw[name])
+    if legacy_name is not None and legacy_name in raw:
+        return bool(raw[legacy_name])
+    raise KeyError(name)
 
 
 def _build_text_correction_cfg(cfg: DictConfig) -> NGIITextCorrectionConfig:

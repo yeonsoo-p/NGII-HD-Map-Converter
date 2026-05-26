@@ -11,7 +11,7 @@ ngii:
     # Max XY distance (m) for node-reference repair actions.
     node_match_tolerance_m: 0.5
     # Minimum dot product for topology direction comparison against a
-    # same-direction neighbor.
+    # same-direction lateral neighbor.
     direction_parallel_dot_min: 0.85
     warnings:
       missing_required_layers: true
@@ -26,15 +26,15 @@ ngii:
       global_id_collision: true
       duplicate_identical_ids: true
       duplicate_conflicting_ids: true
-      a2_endpoint_alignment: true
-      a2_direction_ambiguous: true
-      a2_topology_direction: true
+      link_endpoint_alignment: true
+      link_direction_ambiguous: true
+      link_topology_direction: true
     repairs:
       duplicate_conflicting_id_drop: true
-      a2_endpoint_direction_swap: true
-      a2_missing_node_ref_nearest: true
-      a2_missing_node_ref_remove: true
-      a2_topology_direction_swap: true
+      link_endpoint_direction_swap: true
+      link_missing_node_ref_nearest: true
+      link_missing_node_ref_remove: true
+      link_topology_direction_swap: true
   text_repair:
     enabled: true
     repair_mojibake: true

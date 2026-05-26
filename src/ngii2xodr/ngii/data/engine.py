@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import struct
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,12 +27,11 @@ from ngii2xodr.ngii.data.geometry import (
     polygon_outer_ring_xyz,
     polyline_xyz,
 )
+from ngii2xodr.ngii.data.repairs import DEFAULT_REPAIR_HOOKS, RepairHook
 from ngii2xodr.ngii.data.sanity import SanityAction, SanityReport, SanityWarning
 from ngii2xodr.ngii.data.schema import FieldRule, LayerSpec, SchemaDefinition
 
 log = logging.getLogger(__name__)
-
-RepairHook = Callable[[NGIIDataset, NGIIConfig], None]
 
 
 @dataclass(slots=True, frozen=True)
@@ -52,7 +50,7 @@ def load_schema(
     cfg: NGIIConfig,
     schema: SchemaDefinition,
     *,
-    repair_hooks: tuple[tuple[str, RepairHook], ...] = (),
+    repair_hooks: tuple[tuple[str, RepairHook], ...] = DEFAULT_REPAIR_HOOKS,
 ) -> NGIIDataset:
     """Load one NGII coordinate product into a canonical object dataset."""
     sanity = SanityReport()
@@ -133,7 +131,7 @@ def discover_layer_files(
     if not root.is_dir():
         raise NotADirectoryError(root)
 
-    coordinate_dirs = _coordinate_dirs(root, coordinate)
+    coordinate_dirs = coordinate_dirs_for(root, coordinate)
     if not coordinate_dirs:
         msg = f"coordinate folder {coordinate!r} was not found under {root}"
         raise FileNotFoundError(msg)
@@ -155,7 +153,7 @@ def discover_layer_files(
     return discovered
 
 
-def _coordinate_dirs(root: Path, coordinate: str) -> list[Path]:
+def coordinate_dirs_for(root: Path, coordinate: str) -> list[Path]:
     if root.name == coordinate or any(root.glob("*.shp")):
         return [root]
     return sorted(path for path in root.rglob(coordinate) if path.is_dir())

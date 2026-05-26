@@ -38,9 +38,10 @@ feature object.
 NGII data code is split between common contracts in
 [src/ngii2xodr/ngii/data](src/ngii2xodr/ngii/data) and version-specific
 definitions/loaders in
-[src/ngii2xodr/ngii/data/v2023](src/ngii2xodr/ngii/data/v2023). The public
-loader remains `load_ngii(path, coordinate, cfg.ngii)` and dispatches to the
-implemented version from the requested coordinate product.
+[src/ngii2xodr/ngii/data/v2023](src/ngii2xodr/ngii/data/v2023) and
+[src/ngii2xodr/ngii/data/v2025](src/ngii2xodr/ngii/data/v2025). The public
+loader remains `load_ngii(path, coordinate, cfg.ngii)` and dispatches from the
+requested coordinate product.
 
 Segmentation stages live under
 [src/ngii2xodr/ngii/segmentation](src/ngii2xodr/ngii/segmentation). The pipeline

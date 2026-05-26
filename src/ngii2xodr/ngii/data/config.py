@@ -19,18 +19,18 @@ class NGIISanityWarningConfig:
     global_id_collision: bool
     duplicate_identical_ids: bool
     duplicate_conflicting_ids: bool
-    a2_endpoint_alignment: bool
-    a2_direction_ambiguous: bool
-    a2_topology_direction: bool
+    link_endpoint_alignment: bool
+    link_direction_ambiguous: bool
+    link_topology_direction: bool
 
 
 @dataclass(slots=True, frozen=True)
 class NGIISanityRepairConfig:
     duplicate_conflicting_id_drop: bool
-    a2_endpoint_direction_swap: bool
-    a2_missing_node_ref_nearest: bool
-    a2_missing_node_ref_remove: bool
-    a2_topology_direction_swap: bool
+    link_endpoint_direction_swap: bool
+    link_missing_node_ref_nearest: bool
+    link_missing_node_ref_remove: bool
+    link_topology_direction_swap: bool
 
 
 @dataclass(slots=True, frozen=True)
