@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -11,13 +12,21 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import NGIIFeature, same_feature
+from ngii2xodr.ngii.data.features import FeatureRef, NGIIFeature, same_feature
 from ngii2xodr.ngii.data.geometry import xy_distance, xy_line
 from ngii2xodr.ngii.data.sanity import SanityReport
 from ngii2xodr.ngii.data.schema import ReciprocalRelationshipRule
 
 RepairHook = Callable[[NGIIDataset, SanityReport, NGIIConfig], None]
 _REPLACEMENT_CHAR = "\ufffd"
+
+
+@dataclass(slots=True, frozen=True)
+class _RemovalCause:
+    code: str
+    message: str
+    before: dict[str, Any]
+    after: dict[str, Any]
 
 
 def merge_features(
@@ -152,23 +161,22 @@ def _warn_unrepaired_replacement_chars(dataset: NGIIDataset, sanity: SanityRepor
 
 def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     link_store = dataset.store_for_role("link")
-    link_ids_to_remove: list[str] = []
+    link_attr = dataset.schema.attr_for_role("link")
+    removal_causes: dict[FeatureRef, _RemovalCause] = {}
     threshold_m = cfg.sanity.link_min_length_m
     for link in link_store.features:
         length_m = float(xy_line(link.polyline).length)
         if length_m >= threshold_m:
             continue
         if cfg.sanity.repairs.link_too_short_remove:
-            link_ids_to_remove.append(link.id)
-            sanity.action(
-                "link-too-short-removed",
-                f"{link.layer_name} {link.id} geometry length {length_m:.3f} m is shorter "
-                f"than {threshold_m:.3f} m",
+            removal_causes[FeatureRef(link_attr, link.id)] = _RemovalCause(
+                code="link-too-short-removed",
+                message=(
+                    f"{link.layer_name} {link.id} geometry length {length_m:.3f} m is "
+                    f"shorter than {threshold_m:.3f} m"
+                ),
                 before={"length_m": length_m, "threshold_m": threshold_m},
                 after={"removed": True},
-                layer_name=link.layer_name,
-                feature_id=link.id,
-                source_path=link.source_path,
             )
         elif cfg.sanity.warnings.too_short_links:
             sanity.warn(
@@ -179,31 +187,93 @@ def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGII
                 feature_id=link.id,
                 source_path=link.source_path,
             )
-    link_store.remove_feature_ids(link_ids_to_remove)
+    _remove_features_with_cascade(dataset, sanity, removal_causes)
+
+
+def repair_singular_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+    link_store = dataset.store_for_role("link")
+    node_store = dataset.store_for_role("node")
+    link_attr = dataset.schema.attr_for_role("link")
+    removal_causes: dict[FeatureRef, _RemovalCause] = {}
+    for link in link_store.features:
+        from_node_id = _optional_text(getattr(link, "from_node_id", None))
+        to_node_id = _optional_text(getattr(link, "to_node_id", None))
+        if not from_node_id or not to_node_id:
+            continue
+        if node_store.get(from_node_id) is None or node_store.get(to_node_id) is None:
+            continue
+        if _other_link_uses_node(link_store, link.id, from_node_id) or _other_link_uses_node(
+            link_store, link.id, to_node_id
+        ):
+            continue
+        if cfg.sanity.repairs.link_singular_remove:
+            removal_causes[FeatureRef(link_attr, link.id)] = _RemovalCause(
+                code="link-singular-removed",
+                message=(
+                    f"{link.layer_name} {link.id} is isolated from other links at both "
+                    f"endpoint nodes {from_node_id!r} and {to_node_id!r}"
+                ),
+                before={"from_node_id": from_node_id, "to_node_id": to_node_id},
+                after={"removed": True},
+            )
+        elif cfg.sanity.warnings.singular_links:
+            sanity.warn(
+                "link-singular-remove-disabled",
+                f"{link.layer_name} {link.id} is isolated from other links at both endpoint "
+                f"nodes {from_node_id!r} and {to_node_id!r}, but singular-link removal is "
+                "disabled",
+                layer_name=link.layer_name,
+                feature_id=link.id,
+                source_path=link.source_path,
+            )
+    _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
 def repair_dangling_relationships(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
+    removal_causes: dict[FeatureRef, _RemovalCause] = {}
+    optional_dangling: list[tuple[FeatureRef, str, str, str]] = []
     for store in dataset.layer_stores:
         for feature in store.features:
+            feature_ref = FeatureRef(store.spec.python_attr, feature.id)
             for relationship in store.spec.relationships:
                 value = _optional_text(getattr(feature, relationship.source_attr, None))
-                if not value or _relationship_resolves(dataset, relationship.target_attrs, value):
+                if not value and not relationship.required:
                     continue
-                before = {relationship.source_attr: getattr(feature, relationship.source_attr)}
+                if value and _relationship_resolves(dataset, relationship.target_attrs, value):
+                    continue
                 if cfg.sanity.repairs.dangling_relationship_remove:
-                    setattr(feature, relationship.source_attr, None)
-                    sanity.action(
-                        "dangling-relationship-removed",
-                        f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
-                        "does not resolve and was removed",
-                        before=before,
-                        after={relationship.source_attr: None},
-                        layer_name=feature.layer_name,
-                        feature_id=feature.id,
-                        source_path=feature.source_path,
-                    )
+                    if relationship.required:
+                        target_layer = _relationship_target_label(
+                            dataset, relationship.target_attrs
+                        )
+                        removal_causes.setdefault(
+                            feature_ref,
+                            _RemovalCause(
+                                code="dangling-required-feature-removed",
+                                message=(
+                                    f"{feature.layer_name} {feature.id} "
+                                    f"{relationship.column_name}={value!r} does not resolve "
+                                    f"to required {target_layer}"
+                                ),
+                                before={
+                                    relationship.source_attr: getattr(
+                                        feature, relationship.source_attr
+                                    )
+                                },
+                                after={"removed": True},
+                            ),
+                        )
+                    elif value:
+                        optional_dangling.append(
+                            (
+                                feature_ref,
+                                relationship.source_attr,
+                                relationship.column_name,
+                                value,
+                            )
+                        )
                 elif cfg.sanity.warnings.dangling_relationships:
                     target_layer = _relationship_target_label(dataset, relationship.target_attrs)
                     sanity.warn(
@@ -215,31 +285,49 @@ def repair_dangling_relationships(
                         feature_id=feature.id,
                         source_path=feature.source_path,
                     )
+    removed_refs = _remove_features_with_cascade(dataset, sanity, removal_causes)
+    for feature_ref, source_attr, column_name, value in optional_dangling:
+        if feature_ref in removed_refs:
+            continue
+        store = dataset.store_for_attr(feature_ref.layer_attr)
+        feature = store.get(feature_ref.feature_id)
+        if feature is None or _optional_text(getattr(feature, source_attr, None)) != value:
+            continue
+        setattr(feature, source_attr, None)
+        sanity.action(
+            "dangling-relationship-removed",
+            f"{feature.layer_name} {feature.id} {column_name}={value!r} does not resolve and "
+            "was removed",
+            before={source_attr: value},
+            after={source_attr: None},
+            layer_name=feature.layer_name,
+            feature_id=feature.id,
+            source_path=feature.source_path,
+        )
 
 
 def repair_dangling_nodes(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     link_store = dataset.store_for_role("link")
     node_store = dataset.store_for_role("node")
+    node_attr = dataset.schema.attr_for_role("node")
     used_node_ids = {
         node_id
         for link in link_store.features
         for node_id in (link.from_node_id, link.to_node_id)
         if node_id
     }
-    node_ids_to_remove: list[str] = []
+    removal_causes: dict[FeatureRef, _RemovalCause] = {}
     for node in node_store.features:
         if node.id in used_node_ids:
             continue
         if cfg.sanity.repairs.dangling_node_remove:
-            node_ids_to_remove.append(node.id)
-            sanity.action(
-                "dangling-node-removed",
-                f"{node.layer_name} {node.id} is not referenced by any remaining link endpoint",
+            removal_causes[FeatureRef(node_attr, node.id)] = _RemovalCause(
+                code="dangling-node-removed",
+                message=(
+                    f"{node.layer_name} {node.id} is not referenced by any remaining link endpoint"
+                ),
                 before={"referenced_by_link_endpoint": False},
                 after={"removed": True},
-                layer_name=node.layer_name,
-                feature_id=node.id,
-                source_path=node.source_path,
             )
         elif cfg.sanity.warnings.dangling_nodes:
             sanity.warn(
@@ -250,7 +338,7 @@ def repair_dangling_nodes(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
                 feature_id=node.id,
                 source_path=node.source_path,
             )
-    node_store.remove_feature_ids(node_ids_to_remove)
+    _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
 def repair_reversed_link_endpoints(
@@ -865,6 +953,174 @@ def _fill_missing_reciprocal_relationship(
         )
 
 
+def _remove_features_with_cascade(
+    dataset: NGIIDataset,
+    sanity: SanityReport,
+    seed_causes: dict[FeatureRef, _RemovalCause],
+) -> set[FeatureRef]:
+    removal_causes = dict(seed_causes)
+    queue = list(removal_causes)
+    while queue:
+        queue.pop(0)
+        for dependent_ref, cause in _required_dependents_for_removed_refs(
+            dataset, frozenset(removal_causes)
+        ).items():
+            if dependent_ref in removal_causes:
+                continue
+            removal_causes[dependent_ref] = cause
+            queue.append(dependent_ref)
+
+    removal_refs = set(removal_causes)
+    if not removal_refs:
+        return set()
+
+    for feature_ref, cause in removal_causes.items():
+        feature = dataset.store_for_attr(feature_ref.layer_attr).get(feature_ref.feature_id)
+        if feature is None:
+            continue
+        sanity.action(
+            cause.code,
+            cause.message,
+            before=cause.before,
+            after=cause.after,
+            layer_name=feature.layer_name,
+            feature_id=feature.id,
+            source_path=feature.source_path,
+        )
+
+    _clear_optional_relationships_to_removed(dataset, sanity, frozenset(removal_refs))
+    for layer_attr, store in dataset.layer_items:
+        ids_to_remove = {
+            feature_ref.feature_id
+            for feature_ref in removal_refs
+            if feature_ref.layer_attr == layer_attr
+        }
+        store.remove_feature_ids(ids_to_remove)
+    return removal_refs
+
+
+def _required_dependents_for_removed_refs(
+    dataset: NGIIDataset,
+    removal_refs: frozenset[FeatureRef],
+) -> dict[FeatureRef, _RemovalCause]:
+    dependents: dict[FeatureRef, _RemovalCause] = {}
+    for layer_attr, store in dataset.layer_items:
+        for feature in store.features:
+            source_ref = FeatureRef(layer_attr, feature.id)
+            if source_ref in removal_refs:
+                continue
+            for relationship in store.spec.relationships:
+                if not relationship.required:
+                    continue
+                value = _optional_text(getattr(feature, relationship.source_attr, None))
+                if not value or not _relationship_references_removed_target(
+                    dataset, relationship.target_attrs, value, removal_refs
+                ):
+                    continue
+                if _relationship_resolves_outside_removal(
+                    dataset, relationship.target_attrs, value, removal_refs
+                ):
+                    continue
+                target_label = _relationship_removed_target_label(
+                    dataset, relationship.target_attrs, value, removal_refs
+                )
+                dependents.setdefault(
+                    source_ref,
+                    _RemovalCause(
+                        code="required-dependent-removed",
+                        message=(
+                            f"{feature.layer_name} {feature.id} "
+                            f"{relationship.column_name}={value!r} depends on removed "
+                            f"{target_label}"
+                        ),
+                        before={
+                            relationship.source_attr: getattr(feature, relationship.source_attr)
+                        },
+                        after={"removed": True},
+                    ),
+                )
+    return dependents
+
+
+def _clear_optional_relationships_to_removed(
+    dataset: NGIIDataset,
+    sanity: SanityReport,
+    removal_refs: frozenset[FeatureRef],
+) -> None:
+    for layer_attr, store in dataset.layer_items:
+        for feature in store.features:
+            source_ref = FeatureRef(layer_attr, feature.id)
+            if source_ref in removal_refs:
+                continue
+            for relationship in store.spec.relationships:
+                if relationship.required:
+                    continue
+                value = _optional_text(getattr(feature, relationship.source_attr, None))
+                if not value or not _relationship_references_removed_target(
+                    dataset, relationship.target_attrs, value, removal_refs
+                ):
+                    continue
+                if _relationship_resolves_outside_removal(
+                    dataset, relationship.target_attrs, value, removal_refs
+                ):
+                    continue
+                before = {relationship.source_attr: getattr(feature, relationship.source_attr)}
+                setattr(feature, relationship.source_attr, None)
+                sanity.action(
+                    "optional-dependent-reference-cleared",
+                    f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
+                    "depended on a removed feature and was cleared",
+                    before=before,
+                    after={relationship.source_attr: None},
+                    layer_name=feature.layer_name,
+                    feature_id=feature.id,
+                    source_path=feature.source_path,
+                )
+
+
+def _relationship_references_removed_target(
+    dataset: NGIIDataset,
+    target_attrs: tuple[str, ...],
+    feature_id: str,
+    removal_refs: frozenset[FeatureRef],
+) -> bool:
+    return any(FeatureRef(target_attr, feature_id) in removal_refs for target_attr in target_attrs)
+
+
+def _relationship_resolves_outside_removal(
+    dataset: NGIIDataset,
+    target_attrs: tuple[str, ...],
+    feature_id: str,
+    removal_refs: frozenset[FeatureRef],
+) -> bool:
+    return any(
+        FeatureRef(target_attr, feature_id) not in removal_refs
+        and dataset.store_for_attr(target_attr).get(feature_id) is not None
+        for target_attr in target_attrs
+    )
+
+
+def _relationship_removed_target_label(
+    dataset: NGIIDataset,
+    target_attrs: tuple[str, ...],
+    feature_id: str,
+    removal_refs: frozenset[FeatureRef],
+) -> str:
+    labels = [
+        f"{dataset.store_for_attr(target_attr).layer_name} {feature_id}"
+        for target_attr in target_attrs
+        if FeatureRef(target_attr, feature_id) in removal_refs
+    ]
+    return "/".join(labels)
+
+
+def _other_link_uses_node(link_store: LayerStore[Any], link_id: str, node_id: str) -> bool:
+    return any(
+        link.id != link_id and node_id in {link.from_node_id, link.to_node_id}
+        for link in link_store.features
+    )
+
+
 def _optional_text(value: object) -> str:
     if value is None:
         return ""
@@ -886,8 +1142,9 @@ def _relationship_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ..
 
 DEFAULT_REPAIR_HOOKS: tuple[tuple[str, RepairHook], ...] = (
     ("link_too_short_removal", repair_too_short_links),
-    ("dangling_relationships", repair_dangling_relationships),
+    ("link_singular_removal", repair_singular_links),
     ("link_missing_node_refs", repair_missing_link_node_refs),
+    ("dangling_relationships", repair_dangling_relationships),
     ("link_endpoint_direction", repair_reversed_link_endpoints),
     ("link_topology_direction", repair_link_topology_direction),
     ("dangling_nodes", repair_dangling_nodes),

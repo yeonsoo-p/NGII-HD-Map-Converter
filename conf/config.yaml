@@ -44,12 +44,14 @@ ngii:
       link_lateral_longitudinal_conflict: true
       link_lateral_reciprocal_conflict: true
       too_short_links: true
+      singular_links: true
       dangling_relationships: true
       dangling_nodes: true
       reciprocal_relationships: true
     repairs:
       duplicate_conflicting_id_drop: true
       link_too_short_remove: true
+      link_singular_remove: true
       link_endpoint_direction_swap: true
       link_missing_node_ref_nearest: true
       link_missing_node_ref_remove: true
@@ -73,7 +75,7 @@ segmentation:
   enable_junction_reference: true
   enable_junction_edge: true
   # Max |dZ| (m) at an XY intersection to count as the same physical feature.
-  z_intersection_tol_m: 2.0
+  z_intersection_tol_m: 1.0
   # Max planimetric distance (m) for grouping A1 NodeType=1 lateral endpoint
   # node groups into one bidirectional junction connection.
   junction_connection_node_merge_dist_m: 15.0

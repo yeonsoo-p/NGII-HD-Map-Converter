@@ -25,6 +25,7 @@ class NGIISanityWarningConfig:
     link_lateral_longitudinal_conflict: bool
     link_lateral_reciprocal_conflict: bool
     too_short_links: bool
+    singular_links: bool
     dangling_relationships: bool
     dangling_nodes: bool
     reciprocal_relationships: bool
@@ -34,6 +35,7 @@ class NGIISanityWarningConfig:
 class NGIISanityRepairConfig:
     duplicate_conflicting_id_drop: bool
     link_too_short_remove: bool
+    link_singular_remove: bool
     link_endpoint_direction_swap: bool
     link_missing_node_ref_nearest: bool
     link_missing_node_ref_remove: bool

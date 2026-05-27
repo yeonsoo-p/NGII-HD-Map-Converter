@@ -164,6 +164,7 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 ),
                 link_lateral_reciprocal_conflict=bool(warning_cfg.link_lateral_reciprocal_conflict),
                 too_short_links=bool(warning_cfg.too_short_links),
+                singular_links=bool(warning_cfg.singular_links),
                 dangling_relationships=bool(warning_cfg.dangling_relationships),
                 dangling_nodes=bool(warning_cfg.dangling_nodes),
                 reciprocal_relationships=bool(warning_cfg.reciprocal_relationships),
@@ -171,6 +172,7 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
             repairs=NGIISanityRepairConfig(
                 duplicate_conflicting_id_drop=bool(repair_cfg.duplicate_conflicting_id_drop),
                 link_too_short_remove=bool(repair_cfg.link_too_short_remove),
+                link_singular_remove=bool(repair_cfg.link_singular_remove),
                 link_endpoint_direction_swap=_cfg_bool(
                     repair_cfg,
                     "link_endpoint_direction_swap",
