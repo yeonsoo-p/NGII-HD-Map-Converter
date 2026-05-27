@@ -365,6 +365,3 @@ SCHEMA = SchemaDefinition(
     ),
     role_keys=(RoleKey("node_group", "node", "group_id"),),
 )
-
-SPECS_BY_FILENAME = SCHEMA.specs_by_filename
-SPECS_BY_LAYER_NAME = SCHEMA.specs_by_layer_name

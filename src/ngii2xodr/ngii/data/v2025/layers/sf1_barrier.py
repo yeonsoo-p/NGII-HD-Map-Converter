@@ -26,15 +26,11 @@ class SF1_BARRIER(V2025LineFeature):
     l_link_id: str | None
 
 
-def _optional_id(value: str) -> str | None:
-    return value or None
-
-
 def make_feature(record: FeatureRecord) -> SF1_BARRIER:
     return SF1_BARRIER(
         **common_kwargs(record),
         polyline=record.geometry,
         barr_type=record.text("BarrType"),
-        r_link_id=_optional_id(record.text("R_LinkID")),
-        l_link_id=_optional_id(record.text("L_LinkID")),
+        r_link_id=record.optional_ref("R_LinkID"),
+        l_link_id=record.optional_ref("L_LinkID"),
     )

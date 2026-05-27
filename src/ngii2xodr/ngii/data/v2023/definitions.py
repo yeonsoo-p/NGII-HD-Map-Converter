@@ -365,6 +365,3 @@ SCHEMA = SchemaDefinition(
         RoleFilter("junction_node", "node", "node_type", ("1",)),
     ),
 )
-
-SPECS_BY_FILENAME = SCHEMA.specs_by_filename
-SPECS_BY_LAYER_NAME = SCHEMA.specs_by_layer_name

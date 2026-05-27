@@ -416,13 +416,11 @@ def _read_utf8_dbf_text_records(
 
 
 def _text_field_by_lower(spec: LayerSpec) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for rule in spec.field_rules:
-        if rule.field_type != "text":
-            continue
-        for column in rule.columns:
-            result[column.lower()] = rule.name
-    return result
+    return {
+        column.lower(): rule.name
+        for column, rule in spec.field_rules_by_column.items()
+        if rule.field_type == "text"
+    }
 
 
 def _looks_like_cp949_mojibake(gdf: gpd.GeoDataFrame) -> bool:

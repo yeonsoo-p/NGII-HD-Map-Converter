@@ -60,10 +60,6 @@ class A2_LINK(V2023LineFeature):
     its_link_id: str
 
 
-def _optional_id(value: str) -> str | None:
-    return value or None
-
-
 def make_feature(record: FeatureRecord) -> A2_LINK:
     return A2_LINK(
         **common_kwargs(record),
@@ -73,10 +69,10 @@ def make_feature(record: FeatureRecord) -> A2_LINK:
         road_no=record.text("RoadNo"),
         link_type=record.text("LinkType"),
         lane_no=record.integer("LaneNo"),
-        r_link_id=_optional_id(record.text("R_LinkID")),
-        l_link_id=_optional_id(record.text("L_LinkID")),
-        from_node_id=_optional_id(record.text("FromNodeID")),
-        to_node_id=_optional_id(record.text("ToNodeID")),
+        r_link_id=record.optional_ref("R_LinkID"),
+        l_link_id=record.optional_ref("L_LinkID"),
+        from_node_id=record.optional_ref("FromNodeID"),
+        to_node_id=record.optional_ref("ToNodeID"),
         section_id=record.text("SectionID"),
         length_m=record.floating("Length"),
         its_link_id=record.text("ITSLinkID"),

@@ -27,9 +27,6 @@ from ngii2xodr.ngii.data.features import (
     FeatureGeometryKind,
     LineFeature,
     NGIIFeature,
-    feature_point_xyz,
-    feature_points,
-    feature_polygon_ring,
 )
 from ngii2xodr.ngii.segmentation import (
     ConnectionReference,
@@ -223,7 +220,7 @@ class PointRenderLayer(RenderLayer):
     def __post_init__(self) -> None:
         points: list[NDArray[np.float64]] = []
         for index in self._iter_feature_indices():
-            point = feature_point_xyz(self.store.features[index])
+            point = self.store.features[index].point_xyz
             if point is not None:
                 points.append(point)
         xyz = np.asarray(points, dtype=np.float64) if points else np.empty((0, 3), dtype=np.float64)
@@ -760,7 +757,7 @@ class HdMapViz:
     def _build_registry(self) -> RenderRegistry:
         layers: dict[str, RenderLayer] = {}
         for attr, store in self.dataset.layer_items:
-            kinds = store.geometry_kinds
+            kinds = store.observed_geometry_kinds
             if not kinds:
                 continue
             config = _required_layer_config(self.viz_cfg.layers, attr, store)
@@ -1073,7 +1070,7 @@ class HdMapViz:
         feature = self.dataset.store_for_attr(ref.layer_attr).get(ref.feature_id)
         if feature is None:
             return
-        points = feature_points(feature)
+        points = feature.points
         if points is None or len(points) == 0:
             return
         mins = np.min(points, axis=0)
@@ -1226,7 +1223,7 @@ def _polygon_polydata(
     vert_offset = 0
     for feature_idx in feature_indices:
         feature = features[feature_idx]
-        ring = feature_polygon_ring(feature)
+        ring = feature.polygon_ring
         if ring is None:
             continue
         tri_result = _triangulated_ring_xy(ring)

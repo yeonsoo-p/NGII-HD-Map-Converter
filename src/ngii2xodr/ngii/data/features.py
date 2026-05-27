@@ -28,6 +28,9 @@ class FeatureRecord:
         value = self.attributes.get(column, default)
         return default if value == "" else str(value)
 
+    def optional_ref(self, column: str) -> str | None:
+        return self.text(column) or None
+
     def integer(self, column: str, default: int = -1) -> int:
         value = self.attributes.get(column, "")
         if value == "":
@@ -49,6 +52,23 @@ class NGIIFeature:
     layer_name: ClassVar[str]
 
     @property
+    def geometry_kind(self) -> FeatureGeometryKind:
+        msg = f"{self.layer_name} {self.id!r} has no supported geometry"
+        raise TypeError(msg)
+
+    @property
+    def point_xyz(self) -> NDArray[np.float64] | None:
+        return None
+
+    @property
+    def polygon_ring(self) -> NDArray[np.float64] | None:
+        return None
+
+    @property
+    def points(self) -> NDArray[np.float64] | None:
+        return None
+
+    @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
         msg = f"{self.layer_name} {self.id!r} has no supported geometry signature"
         raise TypeError(msg)
@@ -59,6 +79,18 @@ class PointFeature(NGIIFeature):
     point: NDArray[np.float64] = field(compare=False)
 
     @property
+    def geometry_kind(self) -> Literal["point"]:
+        return "point"
+
+    @property
+    def point_xyz(self) -> NDArray[np.float64]:
+        return self.point
+
+    @property
+    def points(self) -> NDArray[np.float64]:
+        return self.point.reshape(1, 3)
+
+    @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
         return (tuple(float(v) for v in self.point),)
 
@@ -66,6 +98,14 @@ class PointFeature(NGIIFeature):
 @dataclass(slots=True)
 class LineFeature(NGIIFeature):
     polyline: NDArray[np.float64] = field(compare=False)
+
+    @property
+    def geometry_kind(self) -> Literal["line"]:
+        return "line"
+
+    @property
+    def points(self) -> NDArray[np.float64]:
+        return self.polyline
 
     @property
     def xy_line(self) -> shapely.LineString:
@@ -79,6 +119,18 @@ class LineFeature(NGIIFeature):
 @dataclass(slots=True)
 class PolygonFeature(NGIIFeature):
     ring: NDArray[np.float64] = field(compare=False)
+
+    @property
+    def geometry_kind(self) -> Literal["polygon"]:
+        return "polygon"
+
+    @property
+    def polygon_ring(self) -> NDArray[np.float64]:
+        return self.ring
+
+    @property
+    def points(self) -> NDArray[np.float64]:
+        return self.ring
 
     @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
@@ -100,6 +152,23 @@ class PointOrPolygonFeature(NGIIFeature):
         raise ValueError(msg)
 
     @property
+    def point_xyz(self) -> NDArray[np.float64] | None:
+        return self.point
+
+    @property
+    def polygon_ring(self) -> NDArray[np.float64] | None:
+        return self.ring
+
+    @property
+    def points(self) -> NDArray[np.float64]:
+        if self.point is not None:
+            return self.point.reshape(1, 3)
+        if self.ring is not None:
+            return self.ring
+        msg = f"{self.layer_name} {self.id!r} has neither point nor polygon geometry"
+        raise ValueError(msg)
+
+    @property
     def geometry_signature(self) -> tuple[tuple[float, ...], ...]:
         if self.point is not None:
             return (tuple(float(v) for v in self.point),)
@@ -115,47 +184,6 @@ def base_kwargs(record: FeatureRecord) -> dict[str, Any]:
         "source_path": record.source_path,
         "source_row": record.source_row,
     }
-
-
-def feature_geometry_kind(feature: NGIIFeature) -> FeatureGeometryKind:
-    if isinstance(feature, PointFeature):
-        return "point"
-    if isinstance(feature, LineFeature):
-        return "line"
-    if isinstance(feature, PolygonFeature):
-        return "polygon"
-    if isinstance(feature, PointOrPolygonFeature):
-        return feature.geometry_kind
-    msg = f"{feature.layer_name} {feature.id!r} has no supported geometry"
-    raise TypeError(msg)
-
-
-def feature_point_xyz(feature: NGIIFeature) -> NDArray[np.float64] | None:
-    if isinstance(feature, PointFeature):
-        return feature.point
-    if isinstance(feature, PointOrPolygonFeature):
-        return feature.point
-    return None
-
-
-def feature_polygon_ring(feature: NGIIFeature) -> NDArray[np.float64] | None:
-    if isinstance(feature, PolygonFeature):
-        return feature.ring
-    if isinstance(feature, PointOrPolygonFeature):
-        return feature.ring
-    return None
-
-
-def feature_points(feature: NGIIFeature) -> NDArray[np.float64] | None:
-    point = feature_point_xyz(feature)
-    if point is not None:
-        return point.reshape(1, 3)
-    if isinstance(feature, LineFeature):
-        return feature.polyline
-    ring = feature_polygon_ring(feature)
-    if ring is not None:
-        return ring
-    return None
 
 
 def same_feature(a: NGIIFeature, b: NGIIFeature) -> bool:

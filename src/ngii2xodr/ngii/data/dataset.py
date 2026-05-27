@@ -15,9 +15,6 @@ from ngii2xodr.ngii.data.features import (
     FeatureGeometryKind,
     LineFeature,
     NGIIFeature,
-    feature_geometry_kind,
-    feature_point_xyz,
-    feature_polygon_ring,
 )
 from ngii2xodr.ngii.data.geometry import xy_line
 from ngii2xodr.ngii.data.schema import (
@@ -70,7 +67,7 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
     def points(self) -> NDArray[np.float64]:
         points: list[NDArray[np.float64]] = []
         for feature in self.features:
-            point = feature_point_xyz(feature)
+            point = feature.point_xyz
             if point is not None:
                 points.append(point)
         return np.asarray(points, dtype=np.float64)
@@ -87,23 +84,21 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
     def rings(self) -> list[NDArray[np.float64]]:
         rings: list[NDArray[np.float64]] = []
         for feature in self.features:
-            ring = feature_polygon_ring(feature)
+            ring = feature.polygon_ring
             if ring is not None:
                 rings.append(ring)
         return rings
 
     @property
-    def geometry_kinds(self) -> tuple[FeatureGeometryKind, ...]:
+    def observed_geometry_kinds(self) -> tuple[FeatureGeometryKind, ...]:
         if not self.features:
-            return self.spec.geometry_kinds
-        present = {feature_geometry_kind(feature) for feature in self.features}
+            return ()
+        present = {feature.geometry_kind for feature in self.features}
         return tuple(kind for kind in self.spec.geometry_kinds if kind in present)
 
     def feature_indices_for_geometry_kind(self, kind: FeatureGeometryKind) -> tuple[int, ...]:
         return tuple(
-            index
-            for index, feature in enumerate(self.features)
-            if feature_geometry_kind(feature) == kind
+            index for index, feature in enumerate(self.features) if feature.geometry_kind == kind
         )
 
     def related_feature(

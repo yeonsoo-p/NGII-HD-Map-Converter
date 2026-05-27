@@ -19,17 +19,13 @@ class RS1_ROADBORDER(V2025LineFeature):
     pathway_id: str | None
 
 
-def _optional_id(value: str) -> str | None:
-    return value or None
-
-
 def make_feature(record: FeatureRecord) -> RS1_ROADBORDER:
     return RS1_ROADBORDER(
         **common_kwargs(record),
         polyline=record.geometry,
         kerb=record.text("Kerb"),
         tfc_island=record.text("TFCIsland"),
-        r_link_id=_optional_id(record.text("R_LinkID")),
-        l_link_id=_optional_id(record.text("L_LinkID")),
-        pathway_id=_optional_id(record.text("PathwayID")),
+        r_link_id=record.optional_ref("R_LinkID"),
+        l_link_id=record.optional_ref("L_LinkID"),
+        pathway_id=record.optional_ref("PathwayID"),
     )

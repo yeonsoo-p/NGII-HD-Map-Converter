@@ -58,16 +58,12 @@ class RM1_LANELINE(V2025LineFeature):
     l_link_id: str | None
 
 
-def _optional_id(value: str) -> str | None:
-    return value or None
-
-
 def make_feature(record: FeatureRecord) -> RM1_LANELINE:
     return RM1_LANELINE(
         **common_kwargs(record),
         polyline=record.geometry,
         line_type=record.text("LineType"),
         line_kind=record.text("LineKind"),
-        r_link_id=_optional_id(record.text("R_LinkID")),
-        l_link_id=_optional_id(record.text("L_LinkID")),
+        r_link_id=record.optional_ref("R_LinkID"),
+        l_link_id=record.optional_ref("L_LinkID"),
     )

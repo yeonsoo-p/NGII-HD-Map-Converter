@@ -62,10 +62,6 @@ class NT2_LINK(V2025LineFeature):
     road_type_id: str | None
 
 
-def _optional_id(value: str) -> str | None:
-    return value or None
-
-
 def make_feature(record: FeatureRecord) -> NT2_LINK:
     return NT2_LINK(
         **common_kwargs(record),
@@ -82,9 +78,9 @@ def make_feature(record: FeatureRecord) -> NT2_LINK:
         direction=record.text("Direction"),
         link_type=record.text("LinkType"),
         turn=record.text("Turn"),
-        r_link_id=_optional_id(record.text("R_LinkID")),
-        l_link_id=_optional_id(record.text("L_LinkID")),
-        from_node_id=_optional_id(record.text("FromNodeID")),
-        to_node_id=_optional_id(record.text("ToNodeID")),
-        road_type_id=_optional_id(record.text("RoadTypeID")),
+        r_link_id=record.optional_ref("R_LinkID"),
+        l_link_id=record.optional_ref("L_LinkID"),
+        from_node_id=record.optional_ref("FromNodeID"),
+        to_node_id=record.optional_ref("ToNodeID"),
+        road_type_id=record.optional_ref("RoadTypeID"),
     )
