@@ -32,6 +32,7 @@ from ngii2xodr.ngii.segmentation import (
     ConnectionReference,
     ConnectionReferenceStage,
     JunctionConnectionStage,
+    JunctionStage,
     Segmentation,
     SegmentationConfig,
 )
@@ -852,6 +853,12 @@ class HdMapViz:
         self, layer_attr: str, store: LayerStore[Any], config: VizLayerConfig
     ) -> NDArray[np.uint8]:
         rgb = np.tile(np.asarray(config.rgb, dtype=np.uint8), (len(store), 1))
+        junction_result = self.segmentation.result_or_none(JunctionStage.id)
+        junction_refs = (
+            set()
+            if junction_result is None
+            else {ref for ref in junction_result.entity_id_by_ref if ref.layer_attr == layer_attr}
+        )
         for result in self.segmentation.active_results(self._segmentation_level):
             if result.stage_id == ConnectionReferenceStage.id:
                 continue
@@ -864,6 +871,8 @@ class HdMapViz:
             )
             for ref, entity_id in entity_id_by_ref.items():
                 if ref.layer_attr != layer_attr:
+                    continue
+                if result.stage_id == JunctionConnectionStage.id and ref in junction_refs:
                     continue
                 idx = store.id_to_index.get(ref.feature_id)
                 if idx is not None and 0 <= entity_id < len(palette):

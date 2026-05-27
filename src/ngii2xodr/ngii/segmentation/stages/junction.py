@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import ClassVar
 
 import shapely
@@ -57,23 +58,29 @@ class JunctionStage:
         if not candidate_rows:
             return empty_result(self, skipped_reason="schema has no junction link candidates")
 
-        candidate_set = set(candidate_rows)
+        seed_set = set(candidate_rows)
         link_group_by_ref = _lateral_link_group_by_ref(link_groups)
         promoted_rows, promotion_pairs = _promotion_rows_and_pairs(
             context,
             candidate_rows,
-            candidate_set,
+            seed_set,
             link_group_by_ref,
         )
-        component_rows = _unique_rows((*candidate_rows, *promoted_rows))
+        bridge_result = _bounded_lateral_node_bridges(
+            context,
+            node_groups,
+            candidate_rows,
+            promoted_rows,
+        )
+        component_rows = _unique_rows((*candidate_rows, *promoted_rows, *bridge_result.owner_rows))
         components = connected_components_from_pairs(
             component_rows,
             (
-                *_lateral_pairs(context, candidate_rows, candidate_set),
+                *_lateral_pairs(context, candidate_rows, seed_set),
                 *_intersection_pairs(context, candidate_rows),
                 *_shared_endpoint_node_pairs(context, candidate_rows),
-                *_endpoint_scoped_pairs(context, node_groups, candidate_set),
                 *promotion_pairs,
+                *bridge_result.pairs,
             ),
         )
 
@@ -94,6 +101,12 @@ class JunctionStage:
         )
 
 
+@dataclass(slots=True, frozen=True)
+class _BoundedBridgeResult:
+    owner_rows: tuple[int, ...]
+    pairs: tuple[tuple[int, int], ...]
+
+
 def _lateral_pairs(
     context: SegmentationContext,
     candidate_rows: list[int],
@@ -105,6 +118,42 @@ def _lateral_pairs(
             if neighbour_row in candidate_set:
                 pairs.append((row_i, neighbour_row))
     return tuple(pairs)
+
+
+def _bounded_lateral_node_bridges(
+    context: SegmentationContext,
+    node_groups: tuple[LateralNodeGroup, ...],
+    seed_rows: list[int],
+    promoted_rows: tuple[int, ...],
+) -> _BoundedBridgeResult:
+    seed_set = set(seed_rows)
+    promoted_set = set(promoted_rows)
+    bridge_set = seed_set | promoted_set
+    owner_rows: list[int] = []
+    owner_seen: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for node_group in node_groups:
+        rows_by_side = _junction_rows_by_endpoint_side_for_node_group(
+            context, node_group, bridge_set
+        )
+        for side, rows in rows_by_side.items():
+            if len(rows) < 2:
+                continue
+            pairs.extend(_pairs_from_rows(rows))
+            if not _bridges_seed_and_promoted(rows, seed_set, promoted_set):
+                continue
+            for owner_row in _owner_rows_for_bridge_side(context, node_group, side):
+                pairs.extend((owner_row, row) for row in rows)
+                if owner_row not in bridge_set and owner_row not in owner_seen:
+                    owner_seen.add(owner_row)
+                    owner_rows.append(owner_row)
+    return _BoundedBridgeResult(owner_rows=tuple(owner_rows), pairs=tuple(pairs))
+
+
+def _bridges_seed_and_promoted(
+    rows: tuple[int, ...], seed_set: set[int], promoted_set: set[int]
+) -> bool:
+    return any(row in seed_set for row in rows) and any(row in promoted_set for row in rows)
 
 
 def _lateral_link_group_by_ref(
@@ -225,35 +274,44 @@ def _shared_endpoint_node_pairs(
     return tuple(pairs)
 
 
-def _endpoint_scoped_pairs(
-    context: SegmentationContext,
-    node_groups: tuple[LateralNodeGroup, ...],
-    candidate_set: set[int],
-) -> tuple[tuple[int, int], ...]:
-    pairs: list[tuple[int, int]] = []
-    for node_group in node_groups:
-        rows = _junction_rows_for_node_group(context, node_group, candidate_set)
-        pairs.extend(_pairs_from_rows(rows))
-    return tuple(pairs)
-
-
-def _junction_rows_for_node_group(
+def _junction_rows_by_endpoint_side_for_node_group(
     context: SegmentationContext,
     node_group: LateralNodeGroup,
     candidate_set: set[int],
+) -> dict[EndpointSide, tuple[int, ...]]:
+    rows_by_side: dict[EndpointSide, list[int]] = {"from": [], "to": []}
+    seen_by_side: dict[EndpointSide, set[int]] = {"from": set(), "to": set()}
+    for node_ref in node_group.node_refs:
+        for link_ref in context.outgoing_link_refs(node_ref):
+            row_i = context.link_index_for_ref(link_ref)
+            if row_i is None or row_i not in candidate_set or row_i in seen_by_side["from"]:
+                continue
+            seen_by_side["from"].add(row_i)
+            rows_by_side["from"].append(row_i)
+        for link_ref in context.incoming_link_refs(node_ref):
+            row_i = context.link_index_for_ref(link_ref)
+            if row_i is None or row_i not in candidate_set or row_i in seen_by_side["to"]:
+                continue
+            seen_by_side["to"].add(row_i)
+            rows_by_side["to"].append(row_i)
+    return {side: tuple(rows) for side, rows in rows_by_side.items()}
+
+
+def _owner_rows_for_bridge_side(
+    context: SegmentationContext,
+    node_group: LateralNodeGroup,
+    side: EndpointSide,
 ) -> tuple[int, ...]:
     rows: list[int] = []
     seen: set[int] = set()
-    for node_ref in node_group.node_refs:
-        for link_ref in (
-            *context.incoming_link_refs(node_ref),
-            *context.outgoing_link_refs(node_ref),
-        ):
-            row_i = context.link_index_for_ref(link_ref)
-            if row_i is None or row_i not in candidate_set or row_i in seen:
-                continue
-            seen.add(row_i)
-            rows.append(row_i)
+    for owner_ref in node_group.link_refs:
+        if context.endpoint_node_ref_for_link_ref(owner_ref, side) not in node_group.node_refs:
+            continue
+        owner_row = context.link_index_for_ref(owner_ref)
+        if owner_row is None or owner_row in seen:
+            continue
+        seen.add(owner_row)
+        rows.append(owner_row)
     return tuple(rows)
 
 
