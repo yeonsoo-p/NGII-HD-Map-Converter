@@ -24,8 +24,8 @@ class FeatureRef:
 
 
 @dataclass(slots=True, frozen=True)
-class ResolvedRelationship:
-    """Resolved runtime relationship edge between two NGII features."""
+class ResolvedReference:
+    """Resolved runtime reference edge between two NGII features."""
 
     source_ref: FeatureRef
     target_ref: FeatureRef
@@ -68,10 +68,10 @@ class NGIIFeature:
     id: str
     source_path: Path = field(compare=False)
     source_row: int = field(compare=False)
-    references: tuple[ResolvedRelationship, ...] = field(
+    references: tuple[ResolvedReference, ...] = field(
         default_factory=tuple, init=False, compare=False
     )
-    referenced_by: tuple[ResolvedRelationship, ...] = field(
+    referenced_by: tuple[ResolvedReference, ...] = field(
         default_factory=tuple, init=False, compare=False
     )
     layer_name: ClassVar[str]

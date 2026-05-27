@@ -8,21 +8,20 @@ from ngii2xodr.ngii.data.config import (
     NGIIConfig,
     NGIIEncodingConfig,
     NGIIGeometryConfig,
+    NGIISanityChecksConfig,
     NGIISanityConfig,
-    NGIISanityRepairConfig,
-    NGIISanityWarningConfig,
-    NGIITextCorrectionConfig,
+    SanityMode,
 )
 from ngii2xodr.ngii.data.dataset import AmbiguousFeatureIDError, LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import FeatureRef, ResolvedRelationship
+from ngii2xodr.ngii.data.features import FeatureRef, ResolvedReference
 from ngii2xodr.ngii.data.loader import NGIILoadResult, detect_schema
 from ngii2xodr.ngii.data.loader import load_ngii as _load_ngii
 from ngii2xodr.ngii.data.sanity import SanityAction, SanityReport, SanityWarning
 from ngii2xodr.ngii.data.schema import (
     FieldRule,
     LayerSpec,
-    ReciprocalRelationshipRule,
-    RelationshipRule,
+    ReciprocalReferenceRule,
+    ReferenceRule,
     RoleFilter,
     RoleKey,
     SchemaDefinition,
@@ -53,16 +52,15 @@ __all__ = [
     "NGIIEncodingConfig",
     "NGIIGeometryConfig",
     "NGIILoadResult",
+    "NGIISanityChecksConfig",
     "NGIISanityConfig",
-    "NGIISanityRepairConfig",
-    "NGIISanityWarningConfig",
-    "NGIITextCorrectionConfig",
-    "ReciprocalRelationshipRule",
-    "RelationshipRule",
-    "ResolvedRelationship",
+    "ReciprocalReferenceRule",
+    "ReferenceRule",
+    "ResolvedReference",
     "RoleFilter",
     "RoleKey",
     "SanityAction",
+    "SanityMode",
     "SanityReport",
     "SanityWarning",
     "SchemaDefinition",

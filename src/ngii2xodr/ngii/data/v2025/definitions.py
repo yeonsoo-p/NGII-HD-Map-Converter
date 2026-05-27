@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from ngii2xodr.ngii.data.schema import (
     LayerSpec,
-    ReciprocalRelationshipRule,
-    RelationshipRule,
+    ReciprocalReferenceRule,
+    ReferenceRule,
     RoleFilter,
     RoleKey,
     SchemaDefinition,
@@ -116,12 +116,12 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("RoadTypeID", 13, required=False),
             *COMMON_FIELD_RULES[1:],
         ),
-        relationships=(
-            RelationshipRule("FromNodeID", "from_node_id", ("nt1_node",), True),
-            RelationshipRule("ToNodeID", "to_node_id", ("nt1_node",), True),
-            RelationshipRule("R_LinkID", "r_link_id", ("nt2_link",), False),
-            RelationshipRule("L_LinkID", "l_link_id", ("nt2_link",), False),
-            RelationshipRule(
+        references=(
+            ReferenceRule("FromNodeID", "from_node_id", ("nt1_node",), True),
+            ReferenceRule("ToNodeID", "to_node_id", ("nt1_node",), True),
+            ReferenceRule("R_LinkID", "r_link_id", ("nt2_link",), False),
+            ReferenceRule("L_LinkID", "l_link_id", ("nt2_link",), False),
+            ReferenceRule(
                 "RoadTypeID",
                 "road_type_id",
                 ("rs2_roadstructure", "rs3_subsidiarysection"),
@@ -152,10 +152,10 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("L_LinkID", 13, required=False, column_aliases=("L_LinKID",)),
             text_rule("PathwayID", 13, required=False),
         ),
-        relationships=(
-            RelationshipRule("R_LinkID", "r_link_id", ("nt2_link",), False),
-            RelationshipRule("L_LinkID", "l_link_id", ("nt2_link",), False),
-            RelationshipRule("PathwayID", "pathway_id", ("pw1_pathway",), False),
+        references=(
+            ReferenceRule("R_LinkID", "r_link_id", ("nt2_link",), False),
+            ReferenceRule("L_LinkID", "l_link_id", ("nt2_link",), False),
+            ReferenceRule("PathwayID", "pathway_id", ("pw1_pathway",), False),
         ),
     ),
     LayerSpec(
@@ -229,9 +229,9 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("R_LinkID", 13, required=False, column_aliases=("R_linkID",)),
             text_rule("L_LinkID", 13, required=False, column_aliases=("L_linkID",)),
         ),
-        relationships=(
-            RelationshipRule("R_LinkID", "r_link_id", ("nt2_link",), False),
-            RelationshipRule("L_LinkID", "l_link_id", ("nt2_link",), False),
+        references=(
+            ReferenceRule("R_LinkID", "r_link_id", ("nt2_link",), False),
+            ReferenceRule("L_LinkID", "l_link_id", ("nt2_link",), False),
         ),
     ),
     LayerSpec(
@@ -283,9 +283,9 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
                 column_aliases=("L_LinKID", "L_linkID"),
             ),
         ),
-        relationships=(
-            RelationshipRule("R_LinkID", "r_link_id", ("nt2_link",), False),
-            RelationshipRule("L_LinkID", "l_link_id", ("nt2_link",), False),
+        references=(
+            ReferenceRule("R_LinkID", "r_link_id", ("nt2_link",), False),
+            ReferenceRule("L_LinkID", "l_link_id", ("nt2_link",), False),
         ),
     ),
     LayerSpec(
@@ -302,7 +302,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("SignType", 3, required=True, code_list=SF2_TRAFFICSIGN.SIGN_TYPE_LABEL),
             text_rule("PostID", 13, required=False),
         ),
-        relationships=(RelationshipRule("PostID", "post_id", ("sf4_supportpost",), False),),
+        references=(ReferenceRule("PostID", "post_id", ("sf4_supportpost",), False),),
     ),
     LayerSpec(
         layer_name="SF3_TRAFFICLIGHT",
@@ -318,7 +318,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("LightType", 3, required=True, code_list=SF3_TRAFFICLIGHT.LIGHT_TYPE_LABEL),
             text_rule("PostID", 13, required=False),
         ),
-        relationships=(RelationshipRule("PostID", "post_id", ("sf4_supportpost",), False),),
+        references=(ReferenceRule("PostID", "post_id", ("sf4_supportpost",), False),),
     ),
     LayerSpec(
         layer_name="SF4_SUPPORTPOST",
@@ -365,8 +365,8 @@ SCHEMA = SchemaDefinition(
         ),
     ),
     role_keys=(RoleKey("node_group", "node", "group_id"),),
-    reciprocal_relationships=(
-        ReciprocalRelationshipRule("nt2_link", "R_LinkID", "r_link_id", "L_LinkID", "l_link_id"),
-        ReciprocalRelationshipRule("nt2_link", "L_LinkID", "l_link_id", "R_LinkID", "r_link_id"),
+    reciprocal_references=(
+        ReciprocalReferenceRule("nt2_link", "R_LinkID", "r_link_id", "L_LinkID", "l_link_id"),
+        ReciprocalReferenceRule("nt2_link", "L_LinkID", "l_link_id", "R_LinkID", "r_link_id"),
     ),
 )

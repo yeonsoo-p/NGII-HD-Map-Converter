@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from ngii2xodr.ngii.data.schema import (
     LayerSpec,
-    ReciprocalRelationshipRule,
-    RelationshipRule,
+    ReciprocalReferenceRule,
+    ReferenceRule,
     RoleFilter,
     SchemaDefinition,
     float_rule,
@@ -99,12 +99,12 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             ),
             text_rule("ITSLinkID", 30, required=False),
         ),
-        relationships=(
-            RelationshipRule("FromNodeID", "from_node_id", ("a1_node",), True),
-            RelationshipRule("ToNodeID", "to_node_id", ("a1_node",), True),
-            RelationshipRule("R_LinkID", "r_link_id", ("a2_link",), False),
-            RelationshipRule("L_LinkID", "l_link_id", ("a2_link",), False),
-            RelationshipRule(
+        references=(
+            ReferenceRule("FromNodeID", "from_node_id", ("a1_node",), True),
+            ReferenceRule("ToNodeID", "to_node_id", ("a1_node",), True),
+            ReferenceRule("R_LinkID", "r_link_id", ("a2_link",), False),
+            ReferenceRule("L_LinkID", "l_link_id", ("a2_link",), False),
+            ReferenceRule(
                 "SectionID",
                 "section_id",
                 ("a3_drivewaysection", "a4_subsidiarysection"),
@@ -169,9 +169,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("Type", 1, required=True, code_list=A5_PARKINGLOT.TYPE_LABEL),
             text_rule("SectionID", 12, required=True),
         ),
-        relationships=(
-            RelationshipRule("SectionID", "section_id", ("a4_subsidiarysection",), True),
-        ),
+        references=(ReferenceRule("SectionID", "section_id", ("a4_subsidiarysection",), True),),
     ),
     LayerSpec(
         layer_name="B1_SAFETYSIGN",
@@ -189,9 +187,9 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             integer_rule("Ref_Lane", required=True),
             text_rule("PostID", 12, required=False),
         ),
-        relationships=(
-            RelationshipRule("LinkID", "link_id", ("a2_link",), True),
-            RelationshipRule("PostID", "post_id", ("c6_postpoint",), False),
+        references=(
+            ReferenceRule("LinkID", "link_id", ("a2_link",), True),
+            ReferenceRule("PostID", "post_id", ("c6_postpoint",), False),
         ),
     ),
     LayerSpec(
@@ -210,9 +208,9 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("R_LinkID", 12, required=False, column_aliases=("R_linkID",)),
             text_rule("L_LinkID", 12, required=False, column_aliases=("L_linkID",)),
         ),
-        relationships=(
-            RelationshipRule("R_LinkID", "r_link_id", ("a2_link",), False),
-            RelationshipRule("L_LinkID", "l_link_id", ("a2_link",), False),
+        references=(
+            ReferenceRule("R_LinkID", "r_link_id", ("a2_link",), False),
+            ReferenceRule("L_LinkID", "l_link_id", ("a2_link",), False),
         ),
     ),
     LayerSpec(
@@ -230,7 +228,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("Kind", 4, required=True, code_list=B3_SURFACEMARK.KIND_LABEL),
             text_rule("LinkID", 12, required=False),
         ),
-        relationships=(RelationshipRule("LinkID", "link_id", ("a2_link",), False),),
+        references=(ReferenceRule("LinkID", "link_id", ("a2_link",), False),),
     ),
     LayerSpec(
         layer_name="C1_TRAFFICLIGHT",
@@ -249,9 +247,9 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             integer_rule("Ref_Lane", required=True),
             text_rule("PostID", 12, required=False, column_aliases=("postID",)),
         ),
-        relationships=(
-            RelationshipRule("LinkID", "link_id", ("a2_link",), True),
-            RelationshipRule("PostID", "post_id", ("c6_postpoint",), False),
+        references=(
+            ReferenceRule("LinkID", "link_id", ("a2_link",), True),
+            ReferenceRule("PostID", "post_id", ("c6_postpoint",), False),
         ),
     ),
     LayerSpec(
@@ -270,7 +268,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("LinkID", 12, required=True),
             integer_rule("Ref_Lane", required=True),
         ),
-        relationships=(RelationshipRule("LinkID", "link_id", ("a2_link",), True),),
+        references=(ReferenceRule("LinkID", "link_id", ("a2_link",), True),),
     ),
     LayerSpec(
         layer_name="C3_VEHICLEPROTECTIONSAFETY",
@@ -301,9 +299,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             ),
             text_rule("Ref_ID", 12, required=False),
         ),
-        relationships=(
-            RelationshipRule("Ref_ID", "ref_id", ("c3_vehicleprotectionsafety",), False),
-        ),
+        references=(ReferenceRule("Ref_ID", "ref_id", ("c3_vehicleprotectionsafety",), False),),
     ),
     LayerSpec(
         layer_name="C4_SPEEDBUMP",
@@ -320,7 +316,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("LinkID", 12, required=True),
             integer_rule("Ref_Lane", required=True),
         ),
-        relationships=(RelationshipRule("LinkID", "link_id", ("a2_link",), True),),
+        references=(ReferenceRule("LinkID", "link_id", ("a2_link",), True),),
     ),
     LayerSpec(
         layer_name="C5_HEIGHTBARRIER",
@@ -337,7 +333,7 @@ LAYER_SPECS: tuple[LayerSpec, ...] = (
             text_rule("LinkID", 12, required=True),
             integer_rule("Ref_Lane", required=True),
         ),
-        relationships=(RelationshipRule("LinkID", "link_id", ("a2_link",), True),),
+        references=(ReferenceRule("LinkID", "link_id", ("a2_link",), True),),
     ),
     LayerSpec(
         layer_name="C6_POSTPOINT",
@@ -365,10 +361,10 @@ SCHEMA = SchemaDefinition(
         RoleFilter("uturn_marker", "lane_line", "kind", ("502",)),
         RoleFilter("junction_node", "node", "node_type", ("1",)),
     ),
-    reciprocal_relationships=(
-        ReciprocalRelationshipRule("a2_link", "R_LinkID", "r_link_id", "L_LinkID", "l_link_id"),
-        ReciprocalRelationshipRule("a2_link", "L_LinkID", "l_link_id", "R_LinkID", "r_link_id"),
-        ReciprocalRelationshipRule(
+    reciprocal_references=(
+        ReciprocalReferenceRule("a2_link", "R_LinkID", "r_link_id", "L_LinkID", "l_link_id"),
+        ReciprocalReferenceRule("a2_link", "L_LinkID", "l_link_id", "R_LinkID", "r_link_id"),
+        ReciprocalReferenceRule(
             "c3_vehicleprotectionsafety", "Ref_ID", "ref_id", "Ref_ID", "ref_id"
         ),
     ),

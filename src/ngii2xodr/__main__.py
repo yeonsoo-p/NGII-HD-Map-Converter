@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import logging
 import sys
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,16 +27,46 @@ from ngii2xodr.ngii.data import (
     NGIIConfig,
     NGIIEncodingConfig,
     NGIIGeometryConfig,
+    NGIISanityChecksConfig,
     NGIISanityConfig,
-    NGIISanityRepairConfig,
-    NGIISanityWarningConfig,
-    NGIITextCorrectionConfig,
+    SanityMode,
 )
 from ngii2xodr.ngii.segmentation import SegmentationConfig
 from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig
 from ngii2xodr.profile import ViewportProfilingConfig
 
 log = logging.getLogger(__name__)
+
+_NGII_CONFIG_KEYS = frozenset({"coordinate", "geometry", "encoding", "sanity"})
+_SANITY_CONFIG_KEYS = frozenset(
+    {"node_match_tolerance_m", "direction_parallel_dot_min", "link_min_length_m", "checks"}
+)
+_WARNING_ONLY_CHECKS = frozenset(
+    {
+        "layer_required_missing",
+        "layer_unknown",
+        "shp_sidecar_missing",
+        "dbf_column_case_duplicate",
+        "manual_column_missing",
+        "manual_column_unknown",
+        "manual_field_required_missing",
+        "manual_field_length_exceeded",
+        "manual_field_type_invalid",
+        "manual_field_code_invalid",
+        "manual_hist_type_invalid",
+        "geometry_missing",
+        "geometry_invalid",
+        "text_utf8_dbf_row_mismatch",
+        "text_utf8_decode_replacement",
+        "text_replacement_char",
+        "feature_id_missing",
+        "feature_id_duplicate_identical",
+        "global_id_collision",
+        "reciprocal_reference_conflict",
+        "link_endpoint_order_ambiguous",
+        "link_endpoint_misaligned",
+    }
+)
 
 
 def _rgb_int(v: list[int]) -> tuple[int, int, int]:
@@ -127,8 +158,10 @@ def _build_viewport_profiling_cfg(raw: object) -> ViewportProfilingConfig:
 
 
 def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
-    warning_cfg = cfg.ngii.sanity.warnings
-    repair_cfg = cfg.ngii.sanity.repairs
+    ngii_raw = _raw_mapping(OmegaConf.to_container(cfg.ngii, resolve=True), "ngii")
+    _reject_unknown_keys(ngii_raw, _NGII_CONFIG_KEYS, "ngii")
+    sanity_raw = _raw_mapping(OmegaConf.to_container(cfg.ngii.sanity, resolve=True), "ngii.sanity")
+    _reject_unknown_keys(sanity_raw, _SANITY_CONFIG_KEYS, "ngii.sanity")
     return NGIIConfig(
         sanity=NGIISanityConfig(
             node_match_tolerance_m=float(cfg.ngii.sanity.node_match_tolerance_m),
@@ -137,75 +170,7 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 cfg.ngii.sanity.link_min_length_m,
                 "ngii.sanity.link_min_length_m",
             ),
-            warnings=NGIISanityWarningConfig(
-                missing_required_layers=bool(warning_cfg.missing_required_layers),
-                missing_sidecars=bool(warning_cfg.missing_sidecars),
-                duplicate_column_capitalization=bool(warning_cfg.duplicate_column_capitalization),
-                manual_field_rules=bool(warning_cfg.manual_field_rules),
-                unknown_manual_columns=bool(warning_cfg.unknown_manual_columns),
-                invalid_code_values=bool(warning_cfg.invalid_code_values),
-                unsupported_geometry=bool(warning_cfg.unsupported_geometry),
-                unknown_layers=bool(warning_cfg.unknown_layers),
-                unresolved_relationships=bool(warning_cfg.unresolved_relationships),
-                global_id_collision=bool(warning_cfg.global_id_collision),
-                duplicate_identical_ids=bool(warning_cfg.duplicate_identical_ids),
-                duplicate_conflicting_ids=bool(warning_cfg.duplicate_conflicting_ids),
-                link_endpoint_alignment=_cfg_bool(
-                    warning_cfg, "link_endpoint_alignment", legacy_name="a2_endpoint_alignment"
-                ),
-                link_direction_ambiguous=_cfg_bool(
-                    warning_cfg, "link_direction_ambiguous", legacy_name="a2_direction_ambiguous"
-                ),
-                link_topology_direction=_cfg_bool(
-                    warning_cfg, "link_topology_direction", legacy_name="a2_topology_direction"
-                ),
-                link_lateral_longitudinal_conflict=bool(
-                    warning_cfg.link_lateral_longitudinal_conflict
-                ),
-                link_lateral_reciprocal_conflict=bool(warning_cfg.link_lateral_reciprocal_conflict),
-                too_short_links=bool(warning_cfg.too_short_links),
-                singular_links=bool(warning_cfg.singular_links),
-                dangling_nodes=bool(warning_cfg.dangling_nodes),
-                reciprocal_relationships=bool(warning_cfg.reciprocal_relationships),
-            ),
-            repairs=NGIISanityRepairConfig(
-                duplicate_conflicting_id_drop=bool(repair_cfg.duplicate_conflicting_id_drop),
-                link_too_short_remove=bool(repair_cfg.link_too_short_remove),
-                link_singular_remove=bool(repair_cfg.link_singular_remove),
-                link_endpoint_direction_swap=_cfg_bool(
-                    repair_cfg,
-                    "link_endpoint_direction_swap",
-                    legacy_name="a2_endpoint_direction_swap",
-                ),
-                link_missing_node_ref_nearest=_cfg_bool(
-                    repair_cfg,
-                    "link_missing_node_ref_nearest",
-                    legacy_name="a2_missing_node_ref_nearest",
-                ),
-                link_missing_node_ref_remove=_cfg_bool(
-                    repair_cfg,
-                    "link_missing_node_ref_remove",
-                    legacy_name="a2_missing_node_ref_remove",
-                ),
-                link_topology_direction_swap=_cfg_bool(
-                    repair_cfg,
-                    "link_topology_direction_swap",
-                    legacy_name="a2_topology_direction_swap",
-                ),
-                link_lateral_longitudinal_conflict_clear=bool(
-                    repair_cfg.link_lateral_longitudinal_conflict_clear
-                ),
-                link_lateral_reciprocal_conflict_repair=bool(
-                    repair_cfg.link_lateral_reciprocal_conflict_repair
-                ),
-                unresolved_relationship_remove=_cfg_bool(
-                    repair_cfg,
-                    "unresolved_relationship_remove",
-                    legacy_name="dangling_relationship_remove",
-                ),
-                dangling_node_remove=bool(repair_cfg.dangling_node_remove),
-                reciprocal_relationship_fill=bool(repair_cfg.reciprocal_relationship_fill),
-            ),
+            checks=_build_sanity_checks_cfg(cfg.ngii.sanity.checks),
         ),
         geometry=NGIIGeometryConfig(
             multipart_snap_tolerance_m=_non_negative_float(
@@ -219,16 +184,55 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 "ngii.encoding.utf8_dbf_invalid_non_ascii_ratio_max",
             ),
         ),
-        text_repair=_build_text_correction_cfg(cfg),
     )
 
 
-def _cfg_bool(raw: DictConfig, name: str, *, legacy_name: str | None = None) -> bool:
-    if name in raw:
-        return bool(raw[name])
-    if legacy_name is not None and legacy_name in raw:
-        return bool(raw[legacy_name])
-    raise KeyError(name)
+def _build_sanity_checks_cfg(raw: object) -> NGIISanityChecksConfig:
+    checks_raw = _raw_mapping(OmegaConf.to_container(raw, resolve=True), "ngii.sanity.checks")
+    expected_names = {field.name for field in dataclass_fields(NGIISanityChecksConfig)}
+    _reject_unknown_keys(checks_raw, expected_names, "ngii.sanity.checks")
+    missing = sorted(expected_names - checks_raw.keys())
+    if missing:
+        msg = f"ngii.sanity.checks is missing required checks: {', '.join(missing)}"
+        raise ValueError(msg)
+    modes = {
+        name: _sanity_mode(checks_raw[name], f"ngii.sanity.checks.{name}")
+        for name in expected_names
+    }
+    invalid_repair = sorted(
+        name for name in _WARNING_ONLY_CHECKS if modes[name] is SanityMode.REPAIR
+    )
+    if invalid_repair:
+        msg = f"warning-only sanity checks cannot use repair mode: {', '.join(invalid_repair)}"
+        raise ValueError(msg)
+    return NGIISanityChecksConfig(**cast(Any, modes))
+
+
+def _sanity_mode(raw: object, name: str) -> SanityMode | None:
+    if raw is None:
+        return None
+    if raw == SanityMode.WARN.value:
+        return SanityMode.WARN
+    if raw == SanityMode.REPAIR.value:
+        return SanityMode.REPAIR
+    msg = f"{name} must be null, 'warn', or 'repair', got {raw!r}"
+    raise ValueError(msg)
+
+
+def _raw_mapping(raw: object, name: str) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        msg = f"{name} config: expected dict, got {type(raw).__name__}"
+        raise TypeError(msg)
+    return {str(key): value for key, value in raw.items()}
+
+
+def _reject_unknown_keys(
+    raw: dict[str, object], expected: frozenset[str] | set[str], name: str
+) -> None:
+    unknown = sorted(raw.keys() - expected)
+    if unknown:
+        msg = f"{name} contains unknown keys: {', '.join(unknown)}"
+        raise ValueError(msg)
 
 
 def _non_negative_float(raw: object, name: str) -> float:
@@ -253,18 +257,6 @@ def _ratio_float(raw: object, name: str) -> float:
         msg = f"{name} must be between 0.0 and 1.0, got {value}"
         raise ValueError(msg)
     return value
-
-
-def _build_text_correction_cfg(cfg: DictConfig) -> NGIITextCorrectionConfig:
-    raw = OmegaConf.to_container(cfg.ngii.text_repair, resolve=True)
-    if not isinstance(raw, dict):
-        msg = f"ngii.text_repair config: expected dict, got {type(raw).__name__}"
-        raise TypeError(msg)
-    return NGIITextCorrectionConfig(
-        enabled=bool(raw["enabled"]),
-        repair_mojibake=bool(raw["repair_mojibake"]),
-        warn_unrepaired_replacement_chars=bool(raw["warn_unrepaired_replacement_chars"]),
-    )
 
 
 def _build_viz_layer_cfg(raw: dict[str, object]) -> VizLayerConfig:

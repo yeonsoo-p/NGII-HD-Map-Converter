@@ -60,21 +60,24 @@ The loader builds one canonical `NGIIDataset` in this order:
   replacement characters are warned.
 - Merge rows into layer stores by feature ID. Empty IDs are skipped, duplicate
   identical IDs are warned, and duplicate conflicting IDs keep the first row;
-  the later row is reported as dropped when that repair is enabled.
-- Bind global and per-layer indexes, run configured repair hooks, bind again,
-  rebuild resolved relationship edges, validate remaining relationships, and
+  the later row is reported as dropped when that check is in `repair` mode.
+- Bind global and per-layer indexes, run configured sanity hooks, bind again,
+  rebuild resolved reference edges, validate remaining references, and
   log grouped warning/action summaries.
 
-Sanity checks and repairs are configured under `ngii.sanity` in
-[conf/config.yaml](conf/config.yaml). They currently cover:
+Sanity checks are configured under `ngii.sanity.checks` in
+[conf/config.yaml](conf/config.yaml). Each check mode is `null`, `warn`, or
+`repair`: `null` disables reporting for that condition, `warn` reports without
+changing data, and `repair` applies deterministic repairs while logging both
+repair actions and residual warnings. They currently cover:
 
 - Manual field conformance: required fields, max text length, integer/float
   parseability, code lists, and `HistType` format.
-- Relationship conformance: unresolved required and optional references,
-  cross-layer global ID collisions, unresolved relationship cleanup, dangling
+- Reference conformance: unresolved required and optional references,
+  cross-layer global ID collisions, unresolved reference cleanup, unreferenced
   nodes, and cascading removal of rows whose required references depend on
   removed rows.
-- Link endpoint topology: too-short link removal, endpoint-isolated singular
+- Link endpoint topology: too-short link removal, endpoint-isolated
   link removal, missing endpoint references repaired to the only nearby node
   within `node_match_tolerance_m`, unresolved endpoint references removed,
   reversed `FromNodeID`/`ToNodeID` swapped when the geometry clearly points the
@@ -82,12 +85,12 @@ Sanity checks and repairs are configured under `ngii.sanity` in
 - Link flow direction: a leaf-to-leaf topology walk proposes reversed links,
   then R/L same-direction neighbors must support the reversal with an opposing
   geometry vector before a single unambiguous candidate is swapped.
-- Lateral topology: R/L references that point to a head-to-tail longitudinal
+- Side-reference topology: R/L references that point to a head-to-tail longitudinal
   neighbor are cleared, including the reciprocal pointer when it points back.
   Sharing only the same `from` node or only the same `to` node is not treated as
   a longitudinal conflict. Non-reciprocal R/L references are repaired only when
   exactly one inverse candidate exists; otherwise they are warned.
-- Schema reciprocal relationships: missing reciprocal pointers, such as link
+- Schema reciprocal references: missing reciprocal pointers, such as link
   `R_LinkID`/`L_LinkID` pairs, are filled when the target slot is empty; targets
   already pointing somewhere else are warned as conflicts.
 

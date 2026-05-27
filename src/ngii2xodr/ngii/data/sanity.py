@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ngii2xodr.ngii.data.config import NGIIConfig
+from ngii2xodr.ngii.data.config import NGIIConfig, check_reports
 from ngii2xodr.ngii.data.features import NGIIFeature
 from ngii2xodr.ngii.data.schema import FieldRule, LayerSpec, SchemaDefinition
 
@@ -41,6 +41,14 @@ class SanityAction:
 class SanityReport:
     warnings: list[SanityWarning] = field(default_factory=list)
     actions: list[SanityAction] = field(default_factory=list)
+
+    @property
+    def warning_count(self) -> int:
+        return len(self.warnings)
+
+    @property
+    def action_count(self) -> int:
+        return len(self.actions)
 
     def warn(
         self,
@@ -133,7 +141,7 @@ def warn_unknown_columns(gdf: Any, spec: LayerSpec, shp_path: Path, sanity: Sani
     )
 
 
-def warn_manual_field_values(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+def check_manual_field_values(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     for store in dataset.layer_stores:
         spec = store.spec
         for feature in store.features:
@@ -153,9 +161,9 @@ def _warn_manual_field_value(
     value = store.value_for_column(feature, rule.name)
     value_text = _value_text(value)
     if not value_text:
-        if rule.required and cfg.sanity.warnings.manual_field_rules:
+        if rule.required and check_reports(cfg.sanity.checks.manual_field_required_missing):
             sanity.warn(
-                "empty-required-field",
+                "manual-field-required-missing",
                 f"{spec.layer_name} {feature.id}: {rule.name} is required by the "
                 f"{dataset.schema.version} manual",
                 layer_name=spec.layer_name,
@@ -166,10 +174,10 @@ def _warn_manual_field_value(
     if (
         rule.max_length is not None
         and len(value_text) > rule.max_length
-        and cfg.sanity.warnings.manual_field_rules
+        and check_reports(cfg.sanity.checks.manual_field_length_exceeded)
     ):
         sanity.warn(
-            "field-too-long",
+            "manual-field-length-exceeded",
             f"{spec.layer_name} {feature.id}: {rule.name}={value_text!r} exceeds "
             f"VARCHAR2({rule.max_length})",
             layer_name=spec.layer_name,
@@ -178,15 +186,17 @@ def _warn_manual_field_value(
         )
     invalid_integer = rule.field_type == "integer" and not _is_integer(value)
     invalid_float = rule.field_type == "float" and not _is_float(value)
-    if (invalid_integer or invalid_float) and cfg.sanity.warnings.manual_field_rules:
+    if (invalid_integer or invalid_float) and check_reports(
+        cfg.sanity.checks.manual_field_type_invalid
+    ):
         _warn_invalid_type(sanity, spec, feature, rule, value_text)
     if (
         rule.code_list is not None
         and value_text not in rule.code_list
-        and cfg.sanity.warnings.invalid_code_values
+        and check_reports(cfg.sanity.checks.manual_field_code_invalid)
     ):
         sanity.warn(
-            "invalid-code",
+            "manual-field-code-invalid",
             f"{spec.layer_name} {feature.id}: {rule.name}={value_text!r} is not "
             f"in the {dataset.schema.version} code list",
             layer_name=spec.layer_name,
@@ -196,11 +206,11 @@ def _warn_manual_field_value(
     if (
         rule.name == "HistType"
         and not _is_valid_hist_type(spec, value_text)
-        and cfg.sanity.warnings.manual_field_rules
+        and check_reports(cfg.sanity.checks.manual_hist_type_invalid)
     ):
         expected = _expected_hist_type_label(spec, rule)
         sanity.warn(
-            "invalid-hist-type",
+            "manual-hist-type-invalid",
             f"{spec.layer_name} {feature.id}: HistType={value_text!r} must be {expected}",
             layer_name=spec.layer_name,
             feature_id=feature.id,
@@ -208,35 +218,35 @@ def _warn_manual_field_value(
         )
 
 
-def warn_unresolved_relationships(dataset: NGIIDataset, sanity: SanityReport) -> None:
+def check_unresolved_references(dataset: NGIIDataset, sanity: SanityReport) -> None:
     for store in dataset.layer_stores:
         spec = store.spec
         for feature in store.features:
-            for relationship in spec.relationships:
-                value = getattr(feature, relationship.source_attr)
+            for reference in spec.references:
+                value = getattr(feature, reference.source_attr)
                 value_text = _value_text("" if value is None else value)
-                target_layer = _relationship_target_label(dataset, relationship.target_attrs)
+                target_layer = _reference_target_label(dataset, reference.target_attrs)
                 if not value_text:
-                    if relationship.required:
-                        _warn_missing_relation(
+                    if reference.required:
+                        _warn_unresolved_reference(
                             sanity,
                             feature,
-                            relationship.column_name,
+                            reference.column_name,
                             target_layer,
                         )
                     continue
-                if not _relationship_resolves(dataset, relationship.target_attrs, value_text):
-                    _warn_missing_relation(
+                if not _reference_resolves(dataset, reference.target_attrs, value_text):
+                    _warn_unresolved_reference(
                         sanity,
                         feature,
-                        relationship.column_name,
+                        reference.column_name,
                         target_layer,
                     )
 
 
-def log_sanity_report(dataset: NGIIDataset, sanity: SanityReport, logger: logging.Logger) -> None:
-    warning_count = len(sanity.warnings)
-    action_count = len(sanity.actions)
+def log_sanity_report(dataset: NGIIDataset, report: SanityReport, logger: logging.Logger) -> None:
+    warning_count = report.warning_count
+    action_count = report.action_count
     if warning_count == 0 and action_count == 0:
         logger.info(
             "NGII sanity: no warnings or repairs for %s [%s]",
@@ -252,16 +262,16 @@ def log_sanity_report(dataset: NGIIDataset, sanity: SanityReport, logger: loggin
         dataset.root,
         dataset.coordinate,
     )
-    _log_warning_summaries(dataset, sanity, logger)
-    _log_action_summaries(dataset, sanity, logger)
-    for warning in sanity.warnings:
+    _log_warning_summaries(dataset, report, logger)
+    _log_action_summaries(dataset, report, logger)
+    for warning in report.warnings:
         logger.debug(
             "NGII sanity warning detail [%s] %s: %s",
             warning.code,
             _sanity_location(warning.layer_name, warning.feature_id, warning.source_path),
             warning.message,
         )
-    for action in sanity.actions:
+    for action in report.actions:
         logger.debug(
             "NGII sanity repair detail [%s] %s: %s before=%s after=%s",
             action.code,
@@ -321,7 +331,7 @@ def _warn_invalid_type(
     value_text: str,
 ) -> None:
     sanity.warn(
-        "invalid-field-type",
+        "manual-field-type-invalid",
         f"{spec.layer_name} {feature.id}: {rule.name}={value_text!r} is not "
         f"a valid {rule.field_type}",
         layer_name=spec.layer_name,
@@ -330,7 +340,7 @@ def _warn_invalid_type(
     )
 
 
-def _relationship_resolves(
+def _reference_resolves(
     dataset: NGIIDataset, target_attrs: tuple[str, ...], feature_id: str
 ) -> bool:
     return any(
@@ -339,15 +349,15 @@ def _relationship_resolves(
     )
 
 
-def _relationship_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ...]) -> str:
+def _reference_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ...]) -> str:
     return "/".join(dataset.store_for_attr(target_attr).layer_name for target_attr in target_attrs)
 
 
-def _warn_missing_relation(
+def _warn_unresolved_reference(
     sanity: SanityReport, feature: NGIIFeature, column_name: str, target_layer: str
 ) -> None:
     sanity.warn(
-        "missing-relation",
+        "reference-unresolved",
         f"{feature.layer_name} {feature.id} {column_name} does not resolve to {target_layer}",
         layer_name=feature.layer_name,
         feature_id=feature.id,
@@ -356,10 +366,10 @@ def _warn_missing_relation(
 
 
 def _log_warning_summaries(
-    dataset: NGIIDataset, sanity: SanityReport, logger: logging.Logger
+    dataset: NGIIDataset, report: SanityReport, logger: logging.Logger
 ) -> None:
     grouped: dict[tuple[str, str, str, str], list[SanityWarning]] = defaultdict(list)
-    for warning in sanity.warnings:
+    for warning in report.warnings:
         key = (
             warning.code,
             warning.layer_name or "-",
@@ -383,10 +393,10 @@ def _log_warning_summaries(
 
 
 def _log_action_summaries(
-    dataset: NGIIDataset, sanity: SanityReport, logger: logging.Logger
+    dataset: NGIIDataset, report: SanityReport, logger: logging.Logger
 ) -> None:
     grouped: dict[tuple[str, str, str], list[SanityAction]] = defaultdict(list)
-    for action in sanity.actions:
+    for action in report.actions:
         key = (action.code, action.layer_name or "-", _action_summary_reason(dataset, action))
         grouped[key].append(action)
 
@@ -404,7 +414,7 @@ def _log_action_summaries(
 
 
 def _warning_summary_reason(warning: SanityWarning) -> str:
-    if warning.code == "parse-row-failed":
+    if warning.code == "geometry-invalid":
         _row_label, sep, reason = warning.message.partition(": ")
         if sep:
             return reason
@@ -412,7 +422,7 @@ def _warning_summary_reason(warning: SanityWarning) -> str:
 
 
 def _action_summary_reason(dataset: NGIIDataset, action: SanityAction) -> str:
-    if action.code == "duplicate-conflicting-id-dropped":
+    if action.code == "feature-id-duplicate-conflicting-dropped":
         kept_source = _mapping_path(dataset.root, action.before, "kept_source")
         dropped_source = _mapping_path(dataset.root, action.before, "dropped_source")
         return f"duplicate ID conflict; kept={kept_source}; dropped={dropped_source}"

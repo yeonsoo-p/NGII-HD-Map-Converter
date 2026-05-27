@@ -16,7 +16,7 @@ from ngii2xodr.ngii.data.features import (
     FeatureRef,
     LineFeature,
     NGIIFeature,
-    ResolvedRelationship,
+    ResolvedReference,
 )
 from ngii2xodr.ngii.data.geometry import xy_line
 from ngii2xodr.ngii.data.schema import (
@@ -113,23 +113,23 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
     def related_feature(
         self, feature: T, column_or_attr: str, dataset: NGIIDataset
     ) -> NGIIFeature | None:
-        relationship = next(
+        reference = next(
             (
                 item
-                for item in self.spec.relationships
+                for item in self.spec.references
                 if column_or_attr in {item.column_name, item.source_attr}
             ),
             None,
         )
-        if relationship is None:
+        if reference is None:
             return None
-        value = getattr(feature, relationship.source_attr, "")
+        value = getattr(feature, reference.source_attr, "")
         if value is None:
             return None
         feature_id = str(value)
         if not feature_id:
             return None
-        for target_attr in relationship.target_attrs:
+        for target_attr in reference.target_attrs:
             related = dataset.store_for_attr(target_attr).get(feature_id)
             if isinstance(related, NGIIFeature):
                 return related
@@ -161,9 +161,9 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
         for rule in self.spec.field_rules:
             if rule.name == column_name:
                 return rule.attr
-        for relationship in self.spec.relationships:
-            if relationship.column_name == column_name:
-                return relationship.source_attr
+        for reference in self.spec.references:
+            if reference.column_name == column_name:
+                return reference.source_attr
         return ""
 
 
@@ -227,24 +227,24 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
                             source_path=feature.source_path,
                         )
 
-    def rebuild_relationship_edges(self) -> None:
-        outgoing: dict[FeatureRef, list[ResolvedRelationship]] = {}
-        incoming: dict[FeatureRef, list[ResolvedRelationship]] = {}
+    def rebuild_reference_edges(self) -> None:
+        outgoing: dict[FeatureRef, list[ResolvedReference]] = {}
+        incoming: dict[FeatureRef, list[ResolvedReference]] = {}
         for attr, store in self.layer_items:
             for feature in store.features:
                 source_ref = FeatureRef(attr, feature.id)
-                for relationship in store.spec.relationships:
-                    target_ref = self._resolve_relationship_ref(
-                        feature, relationship.source_attr, relationship.target_attrs
+                for reference in store.spec.references:
+                    target_ref = self._resolve_reference_ref(
+                        feature, reference.source_attr, reference.target_attrs
                     )
                     if target_ref is None:
                         continue
-                    edge = ResolvedRelationship(
+                    edge = ResolvedReference(
                         source_ref=source_ref,
                         target_ref=target_ref,
-                        source_column=relationship.column_name,
-                        source_attr=relationship.source_attr,
-                        required=relationship.required,
+                        source_column=reference.column_name,
+                        source_attr=reference.source_attr,
+                        required=reference.required,
                     )
                     outgoing.setdefault(source_ref, []).append(edge)
                     incoming.setdefault(target_ref, []).append(edge)
@@ -255,7 +255,7 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
                 feature.references = tuple(outgoing.get(feature_ref, ()))
                 feature.referenced_by = tuple(incoming.get(feature_ref, ()))
 
-    def _resolve_relationship_ref(
+    def _resolve_reference_ref(
         self, feature: NGIIFeature, source_attr: str, target_attrs: tuple[str, ...]
     ) -> FeatureRef | None:
         value = getattr(feature, source_attr, None)

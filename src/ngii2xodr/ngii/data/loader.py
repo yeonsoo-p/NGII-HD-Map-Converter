@@ -15,25 +15,25 @@ import numpy as np
 import pandas as pd
 import shapely
 
-from ngii2xodr.ngii.data.config import NGIIConfig
+from ngii2xodr.ngii.data.config import NGIIConfig, check_repairs, check_reports
 from ngii2xodr.ngii.data.dataset import NGIIDataset
 from ngii2xodr.ngii.data.features import FeatureRecord, NGIIFeature
 from ngii2xodr.ngii.data.geometry import convert_geometry
 from ngii2xodr.ngii.data.repairs import (
-    DEFAULT_REPAIR_HOOKS,
-    RepairHook,
-    apply_text_repairs,
+    DEFAULT_SANITY_HOOKS,
+    SanityHook,
+    check_text_values,
     merge_features,
 )
 from ngii2xodr.ngii.data.sanity import (
     SanityReport,
+    check_manual_field_values,
+    check_unresolved_references,
     log_sanity_report,
-    warn_manual_field_values,
     warn_missing_columns,
     warn_missing_required_layers,
     warn_missing_sidecars,
     warn_unknown_columns,
-    warn_unresolved_relationships,
 )
 from ngii2xodr.ngii.data.schema import LayerSpec, SchemaDefinition
 from ngii2xodr.profile import log_profile_events
@@ -62,7 +62,7 @@ def load_schema(
     cfg: NGIIConfig,
     schema: SchemaDefinition,
     *,
-    repair_hooks: tuple[tuple[str, RepairHook], ...] = DEFAULT_REPAIR_HOOKS,
+    sanity_hooks: tuple[tuple[str, SanityHook], ...] = DEFAULT_SANITY_HOOKS,
 ) -> NGIILoadResult:
     """Load one NGII coordinate product into a canonical object dataset."""
     sanity = SanityReport()
@@ -74,15 +74,15 @@ def load_schema(
             coordinate,
             schema,
             sanity,
-            warn_unknown_layers=cfg.sanity.warnings.unknown_layers,
+            report_unknown_layers=check_reports(cfg.sanity.checks.layer_unknown),
         )
 
-    if cfg.sanity.warnings.missing_required_layers:
+    if check_reports(cfg.sanity.checks.layer_required_missing):
         warn_missing_required_layers(discovered, schema, sanity)
 
     layer_order = {spec.layer_name: index for index, spec in enumerate(schema.layer_specs)}
     for layer_file in sorted(discovered, key=lambda item: layer_file_sort_key(item, layer_order)):
-        if cfg.sanity.warnings.missing_sidecars:
+        if check_reports(cfg.sanity.checks.shp_sidecar_missing):
             warn_missing_sidecars(layer_file.path, sanity)
         with dataset.load_profile.timed("read_layer", layer_file.path.name):
             features = read_layer_file(layer_file, sanity, cfg)
@@ -92,22 +92,28 @@ def load_schema(
             )
 
     with dataset.load_profile.timed("bind_initial"):
-        dataset.bind(sanity, warn_global_id_collision=cfg.sanity.warnings.global_id_collision)
-    with dataset.load_profile.timed("text_repair"):
-        apply_text_repairs(dataset, sanity, cfg)
-    if cfg.sanity.warnings.manual_field_rules or cfg.sanity.warnings.invalid_code_values:
+        dataset.bind(
+            sanity,
+            warn_global_id_collision=check_reports(cfg.sanity.checks.global_id_collision),
+        )
+    with dataset.load_profile.timed("text_checks"):
+        check_text_values(dataset, sanity, cfg)
+    if _reports_manual_field_values(cfg):
         with dataset.load_profile.timed("manual_validation"):
-            warn_manual_field_values(dataset, sanity, cfg)
-    for hook_name, hook in repair_hooks:
+            check_manual_field_values(dataset, sanity, cfg)
+    for hook_name, hook in sanity_hooks:
         with dataset.load_profile.timed(hook_name):
             hook(dataset, sanity, cfg)
     with dataset.load_profile.timed("bind_final"):
-        dataset.bind(sanity, warn_global_id_collision=cfg.sanity.warnings.global_id_collision)
-    with dataset.load_profile.timed("relationship_edges"):
-        dataset.rebuild_relationship_edges()
-    if cfg.sanity.warnings.unresolved_relationships:
-        with dataset.load_profile.timed("relationship_validation"):
-            warn_unresolved_relationships(dataset, sanity)
+        dataset.bind(
+            sanity,
+            warn_global_id_collision=check_reports(cfg.sanity.checks.global_id_collision),
+        )
+    with dataset.load_profile.timed("reference_edges"):
+        dataset.rebuild_reference_edges()
+    if check_repairs(cfg.sanity.checks.reference_unresolved):
+        with dataset.load_profile.timed("reference_validation"):
+            check_unresolved_references(dataset, sanity)
     log_sanity_report(dataset, sanity, log)
     log_profile_events(
         dataset.load_profile,
@@ -118,17 +124,31 @@ def load_schema(
     return NGIILoadResult(dataset=dataset, sanity=sanity)
 
 
+def _reports_manual_field_values(cfg: NGIIConfig) -> bool:
+    checks = cfg.sanity.checks
+    return any(
+        check_reports(mode)
+        for mode in (
+            checks.manual_field_required_missing,
+            checks.manual_field_length_exceeded,
+            checks.manual_field_type_invalid,
+            checks.manual_field_code_invalid,
+            checks.manual_hist_type_invalid,
+        )
+    )
+
+
 def load_ngii(
     root: Path,
     coordinate: str,
     cfg: NGIIConfig,
     schemas: Sequence[SchemaDefinition],
     *,
-    repair_hooks: tuple[tuple[str, RepairHook], ...] = DEFAULT_REPAIR_HOOKS,
+    sanity_hooks: tuple[tuple[str, SanityHook], ...] = DEFAULT_SANITY_HOOKS,
 ) -> NGIILoadResult:
     """Load one NGII coordinate product using a schema selected from ``schemas``."""
     schema = detect_schema(root, coordinate, schemas)
-    return load_schema(root, coordinate, cfg, schema, repair_hooks=repair_hooks)
+    return load_schema(root, coordinate, cfg, schema, sanity_hooks=sanity_hooks)
 
 
 def detect_schema(
@@ -176,7 +196,7 @@ def discover_layer_files(
     schema: SchemaDefinition,
     sanity: SanityReport,
     *,
-    warn_unknown_layers: bool,
+    report_unknown_layers: bool,
 ) -> list[DiscoveredLayerFile]:
     if not root.exists():
         raise FileNotFoundError(root)
@@ -195,7 +215,7 @@ def discover_layer_files(
         for shp_path in sorted(coordinate_dir.rglob("*.shp")):
             spec = specs_by_filename.get(shp_path.name.upper())
             if spec is None:
-                if warn_unknown_layers:
+                if report_unknown_layers:
                     sanity.warn(
                         "unknown-layer",
                         f"unknown SHP layer {shp_path.name!r} in requested coordinate product",
@@ -231,11 +251,11 @@ def read_layer_file(
         layer_file.path,
         sanity,
         layer_file.spec,
-        warn_duplicate_columns=cfg.sanity.warnings.duplicate_column_capitalization,
+        report_duplicate_columns=check_reports(cfg.sanity.checks.dbf_column_case_duplicate),
     )
-    if cfg.sanity.warnings.manual_field_rules:
+    if check_reports(cfg.sanity.checks.manual_column_missing):
         warn_missing_columns(gdf, layer_file.spec, layer_file.path, sanity)
-    if cfg.sanity.warnings.unknown_manual_columns:
+    if check_reports(cfg.sanity.checks.manual_column_unknown):
         warn_unknown_columns(gdf, layer_file.spec, layer_file.path, sanity)
     features: list[NGIIFeature] = []
     manual_columns = layer_file.spec.manual_columns
@@ -243,7 +263,7 @@ def read_layer_file(
         row_dict = dict(zip(gdf.columns, row, strict=True))
         geometry = row_dict.pop("geometry")
         if not isinstance(geometry, shapely.geometry.base.BaseGeometry):
-            if cfg.sanity.warnings.unsupported_geometry:
+            if check_reports(cfg.sanity.checks.geometry_missing):
                 sanity.warn(
                     "missing-geometry",
                     f"{layer_file.spec.layer_name} row {row_idx} has no geometry",
@@ -273,9 +293,9 @@ def read_layer_file(
                 )
             )
         except (TypeError, ValueError) as e:
-            if cfg.sanity.warnings.unsupported_geometry:
+            if check_reports(cfg.sanity.checks.geometry_invalid):
                 sanity.warn(
-                    "parse-row-failed",
+                    "geometry-invalid",
                     str(e),
                     layer_name=layer_file.spec.layer_name,
                     feature_id=row_id,
@@ -305,7 +325,7 @@ def _load_gdf(
                 shp_path,
                 spec,
                 sanity,
-                cfg.encoding.utf8_dbf_invalid_non_ascii_ratio_max,
+                cfg,
             )
     return gdf
 
@@ -324,14 +344,17 @@ def _overlay_utf8_dbf_text(
     shp_path: Path,
     spec: LayerSpec,
     sanity: SanityReport,
-    invalid_non_ascii_ratio_max: float,
+    cfg: NGIIConfig,
 ) -> None:
     records, replacements, non_ascii_cells = _read_utf8_dbf_text_records(
         shp_path.with_suffix(".dbf"), spec
     )
     if not records:
         return
-    if non_ascii_cells > 0 and len(replacements) / non_ascii_cells > invalid_non_ascii_ratio_max:
+    if (
+        non_ascii_cells > 0
+        and len(replacements) / non_ascii_cells > cfg.encoding.utf8_dbf_invalid_non_ascii_ratio_max
+    ):
         log.debug(
             "skipping UTF-8 DBF text overlay for %s: %d/%d non-ASCII text cells "
             "decode with replacement characters",
@@ -341,27 +364,29 @@ def _overlay_utf8_dbf_text(
         )
         return
     if len(records) != len(gdf):
-        sanity.warn(
-            "dbf-text-row-count-mismatch",
-            f"{spec.layer_name}: raw DBF text row count {len(records)} does not match "
-            f"geometry row count {len(gdf)}; UTF-8 text overlay skipped",
-            layer_name=spec.layer_name,
-            source_path=shp_path,
-        )
+        if check_reports(cfg.sanity.checks.text_utf8_dbf_row_mismatch):
+            sanity.warn(
+                "text-utf8-dbf-row-mismatch",
+                f"{spec.layer_name}: raw DBF text row count {len(records)} does not match "
+                f"geometry row count {len(gdf)}; UTF-8 text overlay skipped",
+                layer_name=spec.layer_name,
+                source_path=shp_path,
+            )
         return
     columns = sorted({column for record in records for column in record})
     for column in columns:
         if column in gdf.columns:
             gdf[column] = [record.get(column, "") for record in records]
     for row_idx, feature_id, column in replacements:
-        sanity.warn(
-            "corrupt-text-decode-replaced",
-            f"{spec.layer_name} {feature_id or f'row {row_idx}'}: {column} contained "
-            "malformed UTF-8 bytes and was decoded with replacement characters",
-            layer_name=spec.layer_name,
-            feature_id=feature_id or None,
-            source_path=shp_path,
-        )
+        if check_reports(cfg.sanity.checks.text_utf8_decode_replacement):
+            sanity.warn(
+                "text-utf8-decode-replacement",
+                f"{spec.layer_name} {feature_id or f'row {row_idx}'}: {column} contained "
+                "malformed UTF-8 bytes and was decoded with replacement characters",
+                layer_name=spec.layer_name,
+                feature_id=feature_id or None,
+                source_path=shp_path,
+            )
 
 
 def _read_utf8_dbf_text_records(
@@ -440,13 +465,13 @@ def _normalize_columns(
     sanity: SanityReport,
     spec: LayerSpec,
     *,
-    warn_duplicate_columns: bool,
+    report_duplicate_columns: bool,
 ) -> gpd.GeoDataFrame:
     canonical_columns = {}
     for rule in spec.field_rules:
         for column in rule.columns:
             canonical_columns[column.lower()] = rule.name
-    for rel in spec.relationships:
+    for rel in spec.references:
         canonical_columns[rel.column_name.lower()] = rel.column_name
     canonical_columns["geometry"] = "geometry"
     by_lower: dict[str, list[str]] = {}
@@ -458,9 +483,9 @@ def _normalize_columns(
         if canon is None:
             continue
         if len(cols) > 1:
-            if warn_duplicate_columns:
+            if report_duplicate_columns:
                 sanity.warn(
-                    "duplicate-column-capitalization",
+                    "dbf-column-case-duplicate",
                     f"{shp_path.name}: column {canon} has multiple capitalizations {cols}",
                     source_path=shp_path,
                 )

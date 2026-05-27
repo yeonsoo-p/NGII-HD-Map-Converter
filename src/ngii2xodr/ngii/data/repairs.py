@@ -1,4 +1,4 @@
-"""Version-agnostic NGII topology sanity repairs."""
+"""Version-agnostic NGII topology sanity checks and repairs."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ngii2xodr.ngii.data.config import NGIIConfig
+from ngii2xodr.ngii.data.config import NGIIConfig, check_repairs, check_reports
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 from ngii2xodr.ngii.data.features import FeatureRef, NGIIFeature, same_feature
 from ngii2xodr.ngii.data.geometry import xy_distance, xy_line
 from ngii2xodr.ngii.data.sanity import SanityReport
-from ngii2xodr.ngii.data.schema import ReciprocalRelationshipRule
+from ngii2xodr.ngii.data.schema import ReciprocalReferenceRule
 
-RepairHook = Callable[[NGIIDataset, SanityReport, NGIIConfig], None]
+SanityHook = Callable[[NGIIDataset, SanityReport, NGIIConfig], None]
 _REPLACEMENT_CHAR = "\ufffd"
 
 
@@ -37,9 +37,9 @@ def merge_features(
 ) -> None:
     for feature in features:
         if not feature.id:
-            if cfg.sanity.warnings.manual_field_rules:
+            if check_reports(cfg.sanity.checks.feature_id_missing):
                 sanity.warn(
-                    "missing-feature-id",
+                    "feature-id-missing",
                     f"{feature.layer_name} row has an empty ID and cannot be globally indexed",
                     layer_name=feature.layer_name,
                     source_path=feature.source_path,
@@ -52,9 +52,9 @@ def merge_features(
             store.features.append(feature)
             continue
         if same_feature(existing, feature):
-            if cfg.sanity.warnings.duplicate_identical_ids:
+            if check_reports(cfg.sanity.checks.feature_id_duplicate_identical):
                 sanity.warn(
-                    "duplicate-identical-id",
+                    "feature-id-duplicate-identical",
                     f"{feature.layer_name} ID {feature.id!r} appears more than once "
                     "with identical data",
                     layer_name=feature.layer_name,
@@ -67,9 +67,9 @@ def merge_features(
             "dropped_source": str(feature.source_path),
         }
         after = {"canonical_source": str(existing.source_path)}
-        if cfg.sanity.repairs.duplicate_conflicting_id_drop:
+        if check_repairs(cfg.sanity.checks.feature_id_duplicate_conflicting):
             sanity.action(
-                "duplicate-conflicting-id-dropped",
+                "feature-id-duplicate-conflicting-dropped",
                 f"{feature.layer_name} ID {feature.id!r} conflicts with an earlier row; "
                 "later row dropped",
                 before=before,
@@ -78,44 +78,56 @@ def merge_features(
                 feature_id=feature.id,
                 source_path=feature.source_path,
             )
-        elif cfg.sanity.warnings.duplicate_conflicting_ids:
+        elif check_reports(cfg.sanity.checks.feature_id_duplicate_conflicting):
             sanity.warn(
-                "duplicate-conflicting-id-drop-disabled",
+                "feature-id-duplicate-conflicting",
                 f"{feature.layer_name} ID {feature.id!r} conflicts with an earlier row; "
-                "later row could not become canonical because duplicate repair is disabled",
+                "later row dropped",
                 layer_name=feature.layer_name,
                 feature_id=feature.id,
                 source_path=feature.source_path,
             )
 
 
-def apply_text_repairs(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
-    if not cfg.text_repair.enabled:
-        return
-    if cfg.text_repair.repair_mojibake:
-        _repair_mojibake_text(dataset, sanity)
-    if cfg.text_repair.warn_unrepaired_replacement_chars:
+def check_text_values(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+    if check_reports(cfg.sanity.checks.text_mojibake):
+        _check_mojibake_text(
+            dataset,
+            sanity,
+            repair=check_repairs(cfg.sanity.checks.text_mojibake),
+        )
+    if check_reports(cfg.sanity.checks.text_replacement_char):
         _warn_unrepaired_replacement_chars(dataset, sanity)
 
 
-def _repair_mojibake_text(dataset: NGIIDataset, sanity: SanityReport) -> None:
+def _check_mojibake_text(dataset: NGIIDataset, sanity: SanityReport, *, repair: bool) -> None:
     for store in dataset.layer_stores:
         for feature in store.features:
             for field_name, value in store.iter_text_fields(feature):
                 repaired = _repair_cp949_latin1_mojibake(value)
                 if repaired is None:
                     continue
-                store.set_column(feature, field_name, repaired)
-                sanity.action(
-                    "text-mojibake-repaired",
-                    f"{feature.layer_name} {feature.id} {field_name} repaired by "
-                    "latin1-to-cp949 mojibake rule",
-                    before={field_name: value},
-                    after={field_name: repaired},
-                    layer_name=feature.layer_name,
-                    feature_id=feature.id,
-                    source_path=feature.source_path,
-                )
+                if repair:
+                    store.set_column(feature, field_name, repaired)
+                    sanity.action(
+                        "text-mojibake-repaired",
+                        f"{feature.layer_name} {feature.id} {field_name} repaired by "
+                        "latin1-to-cp949 mojibake rule",
+                        before={field_name: value},
+                        after={field_name: repaired},
+                        layer_name=feature.layer_name,
+                        feature_id=feature.id,
+                        source_path=feature.source_path,
+                    )
+                else:
+                    sanity.warn(
+                        "text-mojibake",
+                        f"{feature.layer_name} {feature.id} {field_name} looks like "
+                        "latin1-to-cp949 mojibake",
+                        layer_name=feature.layer_name,
+                        feature_id=feature.id,
+                        source_path=feature.source_path,
+                    )
 
 
 def _repair_cp949_latin1_mojibake(value: str) -> str | None:
@@ -150,7 +162,7 @@ def _warn_unrepaired_replacement_chars(dataset: NGIIDataset, sanity: SanityRepor
             for field_name, value in store.iter_text_fields(feature):
                 if _REPLACEMENT_CHAR in value:
                     sanity.warn(
-                        "corrupt-text-unrepaired",
+                        "text-replacement-char",
                         f"{feature.layer_name} {feature.id}: {field_name} contains "
                         "Unicode replacement characters",
                         layer_name=feature.layer_name,
@@ -159,7 +171,7 @@ def _warn_unrepaired_replacement_chars(dataset: NGIIDataset, sanity: SanityRepor
                     )
 
 
-def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+def check_link_too_short(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     link_store = dataset.store_for_role("link")
     link_attr = dataset.schema.attr_for_role("link")
     removal_causes: dict[FeatureRef, _RemovalCause] = {}
@@ -168,7 +180,7 @@ def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGII
         length_m = float(xy_line(link.polyline).length)
         if length_m >= threshold_m:
             continue
-        if cfg.sanity.repairs.link_too_short_remove:
+        if check_repairs(cfg.sanity.checks.link_too_short):
             removal_causes[FeatureRef(link_attr, link.id)] = _RemovalCause(
                 code="link-too-short-removed",
                 message=(
@@ -178,11 +190,11 @@ def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGII
                 before={"length_m": length_m, "threshold_m": threshold_m},
                 after={"removed": True},
             )
-        elif cfg.sanity.warnings.too_short_links:
+        elif check_reports(cfg.sanity.checks.link_too_short):
             sanity.warn(
-                "link-too-short-remove-disabled",
+                "link-too-short",
                 f"{link.layer_name} {link.id} geometry length {length_m:.3f} m is shorter "
-                f"than {threshold_m:.3f} m, but short-link removal is disabled",
+                f"than {threshold_m:.3f} m",
                 layer_name=link.layer_name,
                 feature_id=link.id,
                 source_path=link.source_path,
@@ -190,7 +202,9 @@ def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGII
     _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
-def repair_singular_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+def check_link_endpoint_isolated(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
     link_store = dataset.store_for_role("link")
     node_store = dataset.store_for_role("node")
     link_attr = dataset.schema.attr_for_role("link")
@@ -206,9 +220,9 @@ def repair_singular_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
             link_store, link.id, to_node_id
         ):
             continue
-        if cfg.sanity.repairs.link_singular_remove:
+        if check_repairs(cfg.sanity.checks.link_endpoint_isolated):
             removal_causes[FeatureRef(link_attr, link.id)] = _RemovalCause(
-                code="link-singular-removed",
+                code="link-endpoint-isolated-removed",
                 message=(
                     f"{link.layer_name} {link.id} is isolated from other links at both "
                     f"endpoint nodes {from_node_id!r} and {to_node_id!r}"
@@ -216,12 +230,11 @@ def repair_singular_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
                 before={"from_node_id": from_node_id, "to_node_id": to_node_id},
                 after={"removed": True},
             )
-        elif cfg.sanity.warnings.singular_links:
+        elif check_reports(cfg.sanity.checks.link_endpoint_isolated):
             sanity.warn(
-                "link-singular-remove-disabled",
+                "link-endpoint-isolated",
                 f"{link.layer_name} {link.id} is isolated from other links at both endpoint "
-                f"nodes {from_node_id!r} and {to_node_id!r}, but singular-link removal is "
-                "disabled",
+                f"nodes {from_node_id!r} and {to_node_id!r}",
                 layer_name=link.layer_name,
                 feature_id=link.id,
                 source_path=link.source_path,
@@ -229,38 +242,32 @@ def repair_singular_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
     _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
-def repair_unresolved_relationships(
-    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
-) -> None:
+def check_reference_unresolved(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     removal_causes: dict[FeatureRef, _RemovalCause] = {}
     optional_unresolved: list[tuple[FeatureRef, str, str, str]] = []
     for store in dataset.layer_stores:
         for feature in store.features:
             feature_ref = FeatureRef(store.spec.python_attr, feature.id)
-            for relationship in store.spec.relationships:
-                value = _optional_text(getattr(feature, relationship.source_attr, None))
-                if not value and not relationship.required:
+            for reference in store.spec.references:
+                value = _optional_text(getattr(feature, reference.source_attr, None))
+                if not value and not reference.required:
                     continue
-                if value and _relationship_resolves(dataset, relationship.target_attrs, value):
+                if value and _reference_resolves(dataset, reference.target_attrs, value):
                     continue
-                if cfg.sanity.repairs.unresolved_relationship_remove:
-                    if relationship.required:
-                        target_layer = _relationship_target_label(
-                            dataset, relationship.target_attrs
-                        )
+                if check_repairs(cfg.sanity.checks.reference_unresolved):
+                    if reference.required:
+                        target_layer = _reference_target_label(dataset, reference.target_attrs)
                         removal_causes.setdefault(
                             feature_ref,
                             _RemovalCause(
-                                code="unresolved-required-feature-removed",
+                                code="reference-required-unresolved-removed",
                                 message=(
                                     f"{feature.layer_name} {feature.id} "
-                                    f"{relationship.column_name}={value!r} does not resolve "
+                                    f"{reference.column_name}={value!r} does not resolve "
                                     f"to required {target_layer}"
                                 ),
                                 before={
-                                    relationship.source_attr: getattr(
-                                        feature, relationship.source_attr
-                                    )
+                                    reference.source_attr: getattr(feature, reference.source_attr)
                                 },
                                 after={"removed": True},
                             ),
@@ -269,18 +276,17 @@ def repair_unresolved_relationships(
                         optional_unresolved.append(
                             (
                                 feature_ref,
-                                relationship.source_attr,
-                                relationship.column_name,
+                                reference.source_attr,
+                                reference.column_name,
                                 value,
                             )
                         )
-                elif cfg.sanity.warnings.unresolved_relationships:
-                    target_layer = _relationship_target_label(dataset, relationship.target_attrs)
+                elif check_reports(cfg.sanity.checks.reference_unresolved):
+                    target_layer = _reference_target_label(dataset, reference.target_attrs)
                     sanity.warn(
-                        "unresolved-relationship-remove-disabled",
-                        f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
-                        f"does not resolve to {target_layer}, but unresolved-reference removal "
-                        "is disabled",
+                        "reference-unresolved",
+                        f"{feature.layer_name} {feature.id} {reference.column_name}={value!r} "
+                        f"does not resolve to {target_layer}",
                         layer_name=feature.layer_name,
                         feature_id=feature.id,
                         source_path=feature.source_path,
@@ -295,9 +301,9 @@ def repair_unresolved_relationships(
             continue
         setattr(feature, source_attr, None)
         sanity.action(
-            "unresolved-relationship-removed",
+            "reference-optional-unresolved-cleared",
             f"{feature.layer_name} {feature.id} {column_name}={value!r} does not resolve and "
-            "was removed",
+            "was cleared",
             before={source_attr: value},
             after={source_attr: None},
             layer_name=feature.layer_name,
@@ -306,7 +312,7 @@ def repair_unresolved_relationships(
         )
 
 
-def repair_dangling_nodes(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+def check_node_unreferenced(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     link_store = dataset.store_for_role("link")
     node_store = dataset.store_for_role("node")
     node_attr = dataset.schema.attr_for_role("node")
@@ -320,20 +326,20 @@ def repair_dangling_nodes(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
     for node in node_store.features:
         if node.id in used_node_ids:
             continue
-        if cfg.sanity.repairs.dangling_node_remove:
+        if check_repairs(cfg.sanity.checks.node_unreferenced):
             removal_causes[FeatureRef(node_attr, node.id)] = _RemovalCause(
-                code="dangling-node-removed",
+                code="node-unreferenced-removed",
                 message=(
                     f"{node.layer_name} {node.id} is not referenced by any remaining link endpoint"
                 ),
                 before={"referenced_by_link_endpoint": False},
                 after={"removed": True},
             )
-        elif cfg.sanity.warnings.dangling_nodes:
+        elif check_reports(cfg.sanity.checks.node_unreferenced):
             sanity.warn(
-                "dangling-node-remove-disabled",
+                "node-unreferenced",
                 f"{node.layer_name} {node.id} is not referenced by any remaining link endpoint, "
-                "but dangling-node removal is disabled",
+                "but node removal is disabled",
                 layer_name=node.layer_name,
                 feature_id=node.id,
                 source_path=node.source_path,
@@ -341,7 +347,7 @@ def repair_dangling_nodes(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
     _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
-def repair_reversed_link_endpoints(
+def check_link_endpoint_reversed(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
     link_store = dataset.store_for_role("link")
@@ -367,23 +373,27 @@ def repair_reversed_link_endpoints(
                 dataset,
                 sanity,
                 link,
-                "link-direction-swapped",
+                "link-endpoint-reversed-swapped",
                 "had reversed FromNodeID/ToNodeID relative to geometry order",
-                enabled=cfg.sanity.repairs.link_endpoint_direction_swap,
-                warn_disabled=cfg.sanity.warnings.link_endpoint_alignment,
+                enabled=check_repairs(cfg.sanity.checks.link_endpoint_reversed),
+                warn_disabled=check_reports(cfg.sanity.checks.link_endpoint_reversed),
             )
-        elif reversed_alignment and normal and cfg.sanity.warnings.link_direction_ambiguous:
+        elif (
+            reversed_alignment
+            and normal
+            and check_reports(cfg.sanity.checks.link_endpoint_order_ambiguous)
+        ):
             sanity.warn(
-                "link-direction-ambiguous",
+                "link-endpoint-order-ambiguous",
                 f"{link.layer_name} {link.id} endpoints match both normal and reversed "
                 "node ordering",
                 layer_name=link.layer_name,
                 feature_id=link.id,
                 source_path=link.source_path,
             )
-        elif not normal and cfg.sanity.warnings.link_endpoint_alignment:
+        elif not normal and check_reports(cfg.sanity.checks.link_endpoint_misaligned):
             sanity.warn(
-                "link-endpoint-alignment-mismatch",
+                "link-endpoint-misaligned",
                 f"{link.layer_name} {link.id} endpoint nodes do not match polyline endpoints "
                 f"within {tolerance_m:.3f} m",
                 layer_name=link.layer_name,
@@ -392,7 +402,7 @@ def repair_reversed_link_endpoints(
             )
 
 
-def repair_missing_link_node_refs(
+def check_link_endpoint_unresolved(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
     node_store = dataset.store_for_role("node")
@@ -444,10 +454,10 @@ def _repair_endpoint(
     before = {attr_name: current_id}
     if len(nearby) == 1:
         repaired_id = nearby[0].id
-        if cfg.sanity.repairs.link_missing_node_ref_nearest:
+        if check_repairs(cfg.sanity.checks.link_endpoint_unresolved):
             setattr(link, attr_name, repaired_id)
             sanity.action(
-                "link-node-ref-nearest",
+                "link-endpoint-unresolved-assigned",
                 f"{link.layer_name} {link.id} {column_name} repaired to nearby "
                 f"{node_store.layer_name} {repaired_id}",
                 before=before,
@@ -456,19 +466,19 @@ def _repair_endpoint(
                 feature_id=link.id,
                 source_path=link.source_path,
             )
-        elif cfg.sanity.warnings.link_endpoint_alignment:
+        elif check_reports(cfg.sanity.checks.link_endpoint_unresolved):
             sanity.warn(
-                "link-node-ref-nearest-disabled",
+                "link-endpoint-unresolved",
                 f"{link.layer_name} {link.id} {column_name} could be repaired to nearby "
-                f"{node_store.layer_name} {repaired_id}, but nearest-node repair is disabled",
+                f"{node_store.layer_name} {repaired_id}",
                 layer_name=link.layer_name,
                 feature_id=link.id,
                 source_path=link.source_path,
             )
         return
-    if len(nearby) > 1 and cfg.sanity.warnings.link_endpoint_alignment:
+    if len(nearby) > 1 and check_reports(cfg.sanity.checks.link_endpoint_unresolved):
         sanity.warn(
-            "link-node-ref-ambiguous",
+            "link-endpoint-unresolved-ambiguous",
             f"{link.layer_name} {link.id} {column_name} has {len(nearby)} nearby "
             f"{node_store.layer_name} candidates",
             layer_name=link.layer_name,
@@ -476,32 +486,38 @@ def _repair_endpoint(
             source_path=link.source_path,
         )
     if current_id is None:
+        if not nearby and check_reports(cfg.sanity.checks.link_endpoint_unresolved):
+            sanity.warn(
+                "link-endpoint-unresolved",
+                f"{link.layer_name} {link.id} {column_name} is missing and has no nearby "
+                f"{node_store.layer_name} candidate",
+                layer_name=link.layer_name,
+                feature_id=link.id,
+                source_path=link.source_path,
+            )
         return
-    if cfg.sanity.repairs.link_missing_node_ref_remove:
+    if check_repairs(cfg.sanity.checks.link_endpoint_unresolved):
         setattr(link, attr_name, None)
         sanity.action(
-            "link-node-ref-removed",
-            f"{link.layer_name} {link.id} {column_name} could not be resolved and was removed",
+            "link-endpoint-unresolved-cleared",
+            f"{link.layer_name} {link.id} {column_name} could not be resolved and was cleared",
             before=before,
             after={attr_name: None},
             layer_name=link.layer_name,
             feature_id=link.id,
             source_path=link.source_path,
         )
-    elif cfg.sanity.warnings.link_endpoint_alignment:
+    elif check_reports(cfg.sanity.checks.link_endpoint_unresolved):
         sanity.warn(
-            "link-node-ref-remove-disabled",
-            f"{link.layer_name} {link.id} {column_name} could not be resolved, but relation "
-            "removal is disabled",
+            "link-endpoint-unresolved",
+            f"{link.layer_name} {link.id} {column_name} could not be resolved",
             layer_name=link.layer_name,
             feature_id=link.id,
             source_path=link.source_path,
         )
 
 
-def repair_link_topology_direction(
-    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
-) -> None:
+def check_link_flow_reversed(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
     desired_flip = _desired_flips_from_leaf_flow(dataset)
     candidates: list[Any] = []
     for link in dataset.store_for_role("link").features:
@@ -516,9 +532,9 @@ def repair_link_topology_direction(
         return
     link_store = dataset.store_for_role("link")
     if len(candidates) > 1:
-        if cfg.sanity.warnings.link_topology_direction:
+        if check_reports(cfg.sanity.checks.link_flow_reversed):
             sanity.warn(
-                "link-topology-direction-ambiguous",
+                "link-flow-reversed-ambiguous",
                 "topology flow and R/L same-direction evidence found multiple possible "
                 f"backward {link_store.layer_name} features: "
                 f"{', '.join(link.id for link in candidates[:8])}",
@@ -526,21 +542,21 @@ def repair_link_topology_direction(
             )
         return
     link = candidates[0]
-    if cfg.sanity.repairs.link_topology_direction_swap:
+    if check_repairs(cfg.sanity.checks.link_flow_reversed):
         _swap_endpoint_ids(
             dataset,
             sanity,
             link,
-            "link-topology-direction-swapped",
+            "link-flow-reversed-swapped",
             "was reversed by topology flow and R/L same-direction evidence",
             enabled=True,
             warn_disabled=False,
         )
-    elif cfg.sanity.warnings.link_topology_direction:
+    elif check_reports(cfg.sanity.checks.link_flow_reversed):
         sanity.warn(
-            "link-topology-direction-swap-disabled",
+            "link-flow-reversed",
             f"{link.layer_name} {link.id} appears reversed by topology flow and R/L "
-            "same-direction evidence, but topology repair is disabled",
+            "same-direction evidence",
             layer_name=link.layer_name,
             feature_id=link.id,
             source_path=link.source_path,
@@ -651,7 +667,7 @@ def _swap_endpoint_ids(
         if warn_disabled:
             sanity.warn(
                 f"{code}-disabled",
-                f"{link.layer_name} {link.id} {reason}, but direction swap is disabled",
+                f"{link.layer_name} {link.id} {reason}, but repair is disabled",
                 layer_name=link.layer_name,
                 feature_id=link.id,
                 source_path=link.source_path,
@@ -669,12 +685,12 @@ def _swap_endpoint_ids(
     )
 
 
-def repair_link_lateral_longitudinal_conflicts(
+def check_link_side_reference_longitudinal(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
     link_store = dataset.store_for_role("link")
     for link in link_store.features:
-        _clear_lateral_longitudinal_conflict(
+        _clear_longitudinal_side_reference(
             sanity,
             cfg,
             link_store,
@@ -683,7 +699,7 @@ def repair_link_lateral_longitudinal_conflicts(
             source_column="L_LinkID",
             reciprocal_attr="r_link_id",
         )
-        _clear_lateral_longitudinal_conflict(
+        _clear_longitudinal_side_reference(
             sanity,
             cfg,
             link_store,
@@ -694,7 +710,7 @@ def repair_link_lateral_longitudinal_conflicts(
         )
 
 
-def _clear_lateral_longitudinal_conflict(
+def _clear_longitudinal_side_reference(
     sanity: SanityReport,
     cfg: NGIIConfig,
     link_store: LayerStore[Any],
@@ -724,12 +740,12 @@ def _clear_lateral_longitudinal_conflict(
         before[reciprocal_key] = reciprocal_value
         after[reciprocal_key] = None
 
-    if cfg.sanity.repairs.link_lateral_longitudinal_conflict_clear:
+    if check_repairs(cfg.sanity.checks.link_side_reference_longitudinal):
         setattr(link, source_attr, None)
         if clears_reciprocal:
             setattr(target, reciprocal_attr, None)
         sanity.action(
-            "link-lateral-longitudinal-conflict-cleared",
+            "link-side-reference-longitudinal-cleared",
             f"{link.layer_name} {link.id} {source_column}={target_id!r} points to "
             f"longitudinally connected {target.layer_name} {target.id} through node "
             f"{shared_node_id!r}",
@@ -739,12 +755,12 @@ def _clear_lateral_longitudinal_conflict(
             feature_id=link.id,
             source_path=link.source_path,
         )
-    elif cfg.sanity.warnings.link_lateral_longitudinal_conflict:
+    elif check_reports(cfg.sanity.checks.link_side_reference_longitudinal):
         sanity.warn(
-            "link-lateral-longitudinal-conflict-clear-disabled",
+            "link-side-reference-longitudinal",
             f"{link.layer_name} {link.id} {source_column}={target_id!r} points to "
             f"longitudinally connected {target.layer_name} {target.id} through node "
-            f"{shared_node_id!r}, but lateral longitudinal conflict repair is disabled",
+            f"{shared_node_id!r}",
             layer_name=link.layer_name,
             feature_id=link.id,
             source_path=link.source_path,
@@ -763,14 +779,14 @@ def _shared_endpoint_node_id(link: Any, target: Any) -> str:
     return ""
 
 
-def repair_link_lateral_reciprocal_conflicts(
+def check_link_side_reference_nonreciprocal(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
     link_store = dataset.store_for_role("link")
-    links_by_left_ref = _links_by_lateral_ref(link_store, "l_link_id")
-    links_by_right_ref = _links_by_lateral_ref(link_store, "r_link_id")
+    links_by_left_ref = _links_by_side_ref(link_store, "l_link_id")
+    links_by_right_ref = _links_by_side_ref(link_store, "r_link_id")
     for link in link_store.features:
-        _repair_lateral_reciprocal_conflict(
+        _check_nonreciprocal_side_reference(
             sanity,
             cfg,
             link_store,
@@ -781,7 +797,7 @@ def repair_link_lateral_reciprocal_conflicts(
             reciprocal_column="R_LinkID",
             inverse_links_by_ref=links_by_right_ref,
         )
-        _repair_lateral_reciprocal_conflict(
+        _check_nonreciprocal_side_reference(
             sanity,
             cfg,
             link_store,
@@ -794,7 +810,7 @@ def repair_link_lateral_reciprocal_conflicts(
         )
 
 
-def _links_by_lateral_ref(
+def _links_by_side_ref(
     link_store: LayerStore[Any],
     attr_name: str,
 ) -> dict[str, list[Any]]:
@@ -806,7 +822,7 @@ def _links_by_lateral_ref(
     return links_by_ref
 
 
-def _repair_lateral_reciprocal_conflict(
+def _check_nonreciprocal_side_reference(
     sanity: SanityReport,
     cfg: NGIIConfig,
     link_store: LayerStore[Any],
@@ -829,7 +845,7 @@ def _repair_lateral_reciprocal_conflict(
         return
     candidates = tuple(inverse_links_by_ref.get(link.id, ()))
     if len(candidates) != 1:
-        _warn_lateral_reciprocal_conflict(
+        _warn_nonreciprocal_side_reference(
             sanity,
             cfg,
             link,
@@ -843,10 +859,10 @@ def _repair_lateral_reciprocal_conflict(
     repaired_id = candidates[0].id
     before = {source_attr: getattr(link, source_attr, None)}
     after = {source_attr: repaired_id}
-    if cfg.sanity.repairs.link_lateral_reciprocal_conflict_repair:
+    if check_repairs(cfg.sanity.checks.link_side_reference_nonreciprocal):
         setattr(link, source_attr, repaired_id)
         sanity.action(
-            "link-lateral-reciprocal-conflict-repaired",
+            "link-side-reference-nonreciprocal-redirected",
             f"{link.layer_name} {link.id} {source_column} repaired from {current_id!r} "
             f"to {repaired_id!r} by inverse {reciprocal_column} evidence",
             before=before,
@@ -855,19 +871,19 @@ def _repair_lateral_reciprocal_conflict(
             feature_id=link.id,
             source_path=link.source_path,
         )
-    elif cfg.sanity.warnings.link_lateral_reciprocal_conflict:
+    elif check_reports(cfg.sanity.checks.link_side_reference_nonreciprocal):
         sanity.warn(
-            "link-lateral-reciprocal-conflict-repair-disabled",
+            "link-side-reference-nonreciprocal",
             f"{link.layer_name} {link.id} {source_column}={current_id!r} does not point "
             f"reciprocally through {reciprocal_column}; inverse evidence suggests "
-            f"{repaired_id!r}, but lateral reciprocal repair is disabled",
+            f"{repaired_id!r}",
             layer_name=link.layer_name,
             feature_id=link.id,
             source_path=link.source_path,
         )
 
 
-def _warn_lateral_reciprocal_conflict(
+def _warn_nonreciprocal_side_reference(
     sanity: SanityReport,
     cfg: NGIIConfig,
     link: Any,
@@ -877,11 +893,11 @@ def _warn_lateral_reciprocal_conflict(
     current_reciprocal_id: str,
     candidate_ids: tuple[str, ...],
 ) -> None:
-    if not cfg.sanity.warnings.link_lateral_reciprocal_conflict:
+    if not check_reports(cfg.sanity.checks.link_side_reference_nonreciprocal):
         return
     candidate_label = ", ".join(candidate_ids) if candidate_ids else "-"
     sanity.warn(
-        "link-lateral-reciprocal-conflict-ambiguous",
+        "link-side-reference-nonreciprocal-ambiguous",
         f"{link.layer_name} {link.id} {source_column}={current_id!r} does not point "
         f"reciprocally through {reciprocal_column}={current_reciprocal_id!r}; "
         f"found {len(candidate_ids)} inverse candidate(s): {candidate_label}",
@@ -891,10 +907,10 @@ def _warn_lateral_reciprocal_conflict(
     )
 
 
-def repair_reciprocal_relationships(
+def check_reciprocal_references(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
-    for rule in dataset.schema.reciprocal_relationships:
+    for rule in dataset.schema.reciprocal_references:
         store = dataset.store_for_attr(rule.layer_attr)
         for feature in store.features:
             target_id = _optional_text(getattr(feature, rule.source_attr, None))
@@ -907,11 +923,11 @@ def repair_reciprocal_relationships(
             if reciprocal_id == feature.id:
                 continue
             if not reciprocal_id:
-                _fill_missing_reciprocal_relationship(sanity, cfg, rule, feature, target)
+                _fill_missing_reciprocal_reference(sanity, cfg, rule, feature, target)
                 continue
-            if cfg.sanity.warnings.reciprocal_relationships:
+            if check_reports(cfg.sanity.checks.reciprocal_reference_conflict):
                 sanity.warn(
-                    "reciprocal-relation-conflict",
+                    "reciprocal-reference-conflict",
                     f"{target.layer_name} {target.id} {rule.reciprocal_column}="
                     f"{reciprocal_id!r} does not point back to {feature.layer_name} "
                     f"{feature.id} from {rule.source_column}",
@@ -921,19 +937,19 @@ def repair_reciprocal_relationships(
                 )
 
 
-def _fill_missing_reciprocal_relationship(
+def _fill_missing_reciprocal_reference(
     sanity: SanityReport,
     cfg: NGIIConfig,
-    rule: ReciprocalRelationshipRule,
+    rule: ReciprocalReferenceRule,
     feature: Any,
     target: Any,
 ) -> None:
     before = {rule.reciprocal_attr: getattr(target, rule.reciprocal_attr, None)}
     after = {rule.reciprocal_attr: feature.id}
-    if cfg.sanity.repairs.reciprocal_relationship_fill:
+    if check_repairs(cfg.sanity.checks.reciprocal_reference_missing):
         setattr(target, rule.reciprocal_attr, feature.id)
         sanity.action(
-            "reciprocal-relation-filled",
+            "reciprocal-reference-missing-filled",
             f"{target.layer_name} {target.id} {rule.reciprocal_column} filled to point "
             f"back to {feature.layer_name} {feature.id}",
             before=before,
@@ -942,11 +958,11 @@ def _fill_missing_reciprocal_relationship(
             feature_id=target.id,
             source_path=target.source_path,
         )
-    elif cfg.sanity.warnings.reciprocal_relationships:
+    elif check_reports(cfg.sanity.checks.reciprocal_reference_missing):
         sanity.warn(
-            "reciprocal-relation-fill-disabled",
+            "reciprocal-reference-missing",
             f"{target.layer_name} {target.id} {rule.reciprocal_column} could point back to "
-            f"{feature.layer_name} {feature.id}, but reciprocal repair is disabled",
+            f"{feature.layer_name} {feature.id}",
             layer_name=target.layer_name,
             feature_id=target.id,
             source_path=target.source_path,
@@ -988,7 +1004,7 @@ def _remove_features_with_cascade(
             source_path=feature.source_path,
         )
 
-    _clear_optional_relationships_to_removed(dataset, sanity, frozenset(removal_refs))
+    _clear_optional_references_to_removed(dataset, sanity, frozenset(removal_refs))
     for layer_attr, store in dataset.layer_items:
         ids_to_remove = {
             feature_ref.feature_id
@@ -1009,40 +1025,38 @@ def _required_dependents_for_removed_refs(
             source_ref = FeatureRef(layer_attr, feature.id)
             if source_ref in removal_refs:
                 continue
-            for relationship in store.spec.relationships:
-                if not relationship.required:
+            for reference in store.spec.references:
+                if not reference.required:
                     continue
-                value = _optional_text(getattr(feature, relationship.source_attr, None))
-                if not value or not _relationship_references_removed_target(
-                    dataset, relationship.target_attrs, value, removal_refs
+                value = _optional_text(getattr(feature, reference.source_attr, None))
+                if not value or not _reference_targets_removed_feature(
+                    dataset, reference.target_attrs, value, removal_refs
                 ):
                     continue
-                if _relationship_resolves_outside_removal(
-                    dataset, relationship.target_attrs, value, removal_refs
+                if _reference_resolves_outside_removal(
+                    dataset, reference.target_attrs, value, removal_refs
                 ):
                     continue
-                target_label = _relationship_removed_target_label(
-                    dataset, relationship.target_attrs, value, removal_refs
+                target_label = _reference_removed_target_label(
+                    dataset, reference.target_attrs, value, removal_refs
                 )
                 dependents.setdefault(
                     source_ref,
                     _RemovalCause(
-                        code="required-dependent-removed",
+                        code="required-reference-dependent-removed",
                         message=(
                             f"{feature.layer_name} {feature.id} "
-                            f"{relationship.column_name}={value!r} depends on removed "
+                            f"{reference.column_name}={value!r} depends on removed "
                             f"{target_label}"
                         ),
-                        before={
-                            relationship.source_attr: getattr(feature, relationship.source_attr)
-                        },
+                        before={reference.source_attr: getattr(feature, reference.source_attr)},
                         after={"removed": True},
                     ),
                 )
     return dependents
 
 
-def _clear_optional_relationships_to_removed(
+def _clear_optional_references_to_removed(
     dataset: NGIIDataset,
     sanity: SanityReport,
     removal_refs: frozenset[FeatureRef],
@@ -1052,33 +1066,33 @@ def _clear_optional_relationships_to_removed(
             source_ref = FeatureRef(layer_attr, feature.id)
             if source_ref in removal_refs:
                 continue
-            for relationship in store.spec.relationships:
-                if relationship.required:
+            for reference in store.spec.references:
+                if reference.required:
                     continue
-                value = _optional_text(getattr(feature, relationship.source_attr, None))
-                if not value or not _relationship_references_removed_target(
-                    dataset, relationship.target_attrs, value, removal_refs
+                value = _optional_text(getattr(feature, reference.source_attr, None))
+                if not value or not _reference_targets_removed_feature(
+                    dataset, reference.target_attrs, value, removal_refs
                 ):
                     continue
-                if _relationship_resolves_outside_removal(
-                    dataset, relationship.target_attrs, value, removal_refs
+                if _reference_resolves_outside_removal(
+                    dataset, reference.target_attrs, value, removal_refs
                 ):
                     continue
-                before = {relationship.source_attr: getattr(feature, relationship.source_attr)}
-                setattr(feature, relationship.source_attr, None)
+                before = {reference.source_attr: getattr(feature, reference.source_attr)}
+                setattr(feature, reference.source_attr, None)
                 sanity.action(
                     "optional-dependent-reference-cleared",
-                    f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
+                    f"{feature.layer_name} {feature.id} {reference.column_name}={value!r} "
                     "depended on a removed feature and was cleared",
                     before=before,
-                    after={relationship.source_attr: None},
+                    after={reference.source_attr: None},
                     layer_name=feature.layer_name,
                     feature_id=feature.id,
                     source_path=feature.source_path,
                 )
 
 
-def _relationship_references_removed_target(
+def _reference_targets_removed_feature(
     dataset: NGIIDataset,
     target_attrs: tuple[str, ...],
     feature_id: str,
@@ -1087,7 +1101,7 @@ def _relationship_references_removed_target(
     return any(FeatureRef(target_attr, feature_id) in removal_refs for target_attr in target_attrs)
 
 
-def _relationship_resolves_outside_removal(
+def _reference_resolves_outside_removal(
     dataset: NGIIDataset,
     target_attrs: tuple[str, ...],
     feature_id: str,
@@ -1100,7 +1114,7 @@ def _relationship_resolves_outside_removal(
     )
 
 
-def _relationship_removed_target_label(
+def _reference_removed_target_label(
     dataset: NGIIDataset,
     target_attrs: tuple[str, ...],
     feature_id: str,
@@ -1127,7 +1141,7 @@ def _optional_text(value: object) -> str:
     return str(value).strip()
 
 
-def _relationship_resolves(
+def _reference_resolves(
     dataset: NGIIDataset, target_attrs: tuple[str, ...], feature_id: str
 ) -> bool:
     return any(
@@ -1136,19 +1150,19 @@ def _relationship_resolves(
     )
 
 
-def _relationship_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ...]) -> str:
+def _reference_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ...]) -> str:
     return "/".join(dataset.store_for_attr(target_attr).layer_name for target_attr in target_attrs)
 
 
-DEFAULT_REPAIR_HOOKS: tuple[tuple[str, RepairHook], ...] = (
-    ("link_too_short_removal", repair_too_short_links),
-    ("link_singular_removal", repair_singular_links),
-    ("link_missing_node_refs", repair_missing_link_node_refs),
-    ("unresolved_relationship_repair", repair_unresolved_relationships),
-    ("link_endpoint_direction", repair_reversed_link_endpoints),
-    ("link_topology_direction", repair_link_topology_direction),
-    ("dangling_nodes", repair_dangling_nodes),
-    ("link_lateral_longitudinal_conflicts", repair_link_lateral_longitudinal_conflicts),
-    ("link_lateral_reciprocal_conflicts", repair_link_lateral_reciprocal_conflicts),
-    ("reciprocal_relationships", repair_reciprocal_relationships),
+DEFAULT_SANITY_HOOKS: tuple[tuple[str, SanityHook], ...] = (
+    ("link_too_short", check_link_too_short),
+    ("link_endpoint_isolated", check_link_endpoint_isolated),
+    ("link_endpoint_unresolved", check_link_endpoint_unresolved),
+    ("reference_unresolved", check_reference_unresolved),
+    ("link_endpoint_reversed", check_link_endpoint_reversed),
+    ("link_flow_reversed", check_link_flow_reversed),
+    ("node_unreferenced", check_node_unreferenced),
+    ("link_side_reference_longitudinal", check_link_side_reference_longitudinal),
+    ("link_side_reference_nonreciprocal", check_link_side_reference_nonreciprocal),
+    ("reciprocal_reference", check_reciprocal_references),
 )

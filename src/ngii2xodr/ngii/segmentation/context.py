@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import LineFeature, ResolvedRelationship
+from ngii2xodr.ngii.data.features import LineFeature, ResolvedReference
 from ngii2xodr.ngii.data.schema import RoleFilter, RoleKey
 from ngii2xodr.ngii.segmentation.model import EndpointSide, SegmentationConfig
 
@@ -138,7 +138,7 @@ class SegmentationContext:
     def _collect_node_link_edges(
         self,
         node_id: str,
-        edges: tuple[ResolvedRelationship, ...],
+        edges: tuple[ResolvedReference, ...],
         incoming: dict[str, list[FeatureRef]],
         outgoing: dict[str, list[FeatureRef]],
     ) -> None:
@@ -153,8 +153,8 @@ class SegmentationContext:
     def _collect_lateral_link_edges(
         self,
         link_id: str,
-        references: tuple[ResolvedRelationship, ...],
-        referenced_by: tuple[ResolvedRelationship, ...],
+        references: tuple[ResolvedReference, ...],
+        referenced_by: tuple[ResolvedReference, ...],
         explicit_left: dict[str, FeatureRef],
         explicit_right: dict[str, FeatureRef],
         inverse_left: dict[str, list[FeatureRef]],

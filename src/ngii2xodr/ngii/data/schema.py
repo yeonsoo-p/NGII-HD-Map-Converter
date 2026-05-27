@@ -43,7 +43,7 @@ class FieldRule:
 
 
 @dataclass(slots=True, frozen=True)
-class RelationshipRule:
+class ReferenceRule:
     column_name: str
     source_attr: str
     target_attrs: tuple[str, ...]
@@ -51,7 +51,7 @@ class RelationshipRule:
 
 
 @dataclass(slots=True, frozen=True)
-class ReciprocalRelationshipRule:
+class ReciprocalReferenceRule:
     layer_attr: str
     source_column: str
     source_attr: str
@@ -105,7 +105,7 @@ class LayerSpec:
     factory: Callable[[FeatureRecord], NGIIFeature]
     required_layer: bool
     field_rules: tuple[FieldRule, ...]
-    relationships: tuple[RelationshipRule, ...] = ()
+    references: tuple[ReferenceRule, ...] = ()
     roles: tuple[LayerRole, ...] = ()
     filename_aliases: tuple[str, ...] = ()
 
@@ -127,8 +127,8 @@ class LayerSpec:
     @property
     def manual_columns(self) -> set[str]:
         field_columns = {rule.name for rule in self.field_rules}
-        relationship_columns = {relationship.column_name for relationship in self.relationships}
-        return field_columns | relationship_columns
+        reference_columns = {reference.column_name for reference in self.references}
+        return field_columns | reference_columns
 
 
 @dataclass(slots=True, frozen=True)
@@ -137,7 +137,7 @@ class SchemaDefinition:
     layer_specs: tuple[LayerSpec, ...]
     role_filters: tuple[RoleFilter, ...] = ()
     role_keys: tuple[RoleKey, ...] = ()
-    reciprocal_relationships: tuple[ReciprocalRelationshipRule, ...] = ()
+    reciprocal_references: tuple[ReciprocalReferenceRule, ...] = ()
 
     @property
     def specs_by_filename(self) -> dict[str, LayerSpec]:
@@ -265,17 +265,15 @@ def _validate_feature_type(spec: LayerSpec) -> None:
 
     feature_fields = {field.name for field in dataclass_fields(spec.feature_type)}
     missing_field_attrs = sorted({rule.attr for rule in spec.field_rules} - feature_fields)
-    missing_relationship_attrs = sorted(
-        {relationship.source_attr for relationship in spec.relationships} - feature_fields
+    missing_reference_attrs = sorted(
+        {reference.source_attr for reference in spec.references} - feature_fields
     )
-    if missing_field_attrs or missing_relationship_attrs:
+    if missing_field_attrs or missing_reference_attrs:
         parts: list[str] = []
         if missing_field_attrs:
             parts.append(f"field attrs missing from feature_type: {missing_field_attrs}")
-        if missing_relationship_attrs:
-            parts.append(
-                f"relationship attrs missing from feature_type: {missing_relationship_attrs}"
-            )
+        if missing_reference_attrs:
+            parts.append(f"reference attrs missing from feature_type: {missing_reference_attrs}")
         msg = f"{spec.layer_name}: {'; '.join(parts)}"
         raise ValueError(msg)
 

@@ -44,7 +44,7 @@ from ngii2xodr.ngii.data.features import (
     PointOrPolygonFeature,
     PolygonFeature,
 )
-from ngii2xodr.ngii.data.schema import RelationshipRule
+from ngii2xodr.ngii.data.schema import ReferenceRule
 from ngii2xodr.ngii.segmentation import SegmentationConfig, SelectedField
 from ngii2xodr.ngii.viz import HdMapViz, VizConfig
 from ngii2xodr.profile import ProfileTimer
@@ -305,8 +305,8 @@ class HdMapWindow(QMainWindow):
         log.info(
             "loaded %s: %d warnings, %d repairs",
             ngii_dir,
-            len(viz.sanity.warnings),
-            len(viz.sanity.actions),
+            viz.sanity.warning_count,
+            viz.sanity.action_count,
         )
 
     def _rebuild_layers_tab(self, viz: HdMapViz) -> None:
@@ -570,7 +570,7 @@ def _schema_field_rows(viz: HdMapViz, feature: NGIIFeature) -> list[_DetailRow]:
     spec = viz.dataset.schema.spec_for_layer_name(feature.layer_name)
     if spec is None:
         return []
-    relationships = {relationship.source_attr: relationship for relationship in spec.relationships}
+    references = {reference.source_attr: reference for reference in spec.references}
     seen_attrs: set[str] = set()
     rows = [_DetailRow("Fields", "", True)]
     for rule in spec.field_rules:
@@ -579,18 +579,18 @@ def _schema_field_rows(viz: HdMapViz, feature: NGIIFeature) -> list[_DetailRow]:
         attr_name = rule.attr
         seen_attrs.add(attr_name)
         value = getattr(feature, attr_name, "")
-        relationship = relationships.get(attr_name)
-        if relationship is None:
+        reference = references.get(attr_name)
+        if reference is None:
             rows.append(
                 _DetailRow(_display_name(attr_name), _decoded_value(feature, attr_name, value))
             )
         else:
-            rows.append(_relationship_detail_row(viz, relationship, attr_name, value))
-    for relationship in spec.relationships:
-        if relationship.source_attr in seen_attrs:
+            rows.append(_reference_detail_row(viz, reference, attr_name, value))
+    for reference in spec.references:
+        if reference.source_attr in seen_attrs:
             continue
-        value = getattr(feature, relationship.source_attr, "")
-        rows.append(_relationship_detail_row(viz, relationship, relationship.source_attr, value))
+        value = getattr(feature, reference.source_attr, "")
+        rows.append(_reference_detail_row(viz, reference, reference.source_attr, value))
     return rows if len(rows) > 1 else []
 
 
@@ -653,32 +653,32 @@ def _geometry_rows(feature: NGIIFeature) -> list[_DetailRow]:
     return rows
 
 
-def _relationship_detail_row(
+def _reference_detail_row(
     viz: HdMapViz,
-    relationship: RelationshipRule,
+    reference: ReferenceRule,
     field_name: str,
     value: object,
 ) -> _DetailRow:
     if value is None or value == "":
         return _DetailRow(_display_name(field_name), "-")
     feature_id = str(value)
-    target_ref = _resolve_relationship_ref(viz, relationship, feature_id)
+    target_ref = _resolve_reference_ref(viz, reference, feature_id)
     if target_ref is None:
         return _DetailRow(_display_name(field_name), f"{feature_id} (unresolved)")
     return _DetailRow(_display_name(field_name), feature_id, target_ref=target_ref)
 
 
-def _feature_relationships(viz: HdMapViz, feature: NGIIFeature) -> tuple[RelationshipRule, ...]:
+def _feature_references(viz: HdMapViz, feature: NGIIFeature) -> tuple[ReferenceRule, ...]:
     spec = viz.dataset.schema.spec_for_layer_name(feature.layer_name)
-    return () if spec is None else spec.relationships
+    return () if spec is None else spec.references
 
 
-def _resolve_relationship_ref(
-    viz: HdMapViz, relationship: RelationshipRule, feature_id: str
+def _resolve_reference_ref(
+    viz: HdMapViz, reference: ReferenceRule, feature_id: str
 ) -> FeatureRef | None:
     matches = [
         FeatureRef(attr, feature_id)
-        for attr in relationship.target_attrs
+        for attr in reference.target_attrs
         if viz.dataset.store_for_attr(attr).get(feature_id) is not None
     ]
     if len(matches) == 1:

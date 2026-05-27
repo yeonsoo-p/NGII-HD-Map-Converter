@@ -25,45 +25,43 @@ ngii:
     direction_parallel_dot_min: 0.85
     # Minimum link geometry length (m); shorter links are removed by repair.
     link_min_length_m: 0.2
-    warnings:
-      missing_required_layers: true
-      missing_sidecars: true
-      duplicate_column_capitalization: true
-      manual_field_rules: true
-      unknown_manual_columns: true
-      invalid_code_values: true
-      unsupported_geometry: true
-      unknown_layers: true
-      unresolved_relationships: true
-      global_id_collision: true
-      duplicate_identical_ids: true
-      duplicate_conflicting_ids: true
-      link_endpoint_alignment: true
-      link_direction_ambiguous: true
-      link_topology_direction: true
-      link_lateral_longitudinal_conflict: true
-      link_lateral_reciprocal_conflict: true
-      too_short_links: true
-      singular_links: true
-      dangling_nodes: true
-      reciprocal_relationships: true
-    repairs:
-      duplicate_conflicting_id_drop: true
-      link_too_short_remove: true
-      link_singular_remove: true
-      link_endpoint_direction_swap: true
-      link_missing_node_ref_nearest: true
-      link_missing_node_ref_remove: true
-      link_topology_direction_swap: true
-      link_lateral_longitudinal_conflict_clear: true
-      link_lateral_reciprocal_conflict_repair: true
-      unresolved_relationship_remove: true
-      dangling_node_remove: true
-      reciprocal_relationship_fill: true
-  text_repair:
-    enabled: true
-    repair_mojibake: true
-    warn_unrepaired_replacement_chars: true
+    # Sanity mode values: null = disabled, warn = report only, repair = repair
+    # deterministic cases and log both actions and residual warnings.
+    checks:
+      layer_required_missing: warn
+      layer_unknown: warn
+      shp_sidecar_missing: warn
+      dbf_column_case_duplicate: warn
+      manual_column_missing: warn
+      manual_column_unknown: warn
+      manual_field_required_missing: warn
+      manual_field_length_exceeded: warn
+      manual_field_type_invalid: warn
+      manual_field_code_invalid: warn
+      manual_hist_type_invalid: warn
+      geometry_missing: warn
+      geometry_invalid: warn
+      text_utf8_dbf_row_mismatch: warn
+      text_utf8_decode_replacement: warn
+      text_mojibake: repair
+      text_replacement_char: warn
+      feature_id_missing: warn
+      feature_id_duplicate_identical: warn
+      feature_id_duplicate_conflicting: repair
+      global_id_collision: warn
+      reference_unresolved: repair
+      reciprocal_reference_missing: repair
+      reciprocal_reference_conflict: warn
+      link_too_short: repair
+      link_endpoint_isolated: repair
+      link_endpoint_unresolved: repair
+      link_endpoint_reversed: repair
+      link_endpoint_order_ambiguous: warn
+      link_endpoint_misaligned: warn
+      link_flow_reversed: repair
+      node_unreferenced: repair
+      link_side_reference_longitudinal: repair
+      link_side_reference_nonreciprocal: repair
 
 segmentation:
   enable_uturn: true
