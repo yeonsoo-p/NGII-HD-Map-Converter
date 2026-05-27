@@ -115,10 +115,15 @@ def _reference_candidate(
         endpoint_side = _endpoint_side_for_reference_link(
             context, connection, link_group.reference_link_ref
         )
-        if endpoint_side != "to":
+        if endpoint_side is None:
+            continue
+        if endpoint_side == "from" and not _is_outbound_only(connection):
             continue
         source = link_group.ordering_source or "lateral_topology"
-        source = f"{source}:toward_junction"
+        if endpoint_side == "from":
+            source = f"{source}:out_of_junction"
+        else:
+            source = f"{source}:toward_junction"
         candidates.append(
             _ReferenceCandidate(
                 link_ref=link_group.reference_link_ref,
@@ -144,6 +149,10 @@ def _endpoint_side_for_reference_link(
         if node_ref in connection_nodes:
             return side
     return None
+
+
+def _is_outbound_only(connection: JunctionConnection) -> bool:
+    return len(connection.endpoint_sides) == 1 and connection.endpoint_sides[0] == "from"
 
 
 def _reference_candidate_key(candidate: _ReferenceCandidate) -> tuple[int, int, str]:
