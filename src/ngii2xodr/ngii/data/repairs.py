@@ -664,16 +664,14 @@ def _clear_lateral_longitudinal_conflict(
 
 
 def _shared_endpoint_node_id(link: Any, target: Any) -> str:
-    target_node_ids = {
-        _optional_text(getattr(target, "from_node_id", None)),
-        _optional_text(getattr(target, "to_node_id", None)),
-    }
-    for node_id in (
-        _optional_text(getattr(link, "from_node_id", None)),
-        _optional_text(getattr(link, "to_node_id", None)),
-    ):
-        if node_id and node_id in target_node_ids:
-            return node_id
+    link_from_node_id = _optional_text(getattr(link, "from_node_id", None))
+    link_to_node_id = _optional_text(getattr(link, "to_node_id", None))
+    target_from_node_id = _optional_text(getattr(target, "from_node_id", None))
+    target_to_node_id = _optional_text(getattr(target, "to_node_id", None))
+    if link_to_node_id and link_to_node_id == target_from_node_id:
+        return link_to_node_id
+    if link_from_node_id and link_from_node_id == target_to_node_id:
+        return link_from_node_id
     return ""
 
 
