@@ -51,10 +51,8 @@ class NGIISanityChecksConfig:
     link_too_short: SanityCheckMode
     link_endpoint_isolated: SanityCheckMode
     link_endpoint_unresolved: SanityCheckMode
-    link_endpoint_reversed: SanityCheckMode
-    link_endpoint_order_ambiguous: SanityCheckMode
     link_endpoint_misaligned: SanityCheckMode
-    link_flow_reversed: SanityCheckMode
+    link_orientation_reversed: SanityCheckMode
     node_unreferenced: SanityCheckMode
     link_side_reference_longitudinal: SanityCheckMode
     link_side_reference_nonreciprocal: SanityCheckMode

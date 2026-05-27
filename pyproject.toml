@@ -3,7 +3,7 @@ name = "ngii2xodr"
 version = "0.1.0"
 description = "NGII precise road map (SHP) to OpenDRIVE converter."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "geopandas",
     "shapely",
@@ -32,7 +32,7 @@ packages = ["src/ngii2xodr"]
 # ruff
 # ----------------------------------------------------------------------------
 [tool.ruff]
-target-version = "py313"
+target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 
@@ -68,7 +68,7 @@ quote-style = "double"
 # mypy
 # ----------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.12"
 strict = true
 warn_unused_configs = true
 warn_unreachable = true

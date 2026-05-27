@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ngii2xodr.ngii.data.config import NGIIConfig, check_reports
-from ngii2xodr.ngii.data.features import NGIIFeature, optional_text
+from ngii2xodr.ngii.data.features import (
+    NGIIFeature,
+    is_float_value,
+    is_integer_value,
+    optional_text,
+)
 from ngii2xodr.ngii.data.schema import FieldRule, LayerSpec, SchemaDefinition
 
 if TYPE_CHECKING:
@@ -291,19 +296,11 @@ def _value_text(value: Any) -> str:
 
 
 def _is_integer(value: Any) -> bool:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return number.is_integer()
+    return is_integer_value(value)
 
 
 def _is_float(value: Any) -> bool:
-    try:
-        float(value)
-    except (TypeError, ValueError):
-        return False
-    return True
+    return is_float_value(value)
 
 
 def _is_valid_hist_type(spec: LayerSpec, value: str) -> bool:

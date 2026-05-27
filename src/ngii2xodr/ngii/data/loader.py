@@ -17,7 +17,13 @@ import shapely
 
 from ngii2xodr.ngii.data.config import NGIIConfig, check_repairs, check_reports
 from ngii2xodr.ngii.data.dataset import NGIIDataset
-from ngii2xodr.ngii.data.features import FeatureRecord, NGIIFeature
+from ngii2xodr.ngii.data.features import (
+    FeatureRecord,
+    NGIIFeature,
+    is_float_value,
+    is_integer_value,
+    optional_text,
+)
 from ngii2xodr.ngii.data.geometry import convert_geometry
 from ngii2xodr.ngii.data.repairs import (
     DEFAULT_SANITY_HOOKS,
@@ -283,16 +289,6 @@ def read_layer_file(
                 row_id=row_id,
                 multipart_snap_tolerance_m=cfg.geometry.multipart_snap_tolerance_m,
             )
-            feature = layer_file.spec.factory(
-                FeatureRecord(
-                    layer_name=layer_file.spec.layer_name,
-                    source_path=layer_file.path,
-                    source_row=row_idx,
-                    attributes=attrs,
-                    geometry_kind=geometry_kind,
-                    geometry=converted_geometry,
-                )
-            )
         except (TypeError, ValueError) as e:
             if check_reports(cfg.sanity.checks.geometry_invalid):
                 sanity.warn(
@@ -303,8 +299,47 @@ def read_layer_file(
                     source_path=layer_file.path,
                 )
             continue
+        _warn_row_numeric_parse_issues(layer_file, attrs, row_idx, row_id, sanity, cfg)
+        feature = layer_file.spec.factory(
+            FeatureRecord(
+                layer_name=layer_file.spec.layer_name,
+                source_path=layer_file.path,
+                source_row=row_idx,
+                attributes=attrs,
+                geometry_kind=geometry_kind,
+                geometry=converted_geometry,
+            )
+        )
         features.append(feature)
     return features
+
+
+def _warn_row_numeric_parse_issues(
+    layer_file: DiscoveredLayerFile,
+    attrs: dict[str, Any],
+    row_idx: int,
+    row_id: str,
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+) -> None:
+    if not check_reports(cfg.sanity.checks.manual_field_type_invalid):
+        return
+    feature_label = row_id or f"row {row_idx}"
+    feature_id = optional_text(row_id) or None
+    for rule in layer_file.spec.field_rules:
+        value = attrs.get(rule.name, "")
+        invalid_integer = rule.field_type == "integer" and not is_integer_value(value)
+        invalid_float = rule.field_type == "float" and not is_float_value(value)
+        if not invalid_integer and not invalid_float:
+            continue
+        sanity.warn(
+            "manual-field-type-invalid",
+            f"{layer_file.spec.layer_name} {feature_label}: {rule.name}="
+            f"{optional_text(value)!r} is not a valid {rule.field_type}",
+            layer_name=layer_file.spec.layer_name,
+            feature_id=feature_id,
+            source_path=layer_file.path,
+        )
 
 
 def _load_gdf(

@@ -352,61 +352,6 @@ def check_node_unreferenced(dataset: NGIIDataset, sanity: SanityReport, cfg: NGI
     _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
-def check_link_endpoint_reversed(
-    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
-) -> None:
-    link_store = dataset.store_for_role("link")
-    node_store = dataset.store_for_role("node")
-    tolerance_m = cfg.sanity.node_match_tolerance_m
-    for link in link_store.features:
-        from_node = node_store.get(link.from_node_id)
-        to_node = node_store.get(link.to_node_id)
-        if from_node is None or to_node is None or len(link.polyline) < 2:
-            continue
-        start = link.polyline[0]
-        end = link.polyline[-1]
-        normal = (
-            xy_distance(start, from_node.point) <= tolerance_m
-            and xy_distance(end, to_node.point) <= tolerance_m
-        )
-        reversed_alignment = (
-            xy_distance(start, to_node.point) <= tolerance_m
-            and xy_distance(end, from_node.point) <= tolerance_m
-        )
-        if reversed_alignment and not normal:
-            _swap_endpoint_ids(
-                dataset,
-                sanity,
-                link,
-                "link-endpoint-reversed-swapped",
-                "had reversed FromNodeID/ToNodeID relative to geometry order",
-                enabled=check_repairs(cfg.sanity.checks.link_endpoint_reversed),
-                warn_disabled=check_reports(cfg.sanity.checks.link_endpoint_reversed),
-            )
-        elif (
-            reversed_alignment
-            and normal
-            and check_reports(cfg.sanity.checks.link_endpoint_order_ambiguous)
-        ):
-            sanity.warn(
-                "link-endpoint-order-ambiguous",
-                f"{link.layer_name} {link.id} endpoints match both normal and reversed "
-                "node ordering",
-                layer_name=link.layer_name,
-                feature_id=link.id,
-                source_path=link.source_path,
-            )
-        elif not normal and check_reports(cfg.sanity.checks.link_endpoint_misaligned):
-            sanity.warn(
-                "link-endpoint-misaligned",
-                f"{link.layer_name} {link.id} endpoint nodes do not match polyline endpoints "
-                f"within {tolerance_m:.3f} m",
-                layer_name=link.layer_name,
-                feature_id=link.id,
-                source_path=link.source_path,
-            )
-
-
 def check_link_endpoint_unresolved(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
@@ -522,171 +467,310 @@ def _repair_endpoint(
         )
 
 
-def check_link_flow_reversed(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
-    desired_flip = _desired_flips_from_leaf_flow(dataset)
-    candidates: list[Any] = []
-    for link in dataset.store_for_role("link").features:
-        if not desired_flip.get(link.id, False):
-            continue
-        if _has_opposing_same_direction_neighbour(
-            dataset, link, cfg.sanity.direction_parallel_dot_min
-        ):
-            candidates.append(link)
+@dataclass(slots=True)
+class _DisjointSet:
+    parent: dict[str, str]
 
-    if not candidates:
-        return
+    @classmethod
+    def from_ids(cls, item_ids: tuple[str, ...]) -> _DisjointSet:
+        return cls(parent={item_id: item_id for item_id in item_ids})
+
+    def find(self, item_id: str) -> str:
+        parent = self.parent[item_id]
+        if parent != item_id:
+            parent = self.find(parent)
+            self.parent[item_id] = parent
+        return parent
+
+    def union(self, left_id: str, right_id: str) -> None:
+        left_root = self.find(left_id)
+        right_root = self.find(right_id)
+        if left_root != right_root:
+            self.parent[right_root] = left_root
+
+
+@dataclass(slots=True, frozen=True)
+class _OrientationDecision:
+    node_ids_reversed: bool
+    polyline_reversed: bool
+
+
+def check_link_orientation_reversed(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
     link_store = dataset.store_for_role("link")
-    if len(candidates) > 1:
-        if check_reports(cfg.sanity.checks.link_flow_reversed):
-            sanity.warn(
-                "link-flow-reversed-ambiguous",
-                "topology flow and R/L same-direction evidence found multiple possible "
-                f"backward {link_store.layer_name} features: "
-                f"{', '.join(link.id for link in candidates[:8])}",
-                layer_name=link_store.layer_name,
+    node_store = dataset.store_for_role("node")
+    links_by_node = _links_by_node(dataset)
+    seed_votes = {
+        link.id: vote
+        for link in link_store.features
+        if (vote := _one_sided_topology_vote(link, links_by_node)) is not None
+    }
+    for group in _link_orientation_groups(dataset):
+        group_seed_votes = tuple(seed_votes[link.id] for link in group if link.id in seed_votes)
+        group_vote = _majority_node_reversal_vote(group_seed_votes)
+        if group_vote is None:
+            reason = "no one-sided topology seed" if not group_seed_votes else "tied seed votes"
+            _warn_orientation_group(sanity, cfg, link_store, group, reason)
+            continue
+        for link in group:
+            node_ids_reversed = seed_votes.get(link.id, group_vote)
+            decision = _orientation_decision(
+                node_store,
+                link,
+                node_ids_reversed,
+                sanity,
+                cfg,
             )
-        return
-    link = candidates[0]
-    if check_repairs(cfg.sanity.checks.link_flow_reversed):
-        _swap_endpoint_ids(
-            dataset,
-            sanity,
-            link,
-            "link-flow-reversed-swapped",
-            "was reversed by topology flow and R/L same-direction evidence",
-            enabled=True,
-            warn_disabled=False,
-        )
-    elif check_reports(cfg.sanity.checks.link_flow_reversed):
+            if decision is not None:
+                _apply_or_warn_orientation(link, decision, sanity, cfg)
+
+
+def _link_orientation_groups(dataset: NGIIDataset) -> tuple[tuple[Any, ...], ...]:
+    link_store = dataset.store_for_role("link")
+    disjoint = _DisjointSet.from_ids(tuple(link.id for link in link_store.features))
+    _union_lateral_link_groups(disjoint, link_store)
+    _union_node_group_links(disjoint, dataset, link_store)
+
+    groups_by_root: dict[str, list[Any]] = {}
+    for link in link_store.features:
+        groups_by_root.setdefault(disjoint.find(link.id), []).append(link)
+    return tuple(tuple(group) for group in groups_by_root.values())
+
+
+def _union_lateral_link_groups(disjoint: _DisjointSet, link_store: LayerStore[Any]) -> None:
+    for link in link_store.features:
+        for attr_name in ("r_link_id", "l_link_id"):
+            target_id = optional_text(getattr(link, attr_name, None))
+            if not target_id:
+                continue
+            target = link_store.get(target_id)
+            if target is not None:
+                disjoint.union(link.id, target.id)
+
+
+def _union_node_group_links(
+    disjoint: _DisjointSet,
+    dataset: NGIIDataset,
+    link_store: LayerStore[Any],
+) -> None:
+    node_group_by_id = {
+        node.id: group_id
+        for node in dataset.store_for_role("node").features
+        if (group_id := optional_text(getattr(node, "group_id", None)))
+    }
+    links_by_node_group: dict[str, list[str]] = defaultdict(list)
+    for link in link_store.features:
+        group_ids = {
+            node_group_by_id[node_id]
+            for node_id in (
+                optional_text(getattr(link, "from_node_id", None)),
+                optional_text(getattr(link, "to_node_id", None)),
+            )
+            if node_id in node_group_by_id
+        }
+        for group_id in group_ids:
+            links_by_node_group[group_id].append(link.id)
+    for link_ids in links_by_node_group.values():
+        if len(link_ids) < 2:
+            continue
+        first_id = link_ids[0]
+        for link_id in link_ids[1:]:
+            disjoint.union(first_id, link_id)
+
+
+def _one_sided_topology_vote(link: Any, by_node: dict[str, list[Any]]) -> bool | None:
+    from_node_id = optional_text(getattr(link, "from_node_id", None))
+    to_node_id = optional_text(getattr(link, "to_node_id", None))
+    if not from_node_id or not to_node_id:
+        return None
+    from_connected = _node_has_other_link(by_node, from_node_id, link.id)
+    to_connected = _node_has_other_link(by_node, to_node_id, link.id)
+    if from_connected == to_connected:
+        return None
+    return from_connected
+
+
+def _links_by_node(dataset: NGIIDataset) -> dict[str, list[Any]]:
+    by_node: dict[str, list[Any]] = defaultdict(list)
+    for link in dataset.store_for_role("link").features:
+        from_node_id = optional_text(getattr(link, "from_node_id", None))
+        to_node_id = optional_text(getattr(link, "to_node_id", None))
+        if from_node_id:
+            by_node[from_node_id].append(link)
+        if to_node_id:
+            by_node[to_node_id].append(link)
+    return by_node
+
+
+def _node_has_other_link(by_node: dict[str, list[Any]], node_id: str, link_id: str) -> bool:
+    return any(link.id != link_id for link in by_node.get(node_id, ()))
+
+
+def _majority_node_reversal_vote(votes: tuple[bool, ...]) -> bool | None:
+    true_count = sum(1 for vote in votes if vote)
+    false_count = len(votes) - true_count
+    if true_count == false_count:
+        return None
+    return true_count > false_count
+
+
+def _orientation_decision(
+    node_store: LayerStore[Any],
+    link: Any,
+    node_ids_reversed: bool,
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+) -> _OrientationDecision | None:
+    if len(link.polyline) < 2:
+        if check_reports(cfg.sanity.checks.link_orientation_reversed):
+            sanity.warn(
+                "link-orientation-geometry-invalid",
+                f"{link.layer_name} {link.id} has too few polyline points for orientation repair",
+                layer_name=link.layer_name,
+                feature_id=link.id,
+                source_path=link.source_path,
+            )
+        return None
+    current_from_id = optional_text(getattr(link, "from_node_id", None))
+    current_to_id = optional_text(getattr(link, "to_node_id", None))
+    desired_from_id = current_to_id if node_ids_reversed else current_from_id
+    desired_to_id = current_from_id if node_ids_reversed else current_to_id
+    polyline_reversed = _polyline_reversed_for_desired_endpoints(
+        node_store,
+        link,
+        desired_from_id,
+        desired_to_id,
+        sanity,
+        cfg,
+    )
+    if polyline_reversed is None:
+        return None
+    return _OrientationDecision(
+        node_ids_reversed=node_ids_reversed,
+        polyline_reversed=polyline_reversed,
+    )
+
+
+def _polyline_reversed_for_desired_endpoints(
+    node_store: LayerStore[Any],
+    link: Any,
+    desired_from_id: str,
+    desired_to_id: str,
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+) -> bool | None:
+    from_node = node_store.get(desired_from_id)
+    to_node = node_store.get(desired_to_id)
+    if from_node is None or to_node is None:
+        if check_reports(cfg.sanity.checks.link_orientation_reversed):
+            sanity.warn(
+                "link-orientation-endpoint-unresolved",
+                f"{link.layer_name} {link.id} cannot resolve desired orientation endpoints",
+                layer_name=link.layer_name,
+                feature_id=link.id,
+                source_path=link.source_path,
+            )
+        return None
+
+    start = link.polyline[0]
+    end = link.polyline[-1]
+    tolerance_m = cfg.sanity.node_match_tolerance_m
+    normal = (
+        xy_distance(start, from_node.point) <= tolerance_m
+        and xy_distance(end, to_node.point) <= tolerance_m
+    )
+    reversed_alignment = (
+        xy_distance(start, to_node.point) <= tolerance_m
+        and xy_distance(end, from_node.point) <= tolerance_m
+    )
+    if normal and not reversed_alignment:
+        return False
+    if reversed_alignment and not normal:
+        return True
+    if normal and reversed_alignment:
+        return None
+    if check_reports(cfg.sanity.checks.link_endpoint_misaligned):
         sanity.warn(
-            "link-flow-reversed",
-            f"{link.layer_name} {link.id} appears reversed by topology flow and R/L "
-            "same-direction evidence",
+            "link-endpoint-misaligned",
+            f"{link.layer_name} {link.id} endpoint nodes do not match polyline endpoints "
+            f"within {tolerance_m:.3f} m",
+            layer_name=link.layer_name,
+            feature_id=link.id,
+            source_path=link.source_path,
+        )
+    return None
+
+
+def _apply_or_warn_orientation(
+    link: Any,
+    decision: _OrientationDecision,
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+) -> None:
+    if not decision.node_ids_reversed and not decision.polyline_reversed:
+        return
+    operation = _orientation_operation_label(decision)
+    if check_repairs(cfg.sanity.checks.link_orientation_reversed):
+        before = _orientation_snapshot(link)
+        if decision.node_ids_reversed:
+            link.from_node_id, link.to_node_id = link.to_node_id, link.from_node_id
+        if decision.polyline_reversed:
+            link.polyline = link.polyline[::-1].copy()
+        sanity.action(
+            "link-orientation-reversed-repaired",
+            f"{link.layer_name} {link.id} orientation repaired: {operation}",
+            before=before,
+            after=_orientation_snapshot(link),
+            layer_name=link.layer_name,
+            feature_id=link.id,
+            source_path=link.source_path,
+        )
+    elif check_reports(cfg.sanity.checks.link_orientation_reversed):
+        sanity.warn(
+            "link-orientation-reversed",
+            f"{link.layer_name} {link.id} orientation appears reversed: {operation}",
             layer_name=link.layer_name,
             feature_id=link.id,
             source_path=link.source_path,
         )
 
 
-def _desired_flips_from_leaf_flow(dataset: NGIIDataset) -> dict[str, bool]:
-    by_node = _links_by_node(dataset)
-    votes: dict[str, set[bool]] = defaultdict(set)
-    queue = _leaf_flow_queue(by_node)
-    seen: set[tuple[str, bool]] = set()
-    while queue:
-        link, flip = queue.pop(0)
-        state = (link.id, flip)
-        if state in seen:
-            continue
-        seen.add(state)
-        votes[link.id].add(flip)
-        _queue_downstream_links(queue, by_node, link, flip)
+def _orientation_operation_label(decision: _OrientationDecision) -> str:
+    if decision.node_ids_reversed and decision.polyline_reversed:
+        return "swap FromNodeID/ToNodeID and reverse polyline"
+    if decision.node_ids_reversed:
+        return "swap FromNodeID/ToNodeID"
+    return "reverse polyline"
+
+
+def _orientation_snapshot(link: Any) -> dict[str, Any]:
     return {
-        link_id: next(iter(link_votes))
-        for link_id, link_votes in votes.items()
-        if len(link_votes) == 1
+        "from_node_id": getattr(link, "from_node_id", None),
+        "to_node_id": getattr(link, "to_node_id", None),
+        "polyline_start": _point_tuple(link.polyline[0]),
+        "polyline_end": _point_tuple(link.polyline[-1]),
     }
 
 
-def _links_by_node(dataset: NGIIDataset) -> dict[str, list[Any]]:
-    by_node: dict[str, list[Any]] = defaultdict(list)
-    for link in dataset.store_for_role("link").features:
-        if link.from_node_id:
-            by_node[link.from_node_id].append(link)
-        if link.to_node_id:
-            by_node[link.to_node_id].append(link)
-    return by_node
+def _point_tuple(point: NDArray[np.float64]) -> tuple[float, ...]:
+    return tuple(float(value) for value in point)
 
 
-def _leaf_flow_queue(by_node: dict[str, list[Any]]) -> list[tuple[Any, bool]]:
-    leaves = {node_id for node_id, links in by_node.items() if len(links) == 1}
-    queue: list[tuple[Any, bool]] = []
-    for node_id in sorted(leaves):
-        link = by_node[node_id][0]
-        if link.from_node_id == node_id:
-            queue.append((link, False))
-        elif link.to_node_id == node_id:
-            queue.append((link, True))
-    return queue
-
-
-def _queue_downstream_links(
-    queue: list[tuple[Any, bool]],
-    by_node: dict[str, list[Any]],
-    link: Any,
-    flip: bool,
-) -> None:
-    upstream = link.to_node_id if flip else link.from_node_id
-    downstream = link.from_node_id if flip else link.to_node_id
-    if upstream is None or downstream is None:
-        return
-    for next_link in by_node.get(downstream, ()):
-        if next_link.id == link.id:
-            continue
-        if next_link.from_node_id == downstream:
-            queue.append((next_link, False))
-        elif next_link.to_node_id == downstream:
-            queue.append((next_link, True))
-
-
-def _has_opposing_same_direction_neighbour(
-    dataset: NGIIDataset, link: Any, parallel_dot_min: float
-) -> bool:
-    link_vec = _unit_vector(link)
-    if link_vec is None:
-        return False
-    link_store = dataset.store_for_role("link")
-    for neighbour_id in (link.r_link_id, link.l_link_id):
-        neighbour = link_store.get(neighbour_id)
-        if neighbour is None:
-            continue
-        neighbour_vec = _unit_vector(neighbour)
-        if (
-            neighbour_vec is not None
-            and float(np.dot(link_vec, neighbour_vec)) <= -parallel_dot_min
-        ):
-            return True
-    return False
-
-
-def _unit_vector(link: Any) -> NDArray[np.float64] | None:
-    if len(link.polyline) < 2:
-        return None
-    vec = link.polyline[-1, :2] - link.polyline[0, :2]
-    norm = float(np.linalg.norm(vec))
-    return None if norm <= 0.0 else vec / norm
-
-
-def _swap_endpoint_ids(
-    dataset: NGIIDataset,
+def _warn_orientation_group(
     sanity: SanityReport,
-    link: Any,
-    code: str,
+    cfg: NGIIConfig,
+    link_store: LayerStore[Any],
+    group: tuple[Any, ...],
     reason: str,
-    *,
-    enabled: bool,
-    warn_disabled: bool,
 ) -> None:
-    before = {"from_node_id": link.from_node_id, "to_node_id": link.to_node_id}
-    if not enabled:
-        if warn_disabled:
-            sanity.warn(
-                f"{code}-disabled",
-                f"{link.layer_name} {link.id} {reason}, but repair is disabled",
-                layer_name=link.layer_name,
-                feature_id=link.id,
-                source_path=link.source_path,
-            )
+    if not check_reports(cfg.sanity.checks.link_orientation_reversed):
         return
-    link.from_node_id, link.to_node_id = link.to_node_id, link.from_node_id
-    sanity.action(
-        code,
-        f"{link.layer_name} {link.id} {reason}",
-        before=before,
-        after={"from_node_id": link.from_node_id, "to_node_id": link.to_node_id},
-        layer_name=link.layer_name,
-        feature_id=link.id,
-        source_path=link.source_path,
+    examples = ", ".join(link.id for link in group[:8])
+    sanity.warn(
+        "link-orientation-reversed-ambiguous",
+        f"{link_store.layer_name} orientation group skipped: {reason}; links={examples}",
+        layer_name=link_store.layer_name,
     )
 
 
@@ -1158,10 +1242,9 @@ DEFAULT_SANITY_HOOKS: tuple[tuple[str, SanityHook], ...] = (
     ("link_endpoint_isolated", check_link_endpoint_isolated),
     ("link_endpoint_unresolved", check_link_endpoint_unresolved),
     ("reference_unresolved", check_reference_unresolved),
-    ("link_endpoint_reversed", check_link_endpoint_reversed),
-    ("link_flow_reversed", check_link_flow_reversed),
-    ("node_unreferenced", check_node_unreferenced),
     ("link_side_reference_longitudinal", check_link_side_reference_longitudinal),
     ("link_side_reference_nonreciprocal", check_link_side_reference_nonreciprocal),
+    ("link_orientation_reversed", check_link_orientation_reversed),
+    ("node_unreferenced", check_node_unreferenced),
     ("reciprocal_reference", check_reciprocal_references),
 )

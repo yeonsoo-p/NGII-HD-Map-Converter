@@ -55,10 +55,8 @@ ngii:
       link_too_short: repair
       link_endpoint_isolated: repair
       link_endpoint_unresolved: repair
-      link_endpoint_reversed: repair
-      link_endpoint_order_ambiguous: warn
       link_endpoint_misaligned: warn
-      link_flow_reversed: repair
+      link_orientation_reversed: repair
       node_unreferenced: repair
       link_side_reference_longitudinal: repair
       link_side_reference_nonreciprocal: repair

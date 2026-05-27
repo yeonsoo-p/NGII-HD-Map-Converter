@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from numbers import Real
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -13,6 +15,8 @@ from numpy.typing import NDArray
 from ngii2xodr.ngii.data.geometry import xy_line
 
 FeatureGeometryKind = Literal["point", "line", "polygon"]
+_INTEGER_RE = re.compile(r"[+-]?\d+")
+_FLOAT_RE = re.compile(r"[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?")
 
 
 def optional_text(value: object) -> str:
@@ -20,6 +24,58 @@ def optional_text(value: object) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def is_integer_value(value: object) -> bool:
+    if value == "":
+        return True
+    if isinstance(value, Real):
+        return float(value).is_integer()
+    value_text = optional_text(value)
+    if not value_text:
+        return True
+    if _INTEGER_RE.fullmatch(value_text):
+        return True
+    if not _FLOAT_RE.fullmatch(value_text):
+        return False
+    return float(value_text).is_integer()
+
+
+def is_float_value(value: object) -> bool:
+    if value == "":
+        return True
+    if isinstance(value, Real):
+        return True
+    value_text = optional_text(value)
+    return not value_text or _FLOAT_RE.fullmatch(value_text) is not None
+
+
+def _integer_or_default(value: object, default: int) -> int:
+    if value == "":
+        return default
+    if isinstance(value, Real):
+        value_float = float(value)
+        return int(value_float) if value_float.is_integer() else default
+    value_text = optional_text(value)
+    if not value_text:
+        return default
+    if _INTEGER_RE.fullmatch(value_text):
+        return int(value_text)
+    if _FLOAT_RE.fullmatch(value_text):
+        value_float = float(value_text)
+        return int(value_float) if value_float.is_integer() else default
+    return default
+
+
+def _float_or_default(value: object, default: float) -> float:
+    if value == "":
+        return default
+    if isinstance(value, Real):
+        return float(value)
+    value_text = optional_text(value)
+    if not value_text or not _FLOAT_RE.fullmatch(value_text):
+        return default
+    return float(value_text)
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,15 +115,11 @@ class FeatureRecord:
 
     def integer(self, column: str, default: int = -1) -> int:
         value = self.attributes.get(column, "")
-        if value == "":
-            return default
-        return int(value)
+        return _integer_or_default(value, default)
 
     def floating(self, column: str, default: float = float("nan")) -> float:
         value = self.attributes.get(column, "")
-        if value == "":
-            return default
-        return float(value)
+        return _float_or_default(value, default)
 
 
 @dataclass(slots=True)

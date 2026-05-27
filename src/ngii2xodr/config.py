@@ -49,7 +49,6 @@ WARNING_ONLY_SANITY_CHECKS = frozenset(
         "feature_id_duplicate_identical",
         "global_id_collision",
         "reciprocal_reference_conflict",
-        "link_endpoint_order_ambiguous",
         "link_endpoint_misaligned",
     }
 )
