@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
+from ngii2xodr.ngii.segmentation.helpers import unique_preserve_order
 from ngii2xodr.ngii.segmentation.model import (
-    EndpointSide,
     Junction,
     JunctionConnection,
     LateralLinkGroup,
@@ -85,24 +85,30 @@ class JunctionConnectionStage:
             component_matches = tuple(matches[i] for i in component.match_indices)
             entity_id = len(entities)
             junction = component_matches[0].junction_match.junction
-            node_refs = _unique_refs(
+            node_refs = unique_preserve_order(
                 ref for match in component_matches for ref in match.node_group.node_refs
             )
-            junction_node_refs = _unique_refs(
+            junction_node_refs = unique_preserve_order(
                 ref for match in component_matches for ref in match.junction_match.node_refs
             )
-            link_refs = _unique_refs(
+            link_refs = unique_preserve_order(
                 ref for match in component_matches for ref in match.link_group.link_refs
             )
-            lateral_link_group_ids = _unique_ints(
+            lateral_link_group_ids = unique_preserve_order(
                 match.link_group.id for match in component_matches
             )
-            endpoint_sides = _unique_sides(match.node_group.side for match in component_matches)
-            match_methods = _unique_strings(
-                (
+            endpoint_sides = unique_preserve_order(
+                match.node_group.side
+                for match in component_matches
+                if match.node_group.side in {"from", "to"}
+            )
+            match_methods = unique_preserve_order(
+                method
+                for method in (
                     *(match.junction_match.method for match in component_matches),
                     *component.methods,
                 )
+                if method
             )
             entities.append(
                 JunctionConnection(
@@ -322,47 +328,3 @@ def _endpoint_tangent(
 
 def _first_ref(refs: tuple[FeatureRef, ...]) -> FeatureRef | None:
     return refs[0] if refs else None
-
-
-def _unique_refs(refs: Iterable[FeatureRef]) -> tuple[FeatureRef, ...]:
-    output: list[FeatureRef] = []
-    seen: set[FeatureRef] = set()
-    for ref in refs:
-        if ref in seen:
-            continue
-        seen.add(ref)
-        output.append(ref)
-    return tuple(output)
-
-
-def _unique_ints(values: Iterable[int]) -> tuple[int, ...]:
-    output: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return tuple(output)
-
-
-def _unique_sides(values: Iterable[EndpointSide]) -> tuple[EndpointSide, ...]:
-    output: list[EndpointSide] = []
-    seen: set[EndpointSide] = set()
-    for value in values:
-        if value not in {"from", "to"} or value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return tuple(output)
-
-
-def _unique_strings(values: Iterable[str]) -> tuple[str, ...]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return tuple(output)

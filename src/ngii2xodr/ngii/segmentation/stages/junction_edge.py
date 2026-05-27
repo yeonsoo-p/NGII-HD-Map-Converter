@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
+from ngii2xodr.ngii.segmentation.helpers import unique_present
 from ngii2xodr.ngii.segmentation.model import (
     Junction,
     JunctionConnection,
@@ -273,7 +274,7 @@ def _span_from_projected_points(
     end = max(projected, key=lambda point: point.lateral_m)
     if start.lateral_m == end.lateral_m:
         return None
-    link_refs = _unique_refs(point.link_ref for point in projected if point.link_ref is not None)
+    link_refs = unique_present(point.link_ref for point in projected)
     return _JunctionEdgeSpan(
         start_xyz=start.xyz,
         end_xyz=end.xyz,
@@ -376,14 +377,3 @@ def _dot_xy(left: tuple[float, float], right: tuple[float, float]) -> float:
 
 def _xyz_tuple(point: NDArray[np.float64]) -> tuple[float, float, float]:
     return (float(point[0]), float(point[1]), float(point[2]))
-
-
-def _unique_refs(refs: Iterable[FeatureRef | None]) -> tuple[FeatureRef, ...]:
-    output: list[FeatureRef] = []
-    seen: set[FeatureRef] = set()
-    for ref in refs:
-        if ref is None or ref in seen:
-            continue
-        seen.add(ref)
-        output.append(ref)
-    return tuple(output)

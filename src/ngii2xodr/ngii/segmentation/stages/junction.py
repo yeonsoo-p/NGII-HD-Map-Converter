@@ -14,6 +14,7 @@ from ngii2xodr.ngii.segmentation.context import SegmentationContext
 from ngii2xodr.ngii.segmentation.helpers import (
     connected_components_from_pairs,
     intersects_within_z_tol,
+    unique_preserve_order,
 )
 from ngii2xodr.ngii.segmentation.model import (
     EndpointSide,
@@ -72,14 +73,16 @@ class JunctionStage:
             seed_set,
             link_group_by_ref,
         )
-        promoted_rows = _unique_rows((*endpoint_promoted_rows, *lateral_promoted_rows))
+        promoted_rows = unique_preserve_order((*endpoint_promoted_rows, *lateral_promoted_rows))
         bridge_result = _bounded_lateral_node_bridges(
             context,
             node_groups,
             candidate_rows,
             promoted_rows,
         )
-        component_rows = _unique_rows((*candidate_rows, *promoted_rows, *bridge_result.owner_rows))
+        component_rows = unique_preserve_order(
+            (*candidate_rows, *promoted_rows, *bridge_result.owner_rows)
+        )
         components = connected_components_from_pairs(
             component_rows,
             (
@@ -248,17 +251,6 @@ def _expanded_lateral_group_refs(
 ) -> tuple[FeatureRef, ...]:
     link_group = link_group_by_ref.get(promoted_ref)
     return (promoted_ref,) if link_group is None else link_group.link_refs
-
-
-def _unique_rows(rows: Iterable[int]) -> tuple[int, ...]:
-    output: list[int] = []
-    seen: set[int] = set()
-    for row in rows:
-        if row in seen:
-            continue
-        seen.add(row)
-        output.append(row)
-    return tuple(output)
 
 
 def _intersection_pairs(

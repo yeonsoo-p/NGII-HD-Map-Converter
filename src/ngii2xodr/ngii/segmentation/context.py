@@ -12,7 +12,8 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import LineFeature, ResolvedReference
+from ngii2xodr.ngii.data.features import LineFeature, ResolvedReference, optional_text
+from ngii2xodr.ngii.data.geometry import xy_distance
 from ngii2xodr.ngii.data.schema import RoleFilter, RoleKey
 from ngii2xodr.ngii.segmentation.model import EndpointSide, SegmentationConfig
 
@@ -206,7 +207,7 @@ class SegmentationContext:
             values = tuple(
                 f"{role_key.name}:{value}"
                 for attr in role_key.attrs
-                if (value := _optional_text(getattr(feature, attr, "")).strip())
+                if (value := optional_text(getattr(feature, attr, "")))
             )
             if values:
                 keys_by_ref[FeatureRef(store.spec.python_attr, feature.id)] = values
@@ -291,7 +292,7 @@ class SegmentationContext:
     def endpoint_node_id_for_link_index(self, link_index: int, side: EndpointSide) -> str | None:
         link = self.link_store.features[link_index]
         attr = "from_node_id" if side == "from" else "to_node_id"
-        return _optional_text(getattr(link, attr, ""))
+        return optional_text(getattr(link, attr, ""))
 
     def endpoint_node_ref_for_link_index(
         self, link_index: int, side: EndpointSide
@@ -368,7 +369,7 @@ class SegmentationContext:
 
     def link_turn_for_ref(self, link_ref: FeatureRef) -> str:
         link = self.link_for_ref(link_ref)
-        return "" if link is None else _optional_text(getattr(link, "turn", ""))
+        return "" if link is None else optional_text(getattr(link, "turn", ""))
 
     def link_lane_no_for_ref(self, link_ref: FeatureRef) -> int | None:
         link = self.link_for_ref(link_ref)
@@ -437,7 +438,7 @@ def _point_at_distance_from_start(
         if remaining_m <= segment_length_m:
             return start + segment * (remaining_m / segment_length_m)
         remaining_m -= segment_length_m
-    if fallback is not None and _xy_norm(fallback - origin) > 0.0:
+    if fallback is not None and xy_distance(fallback, origin) > 0.0:
         return fallback
     return None
 
@@ -459,7 +460,7 @@ def _point_at_distance_from_end(
         if remaining_m <= segment_length_m:
             return start + segment * (remaining_m / segment_length_m)
         remaining_m -= segment_length_m
-    if fallback is not None and _xy_norm(fallback - origin) > 0.0:
+    if fallback is not None and xy_distance(fallback, origin) > 0.0:
         return fallback
     return None
 
@@ -474,12 +475,6 @@ def _line_or_none(feature: Any) -> shapely.LineString | None:
     return shapely.LineString(feature.polyline[:, :2])
 
 
-def _optional_text(value: object) -> str:
-    if value is None:
-        return ""
-    return str(value)
-
-
 def _matches_role_filter(feature: Any, role_filter: RoleFilter) -> bool:
     for attr in role_filter.attrs:
         value = getattr(feature, attr, None)
@@ -488,7 +483,7 @@ def _matches_role_filter(feature: Any, role_filter: RoleFilter) -> bool:
             if number is not None and number >= role_filter.numeric_min:
                 return True
             continue
-        if str(value) in role_filter.values:
+        if optional_text(value) in role_filter.values:
             return True
     return False
 

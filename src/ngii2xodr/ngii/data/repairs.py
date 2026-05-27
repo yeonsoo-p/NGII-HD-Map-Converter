@@ -12,7 +12,12 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.config import NGIIConfig, check_repairs, check_reports
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import FeatureRef, NGIIFeature, same_feature
+from ngii2xodr.ngii.data.features import (
+    FeatureRef,
+    NGIIFeature,
+    optional_text,
+    same_feature,
+)
 from ngii2xodr.ngii.data.geometry import xy_distance, xy_line
 from ngii2xodr.ngii.data.sanity import SanityReport
 from ngii2xodr.ngii.data.schema import ReciprocalReferenceRule
@@ -210,8 +215,8 @@ def check_link_endpoint_isolated(
     link_attr = dataset.schema.attr_for_role("link")
     removal_causes: dict[FeatureRef, _RemovalCause] = {}
     for link in link_store.features:
-        from_node_id = _optional_text(getattr(link, "from_node_id", None))
-        to_node_id = _optional_text(getattr(link, "to_node_id", None))
+        from_node_id = optional_text(getattr(link, "from_node_id", None))
+        to_node_id = optional_text(getattr(link, "to_node_id", None))
         if not from_node_id or not to_node_id:
             continue
         if node_store.get(from_node_id) is None or node_store.get(to_node_id) is None:
@@ -249,7 +254,7 @@ def check_reference_unresolved(dataset: NGIIDataset, sanity: SanityReport, cfg: 
         for feature in store.features:
             feature_ref = FeatureRef(store.spec.python_attr, feature.id)
             for reference in store.spec.references:
-                value = _optional_text(getattr(feature, reference.source_attr, None))
+                value = optional_text(getattr(feature, reference.source_attr, None))
                 if not value and not reference.required:
                     continue
                 if value and _reference_resolves(dataset, reference.target_attrs, value):
@@ -297,7 +302,7 @@ def check_reference_unresolved(dataset: NGIIDataset, sanity: SanityReport, cfg: 
             continue
         store = dataset.store_for_attr(feature_ref.layer_attr)
         feature = store.get(feature_ref.feature_id)
-        if feature is None or _optional_text(getattr(feature, source_attr, None)) != value:
+        if feature is None or optional_text(getattr(feature, source_attr, None)) != value:
             continue
         setattr(feature, source_attr, None)
         sanity.action(
@@ -720,7 +725,7 @@ def _clear_longitudinal_side_reference(
     source_column: str,
     reciprocal_attr: str,
 ) -> None:
-    target_id = _optional_text(getattr(link, source_attr, None))
+    target_id = optional_text(getattr(link, source_attr, None))
     if not target_id:
         return
     target = link_store.get(target_id)
@@ -732,7 +737,7 @@ def _clear_longitudinal_side_reference(
 
     source_value = getattr(link, source_attr, None)
     reciprocal_value = getattr(target, reciprocal_attr, None)
-    clears_reciprocal = _optional_text(reciprocal_value) == link.id
+    clears_reciprocal = optional_text(reciprocal_value) == link.id
     before = {source_attr: source_value}
     after = {source_attr: None}
     if clears_reciprocal:
@@ -768,10 +773,10 @@ def _clear_longitudinal_side_reference(
 
 
 def _shared_endpoint_node_id(link: Any, target: Any) -> str:
-    link_from_node_id = _optional_text(getattr(link, "from_node_id", None))
-    link_to_node_id = _optional_text(getattr(link, "to_node_id", None))
-    target_from_node_id = _optional_text(getattr(target, "from_node_id", None))
-    target_to_node_id = _optional_text(getattr(target, "to_node_id", None))
+    link_from_node_id = optional_text(getattr(link, "from_node_id", None))
+    link_to_node_id = optional_text(getattr(link, "to_node_id", None))
+    target_from_node_id = optional_text(getattr(target, "from_node_id", None))
+    target_to_node_id = optional_text(getattr(target, "to_node_id", None))
     if link_to_node_id and link_to_node_id == target_from_node_id:
         return link_to_node_id
     if link_from_node_id and link_from_node_id == target_to_node_id:
@@ -816,7 +821,7 @@ def _links_by_side_ref(
 ) -> dict[str, list[Any]]:
     links_by_ref: dict[str, list[Any]] = defaultdict(list)
     for link in link_store.features:
-        ref_id = _optional_text(getattr(link, attr_name, None))
+        ref_id = optional_text(getattr(link, attr_name, None))
         if ref_id:
             links_by_ref[ref_id].append(link)
     return links_by_ref
@@ -834,13 +839,13 @@ def _check_nonreciprocal_side_reference(
     reciprocal_column: str,
     inverse_links_by_ref: dict[str, list[Any]],
 ) -> None:
-    current_id = _optional_text(getattr(link, source_attr, None))
+    current_id = optional_text(getattr(link, source_attr, None))
     if not current_id:
         return
     current = link_store.get(current_id)
     if current is None:
         return
-    current_reciprocal_id = _optional_text(getattr(current, reciprocal_attr, None))
+    current_reciprocal_id = optional_text(getattr(current, reciprocal_attr, None))
     if current_reciprocal_id == link.id:
         return
     candidates = tuple(inverse_links_by_ref.get(link.id, ()))
@@ -913,13 +918,13 @@ def check_reciprocal_references(
     for rule in dataset.schema.reciprocal_references:
         store = dataset.store_for_attr(rule.layer_attr)
         for feature in store.features:
-            target_id = _optional_text(getattr(feature, rule.source_attr, None))
+            target_id = optional_text(getattr(feature, rule.source_attr, None))
             if not target_id:
                 continue
             target = store.get(target_id)
             if target is None:
                 continue
-            reciprocal_id = _optional_text(getattr(target, rule.reciprocal_attr, None))
+            reciprocal_id = optional_text(getattr(target, rule.reciprocal_attr, None))
             if reciprocal_id == feature.id:
                 continue
             if not reciprocal_id:
@@ -1028,7 +1033,7 @@ def _required_dependents_for_removed_refs(
             for reference in store.spec.references:
                 if not reference.required:
                     continue
-                value = _optional_text(getattr(feature, reference.source_attr, None))
+                value = optional_text(getattr(feature, reference.source_attr, None))
                 if not value or not _reference_targets_removed_feature(
                     dataset, reference.target_attrs, value, removal_refs
                 ):
@@ -1069,7 +1074,7 @@ def _clear_optional_references_to_removed(
             for reference in store.spec.references:
                 if reference.required:
                     continue
-                value = _optional_text(getattr(feature, reference.source_attr, None))
+                value = optional_text(getattr(feature, reference.source_attr, None))
                 if not value or not _reference_targets_removed_feature(
                     dataset, reference.target_attrs, value, removal_refs
                 ):
@@ -1133,12 +1138,6 @@ def _other_link_uses_node(link_store: LayerStore[Any], link_id: str, node_id: st
         link.id != link_id and node_id in {link.from_node_id, link.to_node_id}
         for link in link_store.features
     )
-
-
-def _optional_text(value: object) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
 
 
 def _reference_resolves(

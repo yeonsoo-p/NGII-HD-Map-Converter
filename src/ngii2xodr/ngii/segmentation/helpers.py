@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Hashable, Iterable, Sequence
 
 import numpy as np
 import shapely
 from numpy.typing import NDArray
+
+
+def unique_preserve_order[T: Hashable](values: Iterable[T]) -> tuple[T, ...]:
+    output: list[T] = []
+    seen: set[T] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return tuple(output)
+
+
+def unique_present[T: Hashable](values: Iterable[T | None]) -> tuple[T, ...]:
+    return unique_preserve_order(value for value in values if value is not None)
 
 
 def can_make_line(polyline: NDArray[np.float64]) -> bool:

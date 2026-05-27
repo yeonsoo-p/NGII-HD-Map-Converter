@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ngii2xodr.ngii.data.config import NGIIConfig, check_reports
-from ngii2xodr.ngii.data.features import NGIIFeature
+from ngii2xodr.ngii.data.features import NGIIFeature, optional_text
 from ngii2xodr.ngii.data.schema import FieldRule, LayerSpec, SchemaDefinition
 
 if TYPE_CHECKING:
@@ -287,7 +287,7 @@ def _value_text(value: Any) -> str:
         return ""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value).strip()
+    return optional_text(value)
 
 
 def _is_integer(value: Any) -> bool:

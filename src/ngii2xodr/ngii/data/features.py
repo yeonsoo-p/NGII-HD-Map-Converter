@@ -15,6 +15,13 @@ from ngii2xodr.ngii.data.geometry import xy_line
 FeatureGeometryKind = Literal["point", "line", "polygon"]
 
 
+def optional_text(value: object) -> str:
+    """Normalize optional text-like field values for ID/reference comparisons."""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 @dataclass(slots=True, frozen=True)
 class FeatureRef:
     """Canonical pointer to one feature in an :class:`NGIIDataset`."""
@@ -45,7 +52,7 @@ class FeatureRecord:
 
     def text(self, column: str, default: str = "") -> str:
         value = self.attributes.get(column, default)
-        return default if value == "" else str(value)
+        return default if value == "" else optional_text(value)
 
     def optional_ref(self, column: str) -> str | None:
         return self.text(column) or None
