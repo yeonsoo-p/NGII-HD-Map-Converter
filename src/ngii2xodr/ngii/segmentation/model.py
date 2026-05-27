@@ -17,14 +17,13 @@ class SegmentationConfig:
     junction_connection_node_merge_dist_m: float
     junction_connection_opposite_direction_dot_min: float
     endpoint_tangent_lookback_m: float
-    connection_perpendicular_half_length_m: float
     enable_uturn: bool
     enable_lateral_link_group: bool
     enable_lateral_node_group: bool
     enable_junction: bool
     enable_junction_connection: bool
-    enable_connection_reference: bool
-    enable_connection_perpendicular: bool
+    enable_junction_reference: bool
+    enable_junction_edge: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -246,7 +245,7 @@ class JunctionConnection:
 
 
 @dataclass(slots=True, frozen=True)
-class ConnectionReference:
+class JunctionReference:
     id: int
     connection_id: int
     junction_id: int
@@ -259,7 +258,7 @@ class ConnectionReference:
 
     def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
-            SelectedField.scalar("Connection reference", self.id),
+            SelectedField.scalar("Junction reference", self.id),
             SelectedField.scalar("Junction connection", self.connection_id),
             SelectedField.scalar("Junction", self.junction_id),
             SelectedField.scalar("Endpoint side", self.endpoint_side),
@@ -270,17 +269,38 @@ class ConnectionReference:
 
 
 @dataclass(slots=True, frozen=True)
-class ConnectionPerpendicular:
+class JunctionEdge:
     id: int
-    node_ref: FeatureRef
+    connection_id: int
+    junction_reference_id: int
+    junction_id: int
+    farthest_node_ref: FeatureRef
+    reference_link_ref: FeatureRef
+    anchor_xyz: tuple[float, float, float]
+    perpendicular_xy: tuple[float, float]
+    segment_start_xyz: tuple[float, float, float]
+    segment_end_xyz: tuple[float, float, float]
+    link_refs: tuple[FeatureRef, ...]
 
     def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         return (
-            SelectedField.scalar("Connection perpendicular", self.id),
+            SelectedField.scalar("Junction edge", self.id),
+            SelectedField.scalar("Junction connection", self.connection_id),
+            SelectedField.scalar("Junction", self.junction_id),
             SelectedField.scalar(
-                "Perpendicular node ID",
-                self.node_ref.feature_id,
-                self.node_ref,
+                "Reference link ID",
+                self.reference_link_ref.feature_id,
+                self.reference_link_ref,
+            ),
+            SelectedField.scalar(
+                "Farthest node ID",
+                self.farthest_node_ref.feature_id,
+                self.farthest_node_ref,
+            ),
+            SelectedField.list(
+                "Crossed connection link ID",
+                tuple(ref.feature_id for ref in self.link_refs),
+                self.link_refs,
             ),
         )
 

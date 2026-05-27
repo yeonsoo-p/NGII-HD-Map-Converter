@@ -15,12 +15,12 @@ from ngii2xodr.ngii.segmentation.model import (
     StageResult,
 )
 from ngii2xodr.ngii.segmentation.stage import SegmentationStage, empty_result
-from ngii2xodr.ngii.segmentation.stages.connection_perpendicular import (
-    ConnectionPerpendicularStage,
-)
-from ngii2xodr.ngii.segmentation.stages.connection_reference import ConnectionReferenceStage
 from ngii2xodr.ngii.segmentation.stages.junction import JunctionStage
 from ngii2xodr.ngii.segmentation.stages.junction_connection import JunctionConnectionStage
+from ngii2xodr.ngii.segmentation.stages.junction_edge import (
+    JunctionEdgeStage,
+)
+from ngii2xodr.ngii.segmentation.stages.junction_reference import JunctionReferenceStage
 from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGroupStage
 from ngii2xodr.ngii.segmentation.stages.lateral_node_group import LateralNodeGroupStage
 from ngii2xodr.ngii.segmentation.stages.uturn import UTurnStage
@@ -34,8 +34,8 @@ SEGMENTATION_STAGES: tuple[type[SegmentationStage], ...] = (
     LateralNodeGroupStage,
     JunctionStage,
     JunctionConnectionStage,
-    ConnectionReferenceStage,
-    ConnectionPerpendicularStage,
+    JunctionReferenceStage,
+    JunctionEdgeStage,
 )
 
 

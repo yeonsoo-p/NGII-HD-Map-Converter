@@ -1,4 +1,4 @@
-"""Connection-reference segmentation stage."""
+"""Junction-reference segmentation stage."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from typing import ClassVar
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
 from ngii2xodr.ngii.segmentation.model import (
-    ConnectionReference,
     EndpointSide,
     JunctionConnection,
+    JunctionReference,
     LateralLinkGroup,
     StageResult,
 )
@@ -21,11 +21,11 @@ from ngii2xodr.ngii.segmentation.stages.junction_connection import JunctionConne
 from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGroupStage
 
 
-class ConnectionReferenceStage:
-    id: ClassVar[str] = "connection_reference"
-    label: ClassVar[str] = "Connection references"
-    entity_label: ClassVar[str] = "Connection reference"
-    enabled_attr: ClassVar[str] = "enable_connection_reference"
+class JunctionReferenceStage:
+    id: ClassVar[str] = "junction_reference"
+    label: ClassVar[str] = "Junction references"
+    entity_label: ClassVar[str] = "Junction reference"
+    enabled_attr: ClassVar[str] = "enable_junction_reference"
     requires: ClassVar[tuple[str, ...]] = (
         LateralLinkGroupStage.id,
         JunctionConnectionStage.id,
@@ -51,7 +51,7 @@ class ConnectionReferenceStage:
         if not connections:
             return empty_result(self)
 
-        entities: list[ConnectionReference] = []
+        entities: list[JunctionReference] = []
         entity_ids_by_ref: dict[FeatureRef, list[int]] = defaultdict(list)
         for connection in connections:
             candidate = _reference_candidate(context, connection, link_groups)
@@ -64,7 +64,7 @@ class ConnectionReferenceStage:
                 continue
             anchor_xyz, native_tangent_xy = endpoint_geometry
             entity_id = len(entities)
-            reference = ConnectionReference(
+            reference = JunctionReference(
                 id=entity_id,
                 connection_id=connection.id,
                 junction_id=connection.junction_id,

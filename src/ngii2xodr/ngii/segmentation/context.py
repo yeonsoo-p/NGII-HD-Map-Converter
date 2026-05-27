@@ -245,6 +245,13 @@ class SegmentationContext:
         index = self._node_index_by_ref.get(ref)
         return None if index is None else self.node_points[index]
 
+    def node_xyz_for_ref(self, ref: FeatureRef) -> tuple[float, float, float] | None:
+        index = self._node_index_by_ref.get(ref)
+        if index is None:
+            return None
+        point = self.node_store.features[index].point
+        return (float(point[0]), float(point[1]), float(point[2]))
+
     def is_junction_node_ref(self, ref: FeatureRef) -> bool:
         return ref in self.junction_node_refs
 

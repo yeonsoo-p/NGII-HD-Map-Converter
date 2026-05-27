@@ -66,8 +66,8 @@ segmentation:
   enable_lateral_node_group: true
   enable_junction: true
   enable_junction_connection: true
-  enable_connection_reference: true
-  enable_connection_perpendicular: false
+  enable_junction_reference: true
+  enable_junction_edge: true
   # Max |dZ| (m) at an XY intersection to count as the same physical feature.
   z_intersection_tol_m: 2.0
   # Max planimetric distance (m) for grouping A1 NodeType=1 lateral endpoint
@@ -78,16 +78,15 @@ segmentation:
   junction_connection_opposite_direction_dot_min: 0.85
   # Distance (m) along a link used to estimate endpoint tangents.
   endpoint_tangent_lookback_m: 1.0
-  # Half-length (m) of the lateral perpendicular line drawn by the post-junction
-  # perpendicular stage when that stage is enabled.
-  connection_perpendicular_half_length_m: 5.0
 
 viz:
   background_color: [0.86, 0.88, 0.90]
   highlight_rgb: [255, 30, 200]
   junction_connection_node_point_size: 12.0
-  connection_reference_arrow_length_m: 12.0
-  connection_reference_arrow_rgb: [25, 90, 255]
+  junction_reference_arrow_length_m: 12.0
+  junction_reference_arrow_rgb: [25, 90, 255]
+  junction_edge_rgb: [30, 200, 230]
+  junction_edge_line_width: 3.0
   selector_tol_point: 0.01
   selector_tol_line: 0.012
   selector_tol_poly: 0.0

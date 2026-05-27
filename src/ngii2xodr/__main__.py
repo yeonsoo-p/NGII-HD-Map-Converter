@@ -60,16 +60,13 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
             cfg.segmentation.endpoint_tangent_lookback_m,
             "segmentation.endpoint_tangent_lookback_m",
         ),
-        connection_perpendicular_half_length_m=float(
-            cfg.segmentation.connection_perpendicular_half_length_m
-        ),
         enable_uturn=bool(cfg.segmentation.enable_uturn),
         enable_lateral_link_group=bool(cfg.segmentation.enable_lateral_link_group),
         enable_lateral_node_group=bool(cfg.segmentation.enable_lateral_node_group),
         enable_junction=bool(cfg.segmentation.enable_junction),
         enable_junction_connection=bool(cfg.segmentation.enable_junction_connection),
-        enable_connection_reference=bool(cfg.segmentation.enable_connection_reference),
-        enable_connection_perpendicular=bool(cfg.segmentation.enable_connection_perpendicular),
+        enable_junction_reference=bool(cfg.segmentation.enable_junction_reference),
+        enable_junction_edge=bool(cfg.segmentation.enable_junction_edge),
     )
 
 
@@ -86,8 +83,10 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         background_color=_rgb_float(raw["background_color"]),
         highlight_rgb=_rgb_int(raw["highlight_rgb"]),
         junction_connection_node_point_size=float(raw["junction_connection_node_point_size"]),
-        connection_reference_arrow_length_m=float(raw["connection_reference_arrow_length_m"]),
-        connection_reference_arrow_rgb=_rgb_int(raw["connection_reference_arrow_rgb"]),
+        junction_reference_arrow_length_m=float(raw["junction_reference_arrow_length_m"]),
+        junction_reference_arrow_rgb=_rgb_int(raw["junction_reference_arrow_rgb"]),
+        junction_edge_rgb=_rgb_int(raw["junction_edge_rgb"]),
+        junction_edge_line_width=float(raw["junction_edge_line_width"]),
         selector_tol_point=float(raw["selector_tol_point"]),
         selector_tol_line=float(raw["selector_tol_line"]),
         selector_tol_poly=float(raw["selector_tol_poly"]),

@@ -29,9 +29,11 @@ from ngii2xodr.ngii.data.features import (
     NGIIFeature,
 )
 from ngii2xodr.ngii.segmentation import (
-    ConnectionReference,
-    ConnectionReferenceStage,
     JunctionConnectionStage,
+    JunctionEdge,
+    JunctionEdgeStage,
+    JunctionReference,
+    JunctionReferenceStage,
     JunctionStage,
     Segmentation,
     SegmentationConfig,
@@ -81,8 +83,10 @@ class VizConfig:
     background_color: tuple[float, float, float]
     highlight_rgb: tuple[int, int, int]
     junction_connection_node_point_size: float
-    connection_reference_arrow_length_m: float
-    connection_reference_arrow_rgb: tuple[int, int, int]
+    junction_reference_arrow_length_m: float
+    junction_reference_arrow_rgb: tuple[int, int, int]
+    junction_edge_rgb: tuple[int, int, int]
+    junction_edge_line_width: float
     selector_tol_point: float
     selector_tol_line: float
     selector_tol_poly: float
@@ -662,7 +666,7 @@ class CompositeRenderLayer(RenderLayer):
 
 @dataclass(slots=True)
 class _ReferenceArrowOverlay:
-    references: tuple[ConnectionReference, ...]
+    references: tuple[JunctionReference, ...]
     visible_level: int | None
     arrow_length_m: float
     rgb: tuple[int, int, int]
@@ -686,6 +690,45 @@ class _ReferenceArrowOverlay:
             directions,
             mag=self.arrow_length_m,
             color=_rgb_int_to_float(self.rgb),
+        )
+        self.set_level(current_level)
+
+    def detach(self, plotter: pv.Plotter) -> None:
+        if self.actor is not None:
+            plotter.remove_actor(self.actor)
+            self.actor = None
+
+    def set_level(self, level: int) -> None:
+        if self.actor is None:
+            return
+        self.actor.SetVisibility(
+            int(self.visible_level is not None and level >= self.visible_level)
+        )
+
+
+@dataclass(slots=True)
+class _JunctionEdgeOverlay:
+    edges: tuple[JunctionEdge, ...]
+    visible_level: int | None
+    line_width: float
+    rgb: tuple[int, int, int]
+    actor: vtk.vtkActor | None = field(default=None, init=False)
+
+    def attach(self, plotter: pv.Plotter, current_level: int) -> None:
+        if not self.edges:
+            return
+        polylines = [
+            np.asarray(
+                [entity.segment_start_xyz, entity.segment_end_xyz],
+                dtype=np.float64,
+            )
+            for entity in self.edges
+        ]
+        self.actor = plotter.add_mesh(
+            _polyline_polydata(polylines),
+            color=_rgb_int_to_float(self.rgb),
+            line_width=self.line_width,
+            show_scalar_bar=False,
         )
         self.set_level(current_level)
 
@@ -739,7 +782,8 @@ class HdMapViz:
         self.polygon_selector.SetTolerance(viz_cfg.selector_tol_poly)
         self.polygon_selector.PickFromListOn()
         self.registry = self._build_registry()
-        self._connection_reference_overlay = self._build_connection_reference_overlay()
+        self._junction_reference_overlay = self._build_junction_reference_overlay()
+        self._junction_edge_overlay = self._build_junction_edge_overlay()
         self.loaded_map = LoadedMap(
             dataset=self.dataset,
             sanity=self.sanity,
@@ -860,7 +904,10 @@ class HdMapViz:
             else {ref for ref in junction_result.entity_id_by_ref if ref.layer_attr == layer_attr}
         )
         for result in self.segmentation.active_results(self._segmentation_level):
-            if result.stage_id == ConnectionReferenceStage.id:
+            if result.stage_id in {
+                JunctionReferenceStage.id,
+                JunctionEdgeStage.id,
+            }:
                 continue
             palette = self._palette_by_stage[result.stage_id]
             entity_id_by_ref = dict(result.entity_id_by_ref)
@@ -911,20 +958,34 @@ class HdMapViz:
                 sizes[idx] = self.viz_cfg.junction_connection_node_point_size
         return sizes
 
-    def _build_connection_reference_overlay(self) -> _ReferenceArrowOverlay:
-        result = self.segmentation.result_or_none(ConnectionReferenceStage.id)
+    def _build_junction_reference_overlay(self) -> _ReferenceArrowOverlay:
+        result = self.segmentation.result_or_none(JunctionReferenceStage.id)
         references = (
             ()
             if result is None
             else tuple(
-                entity for entity in result.entities if isinstance(entity, ConnectionReference)
+                entity for entity in result.entities if isinstance(entity, JunctionReference)
             )
         )
         return _ReferenceArrowOverlay(
             references=references,
-            visible_level=self._stage_visible_level(ConnectionReferenceStage.id),
-            arrow_length_m=self.viz_cfg.connection_reference_arrow_length_m,
-            rgb=self.viz_cfg.connection_reference_arrow_rgb,
+            visible_level=self._stage_visible_level(JunctionReferenceStage.id),
+            arrow_length_m=self.viz_cfg.junction_reference_arrow_length_m,
+            rgb=self.viz_cfg.junction_reference_arrow_rgb,
+        )
+
+    def _build_junction_edge_overlay(self) -> _JunctionEdgeOverlay:
+        result = self.segmentation.result_or_none(JunctionEdgeStage.id)
+        edges = (
+            ()
+            if result is None
+            else tuple(entity for entity in result.entities if isinstance(entity, JunctionEdge))
+        )
+        return _JunctionEdgeOverlay(
+            edges=edges,
+            visible_level=self._stage_visible_level(JunctionEdgeStage.id),
+            line_width=self.viz_cfg.junction_edge_line_width,
+            rgb=self.viz_cfg.junction_edge_rgb,
         )
 
     def _stage_visible_level(self, stage_id: str) -> int | None:
@@ -945,7 +1006,8 @@ class HdMapViz:
             self.plotter.background_color = self.viz_cfg.background_color
             for layer in self.registry.selectable_layers():
                 layer.attach(self.plotter, self.polygon_selector)
-            self._connection_reference_overlay.attach(self.plotter, self._segmentation_level)
+            self._junction_reference_overlay.attach(self.plotter, self._segmentation_level)
+            self._junction_edge_overlay.attach(self.plotter, self._segmentation_level)
             self.plotter.add_axes()
             self._add_view_keys()
             self._left_press_tag = self.plotter.iren.add_observer(
@@ -974,7 +1036,8 @@ class HdMapViz:
             self.plotter.show()
 
     def detach(self) -> None:
-        self._connection_reference_overlay.detach(self.plotter)
+        self._junction_edge_overlay.detach(self.plotter)
+        self._junction_reference_overlay.detach(self.plotter)
         for layer in self.registry.selectable_layers():
             layer.detach(self.plotter)
         self.polygon_selector.InitializePickList()
@@ -1056,7 +1119,8 @@ class HdMapViz:
         self._segmentation_level = level
         for layer in self.registry.selectable_layers():
             layer.refresh_colors()
-        self._connection_reference_overlay.set_level(level)
+        self._junction_reference_overlay.set_level(level)
+        self._junction_edge_overlay.set_level(level)
         self.plotter.render()
 
     def select_feature(self, ref: FeatureRef | None, *, emit: bool = True) -> None:
