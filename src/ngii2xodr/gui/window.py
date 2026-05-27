@@ -34,8 +34,10 @@ from PySide6.QtWidgets import (
 )
 from pyvistaqt import QtInteractor
 
+from ngii2xodr.config import RuntimeConfig, validate_runtime_config, with_viz_layer_visibility
+from ngii2xodr.gui.config_dialog import ConfigDialog
 from ngii2xodr.ngii.app import FeatureRef
-from ngii2xodr.ngii.data import AmbiguousFeatureIDError, NGIIConfig
+from ngii2xodr.ngii.data import AmbiguousFeatureIDError
 from ngii2xodr.ngii.data.dataset import LayerStore
 from ngii2xodr.ngii.data.features import (
     LineFeature,
@@ -45,8 +47,8 @@ from ngii2xodr.ngii.data.features import (
     PolygonFeature,
 )
 from ngii2xodr.ngii.data.schema import ReferenceRule
-from ngii2xodr.ngii.segmentation import SegmentationConfig, SelectedField
-from ngii2xodr.ngii.viz import HdMapViz, VizConfig
+from ngii2xodr.ngii.segmentation import SelectedField
+from ngii2xodr.ngii.viz import HdMapViz
 from ngii2xodr.profile import ProfileTimer
 
 log = logging.getLogger(__name__)
@@ -115,21 +117,13 @@ class _LayerVisibilityHeader(QHeaderView):
 class HdMapWindow(QMainWindow):
     """Main window hosting the 3D scene and canonical feature inspector."""
 
-    def __init__(
-        self,
-        seg_cfg: SegmentationConfig,
-        viz_cfg: VizConfig,
-        ngii_cfg: NGIIConfig,
-        coordinate: str,
-    ) -> None:
+    def __init__(self, runtime_cfg: RuntimeConfig) -> None:
         super().__init__()
         self.setWindowTitle("ngii2xodr - (no folder)")
         self.resize(1500, 950)
 
-        self._seg_cfg = seg_cfg
-        self._viz_cfg = viz_cfg
-        self._ngii_cfg = ngii_cfg
-        self._coordinate = coordinate
+        self._runtime_cfg = runtime_cfg
+        self._ngii_dir: Path | None = None
         self.viz: HdMapViz | None = None
 
         self._layer_items: dict[str, QTreeWidgetItem] = {}
@@ -159,6 +153,12 @@ class HdMapWindow(QMainWindow):
         quit_act.setShortcut(QKeySequence.StandardKey.Quit)
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
+
+        edit_menu = bar.addMenu("&Edit")
+        config_act = QAction("&Configuration...", self)
+        config_act.setShortcut(QKeySequence("Ctrl+,"))
+        config_act.triggered.connect(self._open_config_dialog)
+        edit_menu.addAction(config_act)
 
     def _build_dock(self) -> None:
         dock = QDockWidget("Inspector", self)
@@ -258,37 +258,75 @@ class HdMapWindow(QMainWindow):
         if d:
             self.load_folder(Path(d))
 
-    def load_folder(self, ngii_dir: Path) -> None:
-        if self.viz is not None:
-            self.viz.detach()
-            self.viz = None
+    def _open_config_dialog(self) -> None:
+        dialog = ConfigDialog(self._runtime_cfg, self._apply_runtime_config, self)
+        dialog.exec()
 
-        self._selected_ref = None
-        self._reset_select_panel(_SELECT_PLACEHOLDER)
+    def load_folder(self, ngii_dir: Path) -> None:
         try:
-            viz = HdMapViz(
-                ngii_dir,
-                coordinate=self._coordinate,
-                ngii_cfg=self._ngii_cfg,
-                seg_cfg=self._seg_cfg,
-                viz_cfg=self._viz_cfg,
-                plotter=self.qt_plotter,
-                on_select=self._on_viz_select,
-            )
-            viz.attach()
-        except (FileNotFoundError, NotADirectoryError) as e:
+            viz = self._build_viz(ngii_dir, self._runtime_cfg)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as e:
             log.warning("cannot open %s: %s", ngii_dir, e)
             QMessageBox.warning(
                 self,
                 "Cannot open folder",
                 f"Not a valid NGII folder:\n{ngii_dir}\n\n{e}",
             )
-            self.setWindowTitle("ngii2xodr - (no folder)")
-            self._set_dock_enabled(False)
+            if self.viz is None:
+                self.setWindowTitle("ngii2xodr - (no folder)")
+                self._set_dock_enabled(False)
+                self._reset_select_panel(_SELECT_PLACEHOLDER)
             self.qt_plotter.render()
             return
 
+        self._install_viz(viz, ngii_dir, status_prefix="Loaded")
+
+    def _apply_runtime_config(self, runtime_cfg: RuntimeConfig) -> bool:
+        try:
+            validate_runtime_config(runtime_cfg)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid configuration", str(e))
+            return False
+
+        if self._ngii_dir is None:
+            self._runtime_cfg = runtime_cfg
+            self.statusBar().showMessage("Configuration updated")
+            return True
+
+        try:
+            viz = self._build_viz(self._ngii_dir, runtime_cfg)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as e:
+            log.warning("cannot reload %s after configuration change: %s", self._ngii_dir, e)
+            QMessageBox.warning(
+                self,
+                "Cannot apply configuration",
+                f"Could not reload the current NGII folder:\n{self._ngii_dir}\n\n{e}",
+            )
+            return False
+
+        self._runtime_cfg = runtime_cfg
+        self._install_viz(viz, self._ngii_dir, status_prefix="Reloaded")
+        return True
+
+    def _build_viz(self, ngii_dir: Path, runtime_cfg: RuntimeConfig) -> HdMapViz:
+        return HdMapViz(
+            ngii_dir,
+            coordinate=runtime_cfg.coordinate,
+            ngii_cfg=runtime_cfg.ngii,
+            seg_cfg=runtime_cfg.segmentation,
+            viz_cfg=runtime_cfg.viz,
+            plotter=self.qt_plotter,
+            on_select=self._on_viz_select,
+        )
+
+    def _install_viz(self, viz: HdMapViz, ngii_dir: Path, *, status_prefix: str) -> None:
+        if self.viz is not None:
+            self.viz.detach()
+        self._selected_ref = None
+        self._reset_select_panel(_SELECT_PLACEHOLDER)
+        viz.attach()
         self.viz = viz
+        self._ngii_dir = ngii_dir
         self._rebuild_layers_tab(viz)
         self._rebuild_items_tab(viz)
         self._set_segmentation_level(
@@ -301,9 +339,10 @@ class HdMapWindow(QMainWindow):
         self._set_dock_enabled(True)
         self._reset_select_panel(_SELECT_PROMPT)
         feature_count = sum(len(store) for store in viz.dataset.layer_stores)
-        self.statusBar().showMessage(f"Loaded {ngii_dir.name}: {feature_count} features")
+        self.statusBar().showMessage(f"{status_prefix} {ngii_dir.name}: {feature_count} features")
         log.info(
-            "loaded %s: %d warnings, %d repairs",
+            "%s %s: %d warnings, %d repairs",
+            status_prefix.lower(),
             ngii_dir,
             viz.sanity.warning_count,
             viz.sanity.action_count,
@@ -372,7 +411,9 @@ class HdMapWindow(QMainWindow):
             return
         attr = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(attr, str):
-            self.viz.set_layer_visible(attr, item.checkState(0) == Qt.CheckState.Checked)
+            visible = item.checkState(0) == Qt.CheckState.Checked
+            self.viz.set_layer_visible(attr, visible)
+            self._runtime_cfg = with_viz_layer_visibility(self._runtime_cfg, attr, visible)
             self._sync_layer_master_checkbox()
 
     def _on_layer_master_clicked(self) -> None:
@@ -388,6 +429,7 @@ class HdMapWindow(QMainWindow):
                 attr = item.data(0, Qt.ItemDataRole.UserRole)
                 if isinstance(attr, str):
                     self.viz.set_layer_visible(attr, visible)
+                    self._runtime_cfg = with_viz_layer_visibility(self._runtime_cfg, attr, visible)
         self._sync_layer_master_checkbox()
 
     def _sync_layer_master_checkbox(self) -> None:
