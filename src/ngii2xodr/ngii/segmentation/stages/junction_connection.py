@@ -72,7 +72,7 @@ class JunctionConnectionStage:
             link_group = link_groups.get(node_group.lateral_link_group_id)
             if link_group is None:
                 continue
-            match = _best_junction_match(context, node_group, junctions, node_relations)
+            match = _best_junction_match(node_group, junctions, node_relations)
             if match is None:
                 continue
             matches.append(
@@ -174,7 +174,6 @@ class _PairCandidate:
 
 
 def _best_junction_match(
-    context: SegmentationContext,
     node_group: LateralNodeGroup,
     junctions: tuple[Junction, ...],
     node_relations: Mapping[FeatureRef, NodeLinkRelation],
@@ -190,10 +189,6 @@ def _best_junction_match(
         if adjacent:
             matches.append(_JunctionMatch(1, 0.0, "graph_adjacency", junction, adjacent))
             continue
-
-        nearby = _nearby_junction_node_refs(context, node_group.node_refs, junction)
-        if nearby is not None:
-            matches.append(nearby)
 
     if not matches:
         return None
@@ -216,32 +211,6 @@ def _adjacent_node_refs(
         ):
             adjacent_refs.append(node_ref)
     return tuple(adjacent_refs)
-
-
-def _nearby_junction_node_refs(
-    context: SegmentationContext,
-    node_refs: tuple[FeatureRef, ...],
-    junction: Junction,
-) -> _JunctionMatch | None:
-    best_distance_m = context.cfg.junction_connection_node_merge_dist_m
-    best_node_ref: FeatureRef | None = None
-    for node_ref in node_refs:
-        if not context.is_junction_node_ref(node_ref):
-            continue
-        node_point = context.node_point_for_ref(node_ref)
-        if node_point is None:
-            continue
-        for junction_node_ref in junction.endpoint_node_refs:
-            junction_point = context.node_point_for_ref(junction_node_ref)
-            if junction_point is None:
-                continue
-            distance_m = node_point.distance(junction_point)
-            if distance_m <= best_distance_m:
-                best_distance_m = distance_m
-                best_node_ref = junction_node_ref
-    if best_node_ref is None:
-        return None
-    return _JunctionMatch(2, best_distance_m, "node_proximity", junction, (best_node_ref,))
 
 
 def _connection_components(

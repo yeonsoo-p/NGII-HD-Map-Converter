@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from typing import ClassVar
 
 import shapely
@@ -13,8 +14,9 @@ from ngii2xodr.ngii.segmentation.helpers import (
     connected_components_from_pairs,
     intersects_within_z_tol,
 )
-from ngii2xodr.ngii.segmentation.model import Junction, StageResult
+from ngii2xodr.ngii.segmentation.model import Junction, LateralNodeGroup, StageResult
 from ngii2xodr.ngii.segmentation.stage import empty_result
+from ngii2xodr.ngii.segmentation.stages.lateral_node_group import LateralNodeGroupStage
 
 
 class JunctionStage:
@@ -22,14 +24,19 @@ class JunctionStage:
     label: ClassVar[str] = "Junctions"
     entity_label: ClassVar[str] = "Junction"
     enabled_attr: ClassVar[str] = "enable_junction"
-    requires: ClassVar[tuple[str, ...]] = ()
+    requires: ClassVar[tuple[str, ...]] = (LateralNodeGroupStage.id,)
 
     def run(
         self,
         context: SegmentationContext,
         previous_results: Mapping[str, StageResult],
     ) -> StageResult:
-        del previous_results
+        node_group_result = previous_results[LateralNodeGroupStage.id]
+        node_groups = tuple(
+            node_group
+            for node_group in node_group_result.entities
+            if isinstance(node_group, LateralNodeGroup)
+        )
         candidate_rows = list(context.rows_for_filter("junction_link"))
         if not candidate_rows:
             return empty_result(self, skipped_reason="schema has no junction link candidates")
@@ -40,6 +47,8 @@ class JunctionStage:
             (
                 *_lateral_pairs(context, candidate_rows, candidate_set),
                 *_intersection_pairs(context, candidate_rows),
+                *_shared_endpoint_node_pairs(context, candidate_rows),
+                *_endpoint_scoped_pairs(context, node_groups, candidate_set),
             ),
         )
 
@@ -105,6 +114,62 @@ def _intersection_pairs(
             ):
                 pairs.append((a_row, b_row))
     return tuple(pairs)
+
+
+def _shared_endpoint_node_pairs(
+    context: SegmentationContext,
+    candidate_rows: list[int],
+) -> tuple[tuple[int, int], ...]:
+    rows_by_node_ref: dict[FeatureRef, list[int]] = defaultdict(list)
+    for row_i in candidate_rows:
+        link_ref = context.ref_for_link_index(row_i)
+        for node_ref in context.endpoint_node_refs_for_link_ref(link_ref):
+            rows_by_node_ref[node_ref].append(row_i)
+    pairs: list[tuple[int, int]] = []
+    for rows in rows_by_node_ref.values():
+        pairs.extend(_pairs_from_rows(rows))
+    return tuple(pairs)
+
+
+def _endpoint_scoped_pairs(
+    context: SegmentationContext,
+    node_groups: tuple[LateralNodeGroup, ...],
+    candidate_set: set[int],
+) -> tuple[tuple[int, int], ...]:
+    pairs: list[tuple[int, int]] = []
+    for node_group in node_groups:
+        rows = _junction_rows_for_node_group(context, node_group, candidate_set)
+        pairs.extend(_pairs_from_rows(rows))
+    return tuple(pairs)
+
+
+def _junction_rows_for_node_group(
+    context: SegmentationContext,
+    node_group: LateralNodeGroup,
+    candidate_set: set[int],
+) -> tuple[int, ...]:
+    rows: list[int] = []
+    seen: set[int] = set()
+    for node_ref in node_group.node_refs:
+        for link_ref in (
+            *context.incoming_link_refs(node_ref),
+            *context.outgoing_link_refs(node_ref),
+        ):
+            row_i = context.link_index_for_ref(link_ref)
+            if row_i is None or row_i not in candidate_set or row_i in seen:
+                continue
+            seen.add(row_i)
+            rows.append(row_i)
+    return tuple(rows)
+
+
+def _pairs_from_rows(rows: Iterable[int]) -> tuple[tuple[int, int], ...]:
+    row_tuple = tuple(rows)
+    return tuple(
+        (left, right)
+        for left_pos, left in enumerate(row_tuple)
+        for right in row_tuple[left_pos + 1 :]
+    )
 
 
 def _junction_endpoint_node_refs(

@@ -49,7 +49,6 @@ def _rgb_float(v: list[float]) -> tuple[float, float, float]:
 def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
     return SegmentationConfig(
         z_intersection_tol_m=float(cfg.segmentation.z_intersection_tol_m),
-        junction_proximity_merge_dist_m=float(cfg.segmentation.junction_proximity_merge_dist_m),
         junction_connection_node_merge_dist_m=float(
             cfg.segmentation.junction_connection_node_merge_dist_m
         ),

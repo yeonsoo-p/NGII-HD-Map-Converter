@@ -61,8 +61,6 @@ segmentation:
   enable_connection_perpendicular: false
   # Max |dZ| (m) at an XY intersection to count as the same physical feature.
   z_intersection_tol_m: 2.0
-  # Max planimetric gap (m) for merging nearby Type=1 junction-link components.
-  junction_proximity_merge_dist_m: 5.0
   # Max planimetric distance (m) for grouping A1 NodeType=1 lateral endpoint
   # node groups into one bidirectional junction connection.
   junction_connection_node_merge_dist_m: 15.0

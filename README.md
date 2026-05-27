@@ -60,7 +60,9 @@ builds road semantics in layers:
   `to` endpoint nodes. These are the physical mouths where a lane bundle enters
   or leaves a junction area.
 - `JunctionStage`: finds the junction interior by grouping junction-type links
-  that touch laterally, graph-wise, or by same-plane geometric intersections.
+  that touch laterally, share endpoint nodes, meet the same lateral endpoint
+  mouth, or cross in the same plane. Each one-way lateral endpoint mouth is
+  allowed to connect to at most one junction.
 - `JunctionConnectionStage`: attaches lateral endpoint mouths to a junction.
   Opposite-direction `to`/`from` mouths are paired into one bidirectional
   connection only when their endpoint link tangents face opposite directions;

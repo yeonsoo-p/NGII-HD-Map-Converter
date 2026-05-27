@@ -14,7 +14,6 @@ EndpointSide = Literal["from", "to"]
 @dataclass(slots=True, frozen=True)
 class SegmentationConfig:
     z_intersection_tol_m: float
-    junction_proximity_merge_dist_m: float
     junction_connection_node_merge_dist_m: float
     junction_connection_opposite_direction_dot_min: float
     connection_perpendicular_half_length_m: float

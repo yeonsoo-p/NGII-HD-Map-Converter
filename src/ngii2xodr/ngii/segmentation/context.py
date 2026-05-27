@@ -36,10 +36,6 @@ class SegmentationContext:
     link_line_tree: shapely.STRtree | None = field(init=False)
     lane_line_tree: shapely.STRtree | None = field(init=False)
     node_points: tuple[shapely.Point, ...] = field(init=False)
-    node_point_tree: shapely.STRtree | None = field(init=False)
-    junction_node_indices: tuple[int, ...] = field(init=False)
-    junction_node_points: tuple[shapely.Point, ...] = field(init=False)
-    junction_node_tree: shapely.STRtree | None = field(init=False)
     junction_node_refs: frozenset[FeatureRef] = field(init=False)
     incoming_link_refs_by_node_id: dict[str, tuple[FeatureRef, ...]] = field(init=False)
     outgoing_link_refs_by_node_id: dict[str, tuple[FeatureRef, ...]] = field(init=False)
@@ -94,19 +90,12 @@ class SegmentationContext:
             FeatureRef(self.node_attr, feature.id): i
             for i, feature in enumerate(self.node_store.features)
         }
-        self.node_point_tree = shapely.STRtree(self.node_points) if self.node_points else None
         self._build_link_maps()
         self._rows_by_filter = self._build_rows_by_filter()
-        self.junction_node_indices = self._rows_by_filter.get("junction_node", ())
-        self.junction_node_points = tuple(
-            shapely.Point(self.node_store.features[i].point[:2]) for i in self.junction_node_indices
-        )
-        self.junction_node_tree = (
-            shapely.STRtree(self.junction_node_points) if self.junction_node_points else None
-        )
+        junction_node_indices = self._rows_by_filter.get("junction_node", ())
         self.junction_node_refs = frozenset(
             FeatureRef(self.node_attr, self.node_store.features[i].id)
-            for i in self.junction_node_indices
+            for i in junction_node_indices
         )
         self._semantic_keys_by_name = self._build_semantic_keys_by_name()
 
@@ -196,30 +185,6 @@ class SegmentationContext:
     ) -> shapely.STRtree | None:
         geometries = [line for row in rows if (line := lines[row]) is not None]
         return shapely.STRtree(geometries) if geometries else None
-
-    def nearest_type1_node_id(self, xy: NDArray[np.float64], tolerance_m: float) -> str | None:
-        if self.junction_node_tree is None:
-            return None
-        point = shapely.Point(float(xy[0]), float(xy[1]))
-        best_node_id: str | None = None
-        best_dist = tolerance_m
-        for pos_raw in self.junction_node_tree.query(point.buffer(tolerance_m)):
-            pos = int(pos_raw)
-            candidate = self.junction_node_points[pos]
-            dist = point.distance(candidate)
-            if dist <= best_dist:
-                best_dist = dist
-                best_node_id = self.node_store.features[self.junction_node_indices[pos]].id
-        return best_node_id
-
-    def nearest_junction_node_ref(
-        self, point: shapely.Point, tolerance_m: float
-    ) -> FeatureRef | None:
-        node_id = self.nearest_type1_node_id(
-            np.asarray((point.x, point.y), dtype=np.float64),
-            tolerance_m,
-        )
-        return None if node_id is None else FeatureRef(self.node_attr, node_id)
 
     def ref_for_link_index(self, index: int) -> FeatureRef:
         return self.link_refs[index]
