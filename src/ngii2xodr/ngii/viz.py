@@ -852,16 +852,22 @@ class HdMapViz:
         self, layer_attr: str, store: LayerStore[Any], config: VizLayerConfig
     ) -> NDArray[np.uint8]:
         rgb = np.tile(np.asarray(config.rgb, dtype=np.uint8), (len(store), 1))
-        colored_refs: set[FeatureRef] = set()
         for result in self.segmentation.active_results(self._segmentation_level):
+            if result.stage_id == ConnectionReferenceStage.id:
+                continue
             palette = self._palette_by_stage[result.stage_id]
-            for ref, entity_id in result.entity_id_by_ref.items():
-                if ref.layer_attr != layer_attr or ref in colored_refs:
+            entity_id_by_ref = dict(result.entity_id_by_ref)
+            entity_id_by_ref.update(
+                (ref, entity_ids[0])
+                for ref, entity_ids in result.entity_ids_by_ref.items()
+                if entity_ids
+            )
+            for ref, entity_id in entity_id_by_ref.items():
+                if ref.layer_attr != layer_attr:
                     continue
                 idx = store.id_to_index.get(ref.feature_id)
                 if idx is not None and 0 <= entity_id < len(palette):
                     rgb[idx] = palette[entity_id]
-                    colored_refs.add(ref)
         return rgb
 
     def _node_colors(

@@ -57,11 +57,12 @@ class JunctionConnectionStage:
         )
         if not node_groups or not junctions:
             return empty_result(self)
+        junction_link_refs = _junction_link_refs(junctions)
 
         matches: list[_EndpointMatch] = []
         for node_group in node_groups:
             link_group = link_groups.get(node_group.lateral_link_group_id)
-            if link_group is None:
+            if link_group is None or _is_internal_link_group(link_group, junction_link_refs):
                 continue
             match = _best_junction_match(context, node_group, junctions)
             if match is None:
@@ -162,6 +163,16 @@ class _PairCandidate:
     distance_m: float
     priority: int
     methods: tuple[str, ...]
+
+
+def _junction_link_refs(junctions: tuple[Junction, ...]) -> set[FeatureRef]:
+    return {ref for junction in junctions for ref in junction.link_refs}
+
+
+def _is_internal_link_group(
+    link_group: LateralLinkGroup, junction_link_refs: set[FeatureRef]
+) -> bool:
+    return any(ref in junction_link_refs for ref in link_group.link_refs)
 
 
 def _best_junction_match(
