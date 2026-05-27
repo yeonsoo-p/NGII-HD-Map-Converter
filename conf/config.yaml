@@ -45,7 +45,6 @@ ngii:
       link_lateral_reciprocal_conflict: true
       too_short_links: true
       singular_links: true
-      dangling_relationships: true
       dangling_nodes: true
       reciprocal_relationships: true
     repairs:
@@ -58,7 +57,7 @@ ngii:
       link_topology_direction_swap: true
       link_lateral_longitudinal_conflict_clear: true
       link_lateral_reciprocal_conflict_repair: true
-      dangling_relationship_remove: true
+      unresolved_relationship_remove: true
       dangling_node_remove: true
       reciprocal_relationship_fill: true
   text_repair:

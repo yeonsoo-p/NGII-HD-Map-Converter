@@ -229,11 +229,11 @@ def repair_singular_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIC
     _remove_features_with_cascade(dataset, sanity, removal_causes)
 
 
-def repair_dangling_relationships(
+def repair_unresolved_relationships(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
     removal_causes: dict[FeatureRef, _RemovalCause] = {}
-    optional_dangling: list[tuple[FeatureRef, str, str, str]] = []
+    optional_unresolved: list[tuple[FeatureRef, str, str, str]] = []
     for store in dataset.layer_stores:
         for feature in store.features:
             feature_ref = FeatureRef(store.spec.python_attr, feature.id)
@@ -243,7 +243,7 @@ def repair_dangling_relationships(
                     continue
                 if value and _relationship_resolves(dataset, relationship.target_attrs, value):
                     continue
-                if cfg.sanity.repairs.dangling_relationship_remove:
+                if cfg.sanity.repairs.unresolved_relationship_remove:
                     if relationship.required:
                         target_layer = _relationship_target_label(
                             dataset, relationship.target_attrs
@@ -251,7 +251,7 @@ def repair_dangling_relationships(
                         removal_causes.setdefault(
                             feature_ref,
                             _RemovalCause(
-                                code="dangling-required-feature-removed",
+                                code="unresolved-required-feature-removed",
                                 message=(
                                     f"{feature.layer_name} {feature.id} "
                                     f"{relationship.column_name}={value!r} does not resolve "
@@ -266,7 +266,7 @@ def repair_dangling_relationships(
                             ),
                         )
                     elif value:
-                        optional_dangling.append(
+                        optional_unresolved.append(
                             (
                                 feature_ref,
                                 relationship.source_attr,
@@ -274,19 +274,19 @@ def repair_dangling_relationships(
                                 value,
                             )
                         )
-                elif cfg.sanity.warnings.dangling_relationships:
+                elif cfg.sanity.warnings.unresolved_relationships:
                     target_layer = _relationship_target_label(dataset, relationship.target_attrs)
                     sanity.warn(
-                        "dangling-relationship-remove-disabled",
+                        "unresolved-relationship-remove-disabled",
                         f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
-                        f"does not resolve to {target_layer}, but dangling-reference removal "
+                        f"does not resolve to {target_layer}, but unresolved-reference removal "
                         "is disabled",
                         layer_name=feature.layer_name,
                         feature_id=feature.id,
                         source_path=feature.source_path,
                     )
     removed_refs = _remove_features_with_cascade(dataset, sanity, removal_causes)
-    for feature_ref, source_attr, column_name, value in optional_dangling:
+    for feature_ref, source_attr, column_name, value in optional_unresolved:
         if feature_ref in removed_refs:
             continue
         store = dataset.store_for_attr(feature_ref.layer_attr)
@@ -295,7 +295,7 @@ def repair_dangling_relationships(
             continue
         setattr(feature, source_attr, None)
         sanity.action(
-            "dangling-relationship-removed",
+            "unresolved-relationship-removed",
             f"{feature.layer_name} {feature.id} {column_name}={value!r} does not resolve and "
             "was removed",
             before={source_attr: value},
@@ -1144,7 +1144,7 @@ DEFAULT_REPAIR_HOOKS: tuple[tuple[str, RepairHook], ...] = (
     ("link_too_short_removal", repair_too_short_links),
     ("link_singular_removal", repair_singular_links),
     ("link_missing_node_refs", repair_missing_link_node_refs),
-    ("dangling_relationships", repair_dangling_relationships),
+    ("unresolved_relationship_repair", repair_unresolved_relationships),
     ("link_endpoint_direction", repair_reversed_link_endpoints),
     ("link_topology_direction", repair_link_topology_direction),
     ("dangling_nodes", repair_dangling_nodes),

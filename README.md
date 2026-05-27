@@ -71,8 +71,9 @@ Sanity checks and repairs are configured under `ngii.sanity` in
 - Manual field conformance: required fields, max text length, integer/float
   parseability, code lists, and `HistType` format.
 - Relationship conformance: unresolved required and optional references,
-  cross-layer global ID collisions, dangling relationships, dangling nodes, and
-  cascading removal of rows whose required references depend on removed rows.
+  cross-layer global ID collisions, unresolved relationship cleanup, dangling
+  nodes, and cascading removal of rows whose required references depend on
+  removed rows.
 - Link endpoint topology: too-short link removal, endpoint-isolated singular
   link removal, missing endpoint references repaired to the only nearby node
   within `node_match_tolerance_m`, unresolved endpoint references removed,

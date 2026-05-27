@@ -26,7 +26,6 @@ class NGIISanityWarningConfig:
     link_lateral_reciprocal_conflict: bool
     too_short_links: bool
     singular_links: bool
-    dangling_relationships: bool
     dangling_nodes: bool
     reciprocal_relationships: bool
 
@@ -42,7 +41,7 @@ class NGIISanityRepairConfig:
     link_topology_direction_swap: bool
     link_lateral_longitudinal_conflict_clear: bool
     link_lateral_reciprocal_conflict_repair: bool
-    dangling_relationship_remove: bool
+    unresolved_relationship_remove: bool
     dangling_node_remove: bool
     reciprocal_relationship_fill: bool
 
