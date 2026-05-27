@@ -353,7 +353,7 @@ SCHEMA = SchemaDefinition(
     layer_specs=LAYER_SPECS,
     role_filters=(
         RoleFilter("junction_link", "link", "link_type", ("100", "102")),
-        RoleFilter("ordinary_link", "link", "link_type", ("300",)),
+        RoleFilter("ordinary_link", "link", "link_type", ("200", "201", "300")),
         RoleFilter("pocket_link", "link", "turn", ("1", "3")),
         RoleFilter("uturn_link", "link", "turn", ("3",)),
         RoleFilter("uturn_marker", "lane_line", "line_kind", ("502",)),

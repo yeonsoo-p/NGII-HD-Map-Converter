@@ -22,6 +22,8 @@ class NGIISanityWarningConfig:
     link_endpoint_alignment: bool
     link_direction_ambiguous: bool
     link_topology_direction: bool
+    link_lateral_longitudinal_conflict: bool
+    link_lateral_reciprocal_conflict: bool
     too_short_links: bool
     dangling_relationships: bool
     dangling_nodes: bool
@@ -36,6 +38,8 @@ class NGIISanityRepairConfig:
     link_missing_node_ref_nearest: bool
     link_missing_node_ref_remove: bool
     link_topology_direction_swap: bool
+    link_lateral_longitudinal_conflict_clear: bool
+    link_lateral_reciprocal_conflict_repair: bool
     dangling_relationship_remove: bool
     dangling_node_remove: bool
     reciprocal_relationship_fill: bool

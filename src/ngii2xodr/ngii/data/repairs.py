@@ -581,6 +581,230 @@ def _swap_endpoint_ids(
     )
 
 
+def repair_link_lateral_longitudinal_conflicts(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
+    link_store = dataset.store_for_role("link")
+    for link in link_store.features:
+        _clear_lateral_longitudinal_conflict(
+            sanity,
+            cfg,
+            link_store,
+            link,
+            source_attr="l_link_id",
+            source_column="L_LinkID",
+            reciprocal_attr="r_link_id",
+        )
+        _clear_lateral_longitudinal_conflict(
+            sanity,
+            cfg,
+            link_store,
+            link,
+            source_attr="r_link_id",
+            source_column="R_LinkID",
+            reciprocal_attr="l_link_id",
+        )
+
+
+def _clear_lateral_longitudinal_conflict(
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+    link_store: LayerStore[Any],
+    link: Any,
+    *,
+    source_attr: str,
+    source_column: str,
+    reciprocal_attr: str,
+) -> None:
+    target_id = _optional_text(getattr(link, source_attr, None))
+    if not target_id:
+        return
+    target = link_store.get(target_id)
+    if target is None:
+        return
+    shared_node_id = _shared_endpoint_node_id(link, target)
+    if not shared_node_id:
+        return
+
+    source_value = getattr(link, source_attr, None)
+    reciprocal_value = getattr(target, reciprocal_attr, None)
+    clears_reciprocal = _optional_text(reciprocal_value) == link.id
+    before = {source_attr: source_value}
+    after = {source_attr: None}
+    if clears_reciprocal:
+        reciprocal_key = f"{target.id}.{reciprocal_attr}"
+        before[reciprocal_key] = reciprocal_value
+        after[reciprocal_key] = None
+
+    if cfg.sanity.repairs.link_lateral_longitudinal_conflict_clear:
+        setattr(link, source_attr, None)
+        if clears_reciprocal:
+            setattr(target, reciprocal_attr, None)
+        sanity.action(
+            "link-lateral-longitudinal-conflict-cleared",
+            f"{link.layer_name} {link.id} {source_column}={target_id!r} points to "
+            f"longitudinally connected {target.layer_name} {target.id} through node "
+            f"{shared_node_id!r}",
+            before=before,
+            after=after,
+            layer_name=link.layer_name,
+            feature_id=link.id,
+            source_path=link.source_path,
+        )
+    elif cfg.sanity.warnings.link_lateral_longitudinal_conflict:
+        sanity.warn(
+            "link-lateral-longitudinal-conflict-clear-disabled",
+            f"{link.layer_name} {link.id} {source_column}={target_id!r} points to "
+            f"longitudinally connected {target.layer_name} {target.id} through node "
+            f"{shared_node_id!r}, but lateral longitudinal conflict repair is disabled",
+            layer_name=link.layer_name,
+            feature_id=link.id,
+            source_path=link.source_path,
+        )
+
+
+def _shared_endpoint_node_id(link: Any, target: Any) -> str:
+    target_node_ids = {
+        _optional_text(getattr(target, "from_node_id", None)),
+        _optional_text(getattr(target, "to_node_id", None)),
+    }
+    for node_id in (
+        _optional_text(getattr(link, "from_node_id", None)),
+        _optional_text(getattr(link, "to_node_id", None)),
+    ):
+        if node_id and node_id in target_node_ids:
+            return node_id
+    return ""
+
+
+def repair_link_lateral_reciprocal_conflicts(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
+    link_store = dataset.store_for_role("link")
+    links_by_left_ref = _links_by_lateral_ref(link_store, "l_link_id")
+    links_by_right_ref = _links_by_lateral_ref(link_store, "r_link_id")
+    for link in link_store.features:
+        _repair_lateral_reciprocal_conflict(
+            sanity,
+            cfg,
+            link_store,
+            link,
+            source_attr="l_link_id",
+            source_column="L_LinkID",
+            reciprocal_attr="r_link_id",
+            reciprocal_column="R_LinkID",
+            inverse_links_by_ref=links_by_right_ref,
+        )
+        _repair_lateral_reciprocal_conflict(
+            sanity,
+            cfg,
+            link_store,
+            link,
+            source_attr="r_link_id",
+            source_column="R_LinkID",
+            reciprocal_attr="l_link_id",
+            reciprocal_column="L_LinkID",
+            inverse_links_by_ref=links_by_left_ref,
+        )
+
+
+def _links_by_lateral_ref(
+    link_store: LayerStore[Any],
+    attr_name: str,
+) -> dict[str, list[Any]]:
+    links_by_ref: dict[str, list[Any]] = defaultdict(list)
+    for link in link_store.features:
+        ref_id = _optional_text(getattr(link, attr_name, None))
+        if ref_id:
+            links_by_ref[ref_id].append(link)
+    return links_by_ref
+
+
+def _repair_lateral_reciprocal_conflict(
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+    link_store: LayerStore[Any],
+    link: Any,
+    *,
+    source_attr: str,
+    source_column: str,
+    reciprocal_attr: str,
+    reciprocal_column: str,
+    inverse_links_by_ref: dict[str, list[Any]],
+) -> None:
+    current_id = _optional_text(getattr(link, source_attr, None))
+    if not current_id:
+        return
+    current = link_store.get(current_id)
+    if current is None:
+        return
+    current_reciprocal_id = _optional_text(getattr(current, reciprocal_attr, None))
+    if current_reciprocal_id == link.id:
+        return
+    candidates = tuple(inverse_links_by_ref.get(link.id, ()))
+    if len(candidates) != 1:
+        _warn_lateral_reciprocal_conflict(
+            sanity,
+            cfg,
+            link,
+            source_column,
+            reciprocal_column,
+            current_id,
+            current_reciprocal_id,
+            tuple(candidate.id for candidate in candidates),
+        )
+        return
+    repaired_id = candidates[0].id
+    before = {source_attr: getattr(link, source_attr, None)}
+    after = {source_attr: repaired_id}
+    if cfg.sanity.repairs.link_lateral_reciprocal_conflict_repair:
+        setattr(link, source_attr, repaired_id)
+        sanity.action(
+            "link-lateral-reciprocal-conflict-repaired",
+            f"{link.layer_name} {link.id} {source_column} repaired from {current_id!r} "
+            f"to {repaired_id!r} by inverse {reciprocal_column} evidence",
+            before=before,
+            after=after,
+            layer_name=link.layer_name,
+            feature_id=link.id,
+            source_path=link.source_path,
+        )
+    elif cfg.sanity.warnings.link_lateral_reciprocal_conflict:
+        sanity.warn(
+            "link-lateral-reciprocal-conflict-repair-disabled",
+            f"{link.layer_name} {link.id} {source_column}={current_id!r} does not point "
+            f"reciprocally through {reciprocal_column}; inverse evidence suggests "
+            f"{repaired_id!r}, but lateral reciprocal repair is disabled",
+            layer_name=link.layer_name,
+            feature_id=link.id,
+            source_path=link.source_path,
+        )
+
+
+def _warn_lateral_reciprocal_conflict(
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+    link: Any,
+    source_column: str,
+    reciprocal_column: str,
+    current_id: str,
+    current_reciprocal_id: str,
+    candidate_ids: tuple[str, ...],
+) -> None:
+    if not cfg.sanity.warnings.link_lateral_reciprocal_conflict:
+        return
+    candidate_label = ", ".join(candidate_ids) if candidate_ids else "-"
+    sanity.warn(
+        "link-lateral-reciprocal-conflict-ambiguous",
+        f"{link.layer_name} {link.id} {source_column}={current_id!r} does not point "
+        f"reciprocally through {reciprocal_column}={current_reciprocal_id!r}; "
+        f"found {len(candidate_ids)} inverse candidate(s): {candidate_label}",
+        layer_name=link.layer_name,
+        feature_id=link.id,
+        source_path=link.source_path,
+    )
+
+
 def repair_reciprocal_relationships(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
@@ -669,5 +893,7 @@ DEFAULT_REPAIR_HOOKS: tuple[tuple[str, RepairHook], ...] = (
     ("link_endpoint_direction", repair_reversed_link_endpoints),
     ("link_topology_direction", repair_link_topology_direction),
     ("dangling_nodes", repair_dangling_nodes),
+    ("link_lateral_longitudinal_conflicts", repair_link_lateral_longitudinal_conflicts),
+    ("link_lateral_reciprocal_conflicts", repair_link_lateral_reciprocal_conflicts),
     ("reciprocal_relationships", repair_reciprocal_relationships),
 )

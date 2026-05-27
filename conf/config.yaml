@@ -41,6 +41,8 @@ ngii:
       link_endpoint_alignment: true
       link_direction_ambiguous: true
       link_topology_direction: true
+      link_lateral_longitudinal_conflict: true
+      link_lateral_reciprocal_conflict: true
       too_short_links: true
       dangling_relationships: true
       dangling_nodes: true
@@ -52,6 +54,8 @@ ngii:
       link_missing_node_ref_nearest: true
       link_missing_node_ref_remove: true
       link_topology_direction_swap: true
+      link_lateral_longitudinal_conflict_clear: true
+      link_lateral_reciprocal_conflict_repair: true
       dangling_relationship_remove: true
       dangling_node_remove: true
       reciprocal_relationship_fill: true

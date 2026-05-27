@@ -60,12 +60,19 @@ class JunctionStage:
 
         seed_set = set(candidate_rows)
         link_group_by_ref = _lateral_link_group_by_ref(link_groups)
-        promoted_rows, promotion_pairs = _promotion_rows_and_pairs(
+        endpoint_promoted_rows, endpoint_promotion_pairs = _promotion_rows_and_pairs(
             context,
             candidate_rows,
             seed_set,
             link_group_by_ref,
         )
+        lateral_promoted_rows, lateral_promotion_pairs = _lateral_promotion_rows_and_pairs(
+            context,
+            candidate_rows,
+            seed_set,
+            link_group_by_ref,
+        )
+        promoted_rows = _unique_rows((*endpoint_promoted_rows, *lateral_promoted_rows))
         bridge_result = _bounded_lateral_node_bridges(
             context,
             node_groups,
@@ -79,7 +86,8 @@ class JunctionStage:
                 *_lateral_pairs(context, candidate_rows, seed_set),
                 *_intersection_pairs(context, candidate_rows),
                 *_shared_endpoint_node_pairs(context, candidate_rows),
-                *promotion_pairs,
+                *endpoint_promotion_pairs,
+                *lateral_promotion_pairs,
                 *bridge_result.pairs,
             ),
         )
@@ -190,6 +198,34 @@ def _promotion_rows_and_pairs(
                     if expanded_row not in seen_rows:
                         seen_rows.add(expanded_row)
                         rows.append(expanded_row)
+    return tuple(rows), tuple(pairs)
+
+
+def _lateral_promotion_rows_and_pairs(
+    context: SegmentationContext,
+    seed_rows: list[int],
+    seed_set: set[int],
+    link_group_by_ref: Mapping[FeatureRef, LateralLinkGroup],
+) -> tuple[tuple[int, ...], tuple[tuple[int, int], ...]]:
+    rows: list[int] = []
+    pairs: list[tuple[int, int]] = []
+    seen_rows: set[int] = set()
+    for seed_row in seed_rows:
+        for neighbour_row in context.lateral_neighbor_rows_for_link_index(seed_row):
+            if neighbour_row in seed_set:
+                continue
+            neighbour_ref = context.ref_for_link_index(neighbour_row)
+            link_group = link_group_by_ref.get(neighbour_ref)
+            if link_group is None:
+                continue
+            for promoted_ref in link_group.link_refs:
+                promoted_row = context.link_index_for_ref(promoted_ref)
+                if promoted_row is None or promoted_row in seed_set:
+                    continue
+                pairs.append((seed_row, promoted_row))
+                if promoted_row not in seen_rows:
+                    seen_rows.add(promoted_row)
+                    rows.append(promoted_row)
     return tuple(rows), tuple(pairs)
 
 

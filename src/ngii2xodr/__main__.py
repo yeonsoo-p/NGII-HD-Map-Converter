@@ -159,6 +159,10 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 link_topology_direction=_cfg_bool(
                     warning_cfg, "link_topology_direction", legacy_name="a2_topology_direction"
                 ),
+                link_lateral_longitudinal_conflict=bool(
+                    warning_cfg.link_lateral_longitudinal_conflict
+                ),
+                link_lateral_reciprocal_conflict=bool(warning_cfg.link_lateral_reciprocal_conflict),
                 too_short_links=bool(warning_cfg.too_short_links),
                 dangling_relationships=bool(warning_cfg.dangling_relationships),
                 dangling_nodes=bool(warning_cfg.dangling_nodes),
@@ -186,6 +190,12 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                     repair_cfg,
                     "link_topology_direction_swap",
                     legacy_name="a2_topology_direction_swap",
+                ),
+                link_lateral_longitudinal_conflict_clear=bool(
+                    repair_cfg.link_lateral_longitudinal_conflict_clear
+                ),
+                link_lateral_reciprocal_conflict_repair=bool(
+                    repair_cfg.link_lateral_reciprocal_conflict_repair
                 ),
                 dangling_relationship_remove=bool(repair_cfg.dangling_relationship_remove),
                 dangling_node_remove=bool(repair_cfg.dangling_node_remove),
