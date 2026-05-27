@@ -384,17 +384,81 @@ class SegmentationContext:
             return None
         if side == "from":
             anchor = polyline[0]
-            tangent = polyline[1, :2] - polyline[0, :2]
+            tangent = _endpoint_tangent_xy(polyline, side, self.cfg.endpoint_tangent_lookback_m)
         else:
             anchor = polyline[-1]
-            tangent = polyline[-1, :2] - polyline[-2, :2]
-        norm = float(np.hypot(tangent[0], tangent[1]))
+            tangent = _endpoint_tangent_xy(polyline, side, self.cfg.endpoint_tangent_lookback_m)
+        if tangent is None:
+            return None
+        norm = _xy_norm(tangent)
         if norm <= 0.0:
             return None
         return (
             (float(anchor[0]), float(anchor[1]), float(anchor[2])),
             (float(tangent[0]) / norm, float(tangent[1]) / norm),
         )
+
+
+def _endpoint_tangent_xy(
+    polyline: NDArray[np.float64], side: EndpointSide, lookback_m: float
+) -> NDArray[np.float64] | None:
+    if side == "from":
+        target = _point_at_distance_from_start(polyline, lookback_m)
+        if target is None:
+            return None
+        return target - polyline[0, :2]
+    target = _point_at_distance_from_end(polyline, lookback_m)
+    if target is None:
+        return None
+    return polyline[-1, :2] - target
+
+
+def _point_at_distance_from_start(
+    polyline: NDArray[np.float64], distance_m: float
+) -> NDArray[np.float64] | None:
+    origin = polyline[0, :2]
+    fallback: NDArray[np.float64] | None = None
+    remaining_m = distance_m
+    for index in range(len(polyline) - 1):
+        start = polyline[index, :2]
+        end = polyline[index + 1, :2]
+        segment = end - start
+        segment_length_m = _xy_norm(segment)
+        if segment_length_m <= 0.0:
+            continue
+        fallback = end
+        if remaining_m <= segment_length_m:
+            return start + segment * (remaining_m / segment_length_m)
+        remaining_m -= segment_length_m
+    if fallback is not None and _xy_norm(fallback - origin) > 0.0:
+        return fallback
+    return None
+
+
+def _point_at_distance_from_end(
+    polyline: NDArray[np.float64], distance_m: float
+) -> NDArray[np.float64] | None:
+    origin = polyline[-1, :2]
+    fallback: NDArray[np.float64] | None = None
+    remaining_m = distance_m
+    for index in range(len(polyline) - 1, 0, -1):
+        start = polyline[index, :2]
+        end = polyline[index - 1, :2]
+        segment = end - start
+        segment_length_m = _xy_norm(segment)
+        if segment_length_m <= 0.0:
+            continue
+        fallback = end
+        if remaining_m <= segment_length_m:
+            return start + segment * (remaining_m / segment_length_m)
+        remaining_m -= segment_length_m
+    if fallback is not None and _xy_norm(fallback - origin) > 0.0:
+        return fallback
+    return None
+
+
+def _xy_norm(vector: NDArray[np.float64]) -> float:
+    return float(np.hypot(vector[0], vector[1]))
 
 
 def _line_or_none(feature: Any) -> shapely.LineString | None:

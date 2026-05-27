@@ -56,6 +56,10 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
             cfg.segmentation.junction_connection_opposite_direction_dot_min,
             "segmentation.junction_connection_opposite_direction_dot_min",
         ),
+        endpoint_tangent_lookback_m=_positive_float(
+            cfg.segmentation.endpoint_tangent_lookback_m,
+            "segmentation.endpoint_tangent_lookback_m",
+        ),
         connection_perpendicular_half_length_m=float(
             cfg.segmentation.connection_perpendicular_half_length_m
         ),
@@ -217,6 +221,14 @@ def _non_negative_float(raw: object, name: str) -> float:
     value = float(cast(Any, raw))
     if value < 0.0:
         msg = f"{name} must be >= 0.0, got {value}"
+        raise ValueError(msg)
+    return value
+
+
+def _positive_float(raw: object, name: str) -> float:
+    value = float(cast(Any, raw))
+    if value <= 0.0:
+        msg = f"{name} must be > 0.0, got {value}"
         raise ValueError(msg)
     return value
 

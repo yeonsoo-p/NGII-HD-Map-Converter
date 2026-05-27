@@ -16,6 +16,7 @@ class SegmentationConfig:
     z_intersection_tol_m: float
     junction_connection_node_merge_dist_m: float
     junction_connection_opposite_direction_dot_min: float
+    endpoint_tangent_lookback_m: float
     connection_perpendicular_half_length_m: float
     enable_uturn: bool
     enable_lateral_link_group: bool

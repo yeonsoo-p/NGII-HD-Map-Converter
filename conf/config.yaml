@@ -76,6 +76,8 @@ segmentation:
   # Minimum opposite-direction tangent dot product magnitude for pairing
   # inbound/outbound endpoint groups into one bidirectional junction connection.
   junction_connection_opposite_direction_dot_min: 0.85
+  # Distance (m) along a link used to estimate endpoint tangents.
+  endpoint_tangent_lookback_m: 1.0
   # Half-length (m) of the lateral perpendicular line drawn by the post-junction
   # perpendicular stage when that stage is enabled.
   connection_perpendicular_half_length_m: 5.0
