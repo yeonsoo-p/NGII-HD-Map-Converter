@@ -39,12 +39,14 @@ ngii:
       link_endpoint_alignment: true
       link_direction_ambiguous: true
       link_topology_direction: true
+      reciprocal_relationships: true
     repairs:
       duplicate_conflicting_id_drop: true
       link_endpoint_direction_swap: true
       link_missing_node_ref_nearest: true
       link_missing_node_ref_remove: true
       link_topology_direction_swap: true
+      reciprocal_relationship_fill: true
   text_repair:
     enabled: true
     repair_mojibake: true

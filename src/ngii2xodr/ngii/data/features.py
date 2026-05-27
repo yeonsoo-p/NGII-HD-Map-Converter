@@ -16,6 +16,25 @@ FeatureGeometryKind = Literal["point", "line", "polygon"]
 
 
 @dataclass(slots=True, frozen=True)
+class FeatureRef:
+    """Canonical pointer to one feature in an :class:`NGIIDataset`."""
+
+    layer_attr: str
+    feature_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class ResolvedRelationship:
+    """Resolved runtime relationship edge between two NGII features."""
+
+    source_ref: FeatureRef
+    target_ref: FeatureRef
+    source_column: str
+    source_attr: str
+    required: bool
+
+
+@dataclass(slots=True, frozen=True)
 class FeatureRecord:
     layer_name: str
     source_path: Path = field(compare=False)
@@ -49,6 +68,12 @@ class NGIIFeature:
     id: str
     source_path: Path = field(compare=False)
     source_row: int = field(compare=False)
+    references: tuple[ResolvedRelationship, ...] = field(
+        default_factory=tuple, init=False, compare=False
+    )
+    referenced_by: tuple[ResolvedRelationship, ...] = field(
+        default_factory=tuple, init=False, compare=False
+    )
     layer_name: ClassVar[str]
 
     @property

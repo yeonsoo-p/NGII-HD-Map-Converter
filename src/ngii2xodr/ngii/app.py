@@ -5,16 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ngii2xodr.ngii.data.dataset import NGIIDataset
+from ngii2xodr.ngii.data.features import FeatureRef
 from ngii2xodr.ngii.data.sanity import SanityReport
 from ngii2xodr.profile import PerformanceProfile
 
-
-@dataclass(slots=True, frozen=True)
-class FeatureRef:
-    """Canonical pointer to one feature in an :class:`NGIIDataset`."""
-
-    layer_attr: str
-    feature_id: str
+__all__ = ["FeatureRef", "LoadedMap"]
 
 
 @dataclass(slots=True)

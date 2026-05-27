@@ -22,6 +22,7 @@ class NGIISanityWarningConfig:
     link_endpoint_alignment: bool
     link_direction_ambiguous: bool
     link_topology_direction: bool
+    reciprocal_relationships: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -31,6 +32,7 @@ class NGIISanityRepairConfig:
     link_missing_node_ref_nearest: bool
     link_missing_node_ref_remove: bool
     link_topology_direction_swap: bool
+    reciprocal_relationship_fill: bool
 
 
 @dataclass(slots=True, frozen=True)

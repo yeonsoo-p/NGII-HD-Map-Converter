@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
-from ngii2xodr.ngii.data.features import LineFeature
+from ngii2xodr.ngii.data.features import LineFeature, ResolvedRelationship
 from ngii2xodr.ngii.data.schema import RoleFilter, RoleKey
 from ngii2xodr.ngii.segmentation.model import EndpointSide, SegmentationConfig
 
@@ -106,25 +106,19 @@ class SegmentationContext:
         explicit_right: dict[str, FeatureRef] = {}
         inverse_left: dict[str, list[FeatureRef]] = {}
         inverse_right: dict[str, list[FeatureRef]] = {}
-        for i, link in enumerate(self.link_store.features):
-            link_ref = self.ref_for_link_index(i)
-            from_node_id = _optional_text(getattr(link, "from_node_id", ""))
-            to_node_id = _optional_text(getattr(link, "to_node_id", ""))
-            if from_node_id and self.node_store.get(from_node_id) is not None:
-                outgoing.setdefault(from_node_id, []).append(link_ref)
-            if to_node_id and self.node_store.get(to_node_id) is not None:
-                incoming.setdefault(to_node_id, []).append(link_ref)
+        for node in self.node_store.features:
+            self._collect_node_link_edges(node.id, node.referenced_by, incoming, outgoing)
 
-            right_id = _optional_text(getattr(link, "r_link_id", ""))
-            left_id = _optional_text(getattr(link, "l_link_id", ""))
-            if right_id and self.link_store.get(right_id) is not None:
-                right_ref = FeatureRef(self.link_attr, right_id)
-                explicit_right[link.id] = right_ref
-                inverse_right.setdefault(right_id, []).append(link_ref)
-            if left_id and self.link_store.get(left_id) is not None:
-                left_ref = FeatureRef(self.link_attr, left_id)
-                explicit_left[link.id] = left_ref
-                inverse_left.setdefault(left_id, []).append(link_ref)
+        for link in self.link_store.features:
+            self._collect_lateral_link_edges(
+                link.id,
+                link.references,
+                link.referenced_by,
+                explicit_left,
+                explicit_right,
+                inverse_left,
+                inverse_right,
+            )
 
         self.incoming_link_refs_by_node_id = {
             node_id: tuple(refs) for node_id, refs in incoming.items()
@@ -140,6 +134,46 @@ class SegmentationContext:
         self._inverse_right_refs_by_link_id = {
             feature_id: tuple(refs) for feature_id, refs in inverse_right.items()
         }
+
+    def _collect_node_link_edges(
+        self,
+        node_id: str,
+        edges: tuple[ResolvedRelationship, ...],
+        incoming: dict[str, list[FeatureRef]],
+        outgoing: dict[str, list[FeatureRef]],
+    ) -> None:
+        for edge in edges:
+            if edge.source_ref.layer_attr != self.link_attr:
+                continue
+            if edge.source_attr == "from_node_id":
+                outgoing.setdefault(node_id, []).append(edge.source_ref)
+            elif edge.source_attr == "to_node_id":
+                incoming.setdefault(node_id, []).append(edge.source_ref)
+
+    def _collect_lateral_link_edges(
+        self,
+        link_id: str,
+        references: tuple[ResolvedRelationship, ...],
+        referenced_by: tuple[ResolvedRelationship, ...],
+        explicit_left: dict[str, FeatureRef],
+        explicit_right: dict[str, FeatureRef],
+        inverse_left: dict[str, list[FeatureRef]],
+        inverse_right: dict[str, list[FeatureRef]],
+    ) -> None:
+        for edge in references:
+            if edge.target_ref.layer_attr != self.link_attr:
+                continue
+            if edge.source_attr == "r_link_id":
+                explicit_right[link_id] = edge.target_ref
+            elif edge.source_attr == "l_link_id":
+                explicit_left[link_id] = edge.target_ref
+        for edge in referenced_by:
+            if edge.source_ref.layer_attr != self.link_attr:
+                continue
+            if edge.source_attr == "r_link_id":
+                inverse_right.setdefault(link_id, []).append(edge.source_ref)
+            elif edge.source_attr == "l_link_id":
+                inverse_left.setdefault(link_id, []).append(edge.source_ref)
 
     def _build_rows_by_filter(self) -> dict[str, tuple[int, ...]]:
         rows_by_filter: dict[str, tuple[int, ...]] = {}

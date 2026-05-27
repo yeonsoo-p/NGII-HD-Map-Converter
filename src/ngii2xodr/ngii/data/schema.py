@@ -51,6 +51,15 @@ class RelationshipRule:
 
 
 @dataclass(slots=True, frozen=True)
+class ReciprocalRelationshipRule:
+    layer_attr: str
+    source_column: str
+    source_attr: str
+    reciprocal_column: str
+    reciprocal_attr: str
+
+
+@dataclass(slots=True, frozen=True)
 class RoleFilter:
     name: str
     role: LayerRole
@@ -128,6 +137,7 @@ class SchemaDefinition:
     layer_specs: tuple[LayerSpec, ...]
     role_filters: tuple[RoleFilter, ...] = ()
     role_keys: tuple[RoleKey, ...] = ()
+    reciprocal_relationships: tuple[ReciprocalRelationshipRule, ...] = ()
 
     @property
     def specs_by_filename(self) -> dict[str, LayerSpec]:

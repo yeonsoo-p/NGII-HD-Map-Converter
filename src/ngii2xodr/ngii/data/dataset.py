@@ -13,8 +13,10 @@ from numpy.typing import NDArray
 
 from ngii2xodr.ngii.data.features import (
     FeatureGeometryKind,
+    FeatureRef,
     LineFeature,
     NGIIFeature,
+    ResolvedRelationship,
 )
 from ngii2xodr.ngii.data.geometry import xy_line
 from ngii2xodr.ngii.data.schema import (
@@ -217,6 +219,50 @@ class NGIIDataset(Mapping[str, NGIIFeature]):
                             layer_name=feature.layer_name,
                             source_path=feature.source_path,
                         )
+
+    def rebuild_relationship_edges(self) -> None:
+        outgoing: dict[FeatureRef, list[ResolvedRelationship]] = {}
+        incoming: dict[FeatureRef, list[ResolvedRelationship]] = {}
+        for attr, store in self.layer_items:
+            for feature in store.features:
+                source_ref = FeatureRef(attr, feature.id)
+                for relationship in store.spec.relationships:
+                    target_ref = self._resolve_relationship_ref(
+                        feature, relationship.source_attr, relationship.target_attrs
+                    )
+                    if target_ref is None:
+                        continue
+                    edge = ResolvedRelationship(
+                        source_ref=source_ref,
+                        target_ref=target_ref,
+                        source_column=relationship.column_name,
+                        source_attr=relationship.source_attr,
+                        required=relationship.required,
+                    )
+                    outgoing.setdefault(source_ref, []).append(edge)
+                    incoming.setdefault(target_ref, []).append(edge)
+
+        for attr, store in self.layer_items:
+            for feature in store.features:
+                feature_ref = FeatureRef(attr, feature.id)
+                feature.references = tuple(outgoing.get(feature_ref, ()))
+                feature.referenced_by = tuple(incoming.get(feature_ref, ()))
+
+    def _resolve_relationship_ref(
+        self, feature: NGIIFeature, source_attr: str, target_attrs: tuple[str, ...]
+    ) -> FeatureRef | None:
+        value = getattr(feature, source_attr, None)
+        if value is None:
+            return None
+        feature_id = str(value).strip()
+        if not feature_id:
+            return None
+        matches = tuple(
+            FeatureRef(target_attr, feature_id)
+            for target_attr in target_attrs
+            if self.store_for_attr(target_attr).get(feature_id) is not None
+        )
+        return matches[0] if len(matches) == 1 else None
 
     def store_for_attr(self, attr: str) -> LayerStore[Any]:
         try:

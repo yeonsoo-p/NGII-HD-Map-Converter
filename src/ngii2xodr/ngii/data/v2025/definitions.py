@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ngii2xodr.ngii.data.schema import (
     LayerSpec,
+    ReciprocalRelationshipRule,
     RelationshipRule,
     RoleFilter,
     RoleKey,
@@ -364,4 +365,8 @@ SCHEMA = SchemaDefinition(
         ),
     ),
     role_keys=(RoleKey("node_group", "node", "group_id"),),
+    reciprocal_relationships=(
+        ReciprocalRelationshipRule("nt2_link", "R_LinkID", "r_link_id", "L_LinkID", "l_link_id"),
+        ReciprocalRelationshipRule("nt2_link", "L_LinkID", "l_link_id", "R_LinkID", "r_link_id"),
+    ),
 )

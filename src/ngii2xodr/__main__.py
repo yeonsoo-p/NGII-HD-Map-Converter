@@ -161,6 +161,7 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 link_topology_direction=_cfg_bool(
                     warning_cfg, "link_topology_direction", legacy_name="a2_topology_direction"
                 ),
+                reciprocal_relationships=bool(warning_cfg.reciprocal_relationships),
             ),
             repairs=NGIISanityRepairConfig(
                 duplicate_conflicting_id_drop=bool(repair_cfg.duplicate_conflicting_id_drop),
@@ -184,6 +185,7 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                     "link_topology_direction_swap",
                     legacy_name="a2_topology_direction_swap",
                 ),
+                reciprocal_relationship_fill=bool(repair_cfg.reciprocal_relationship_fill),
             ),
         ),
         geometry=NGIIGeometryConfig(

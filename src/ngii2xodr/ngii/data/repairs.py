@@ -14,6 +14,7 @@ from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 from ngii2xodr.ngii.data.features import NGIIFeature, same_feature
 from ngii2xodr.ngii.data.geometry import xy_distance
 from ngii2xodr.ngii.data.sanity import SanityReport
+from ngii2xodr.ngii.data.schema import ReciprocalRelationshipRule
 
 RepairHook = Callable[[NGIIDataset, SanityReport, NGIIConfig], None]
 _REPLACEMENT_CHAR = "\ufffd"
@@ -475,8 +476,77 @@ def _swap_endpoint_ids(
     )
 
 
+def repair_reciprocal_relationships(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
+    for rule in dataset.schema.reciprocal_relationships:
+        store = dataset.store_for_attr(rule.layer_attr)
+        for feature in store.features:
+            target_id = _optional_text(getattr(feature, rule.source_attr, None))
+            if not target_id:
+                continue
+            target = store.get(target_id)
+            if target is None:
+                continue
+            reciprocal_id = _optional_text(getattr(target, rule.reciprocal_attr, None))
+            if reciprocal_id == feature.id:
+                continue
+            if not reciprocal_id:
+                _fill_missing_reciprocal_relationship(sanity, cfg, rule, feature, target)
+                continue
+            if cfg.sanity.warnings.reciprocal_relationships:
+                sanity.warn(
+                    "reciprocal-relation-conflict",
+                    f"{target.layer_name} {target.id} {rule.reciprocal_column}="
+                    f"{reciprocal_id!r} does not point back to {feature.layer_name} "
+                    f"{feature.id} from {rule.source_column}",
+                    layer_name=target.layer_name,
+                    feature_id=target.id,
+                    source_path=target.source_path,
+                )
+
+
+def _fill_missing_reciprocal_relationship(
+    sanity: SanityReport,
+    cfg: NGIIConfig,
+    rule: ReciprocalRelationshipRule,
+    feature: Any,
+    target: Any,
+) -> None:
+    before = {rule.reciprocal_attr: getattr(target, rule.reciprocal_attr, None)}
+    after = {rule.reciprocal_attr: feature.id}
+    if cfg.sanity.repairs.reciprocal_relationship_fill:
+        setattr(target, rule.reciprocal_attr, feature.id)
+        sanity.action(
+            "reciprocal-relation-filled",
+            f"{target.layer_name} {target.id} {rule.reciprocal_column} filled to point "
+            f"back to {feature.layer_name} {feature.id}",
+            before=before,
+            after=after,
+            layer_name=target.layer_name,
+            feature_id=target.id,
+            source_path=target.source_path,
+        )
+    elif cfg.sanity.warnings.reciprocal_relationships:
+        sanity.warn(
+            "reciprocal-relation-fill-disabled",
+            f"{target.layer_name} {target.id} {rule.reciprocal_column} could point back to "
+            f"{feature.layer_name} {feature.id}, but reciprocal repair is disabled",
+            layer_name=target.layer_name,
+            feature_id=target.id,
+            source_path=target.source_path,
+        )
+
+
+def _optional_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 DEFAULT_REPAIR_HOOKS: tuple[tuple[str, RepairHook], ...] = (
     ("link_endpoint_direction", repair_reversed_link_endpoints),
     ("link_missing_node_refs", repair_missing_link_node_refs),
     ("link_topology_direction", repair_link_topology_direction),
+    ("reciprocal_relationships", repair_reciprocal_relationships),
 )

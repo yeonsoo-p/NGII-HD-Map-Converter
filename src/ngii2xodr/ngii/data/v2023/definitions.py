@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ngii2xodr.ngii.data.schema import (
     LayerSpec,
+    ReciprocalRelationshipRule,
     RelationshipRule,
     RoleFilter,
     SchemaDefinition,
@@ -363,5 +364,12 @@ SCHEMA = SchemaDefinition(
         RoleFilter("pocket_link", "link", "lane_no", numeric_min=90.0),
         RoleFilter("uturn_marker", "lane_line", "kind", ("502",)),
         RoleFilter("junction_node", "node", "node_type", ("1",)),
+    ),
+    reciprocal_relationships=(
+        ReciprocalRelationshipRule("a2_link", "R_LinkID", "r_link_id", "L_LinkID", "l_link_id"),
+        ReciprocalRelationshipRule("a2_link", "L_LinkID", "l_link_id", "R_LinkID", "r_link_id"),
+        ReciprocalRelationshipRule(
+            "c3_vehicleprotectionsafety", "Ref_ID", "ref_id", "Ref_ID", "ref_id"
+        ),
     ),
 )

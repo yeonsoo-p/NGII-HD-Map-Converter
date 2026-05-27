@@ -103,6 +103,8 @@ def load_schema(
             hook(dataset, sanity, cfg)
     with dataset.load_profile.timed("bind_final"):
         dataset.bind(sanity, warn_global_id_collision=cfg.sanity.warnings.global_id_collision)
+    with dataset.load_profile.timed("relationship_edges"):
+        dataset.rebuild_relationship_edges()
     if cfg.sanity.warnings.unresolved_relationships:
         with dataset.load_profile.timed("relationship_validation"):
             warn_unresolved_relationships(dataset, sanity)

@@ -14,12 +14,14 @@ from ngii2xodr.ngii.data.config import (
     NGIITextCorrectionConfig,
 )
 from ngii2xodr.ngii.data.dataset import AmbiguousFeatureIDError, LayerStore, NGIIDataset
+from ngii2xodr.ngii.data.features import FeatureRef, ResolvedRelationship
 from ngii2xodr.ngii.data.loader import NGIILoadResult, detect_schema
 from ngii2xodr.ngii.data.loader import load_ngii as _load_ngii
 from ngii2xodr.ngii.data.sanity import SanityAction, SanityReport, SanityWarning
 from ngii2xodr.ngii.data.schema import (
     FieldRule,
     LayerSpec,
+    ReciprocalRelationshipRule,
     RelationshipRule,
     RoleFilter,
     RoleKey,
@@ -42,6 +44,7 @@ def detect_ngii_version(root: Path, coordinate: str) -> str:
 __all__ = [
     "SUPPORTED_SCHEMAS",
     "AmbiguousFeatureIDError",
+    "FeatureRef",
     "FieldRule",
     "LayerSpec",
     "LayerStore",
@@ -54,7 +57,9 @@ __all__ = [
     "NGIISanityRepairConfig",
     "NGIISanityWarningConfig",
     "NGIITextCorrectionConfig",
+    "ReciprocalRelationshipRule",
     "RelationshipRule",
+    "ResolvedRelationship",
     "RoleFilter",
     "RoleKey",
     "SanityAction",
