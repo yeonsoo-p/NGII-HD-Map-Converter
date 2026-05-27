@@ -32,7 +32,7 @@ from ngii2xodr.ngii.data import (
     NGIITextCorrectionConfig,
 )
 from ngii2xodr.ngii.segmentation import SegmentationConfig
-from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig, VizPointConfig
+from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig
 from ngii2xodr.profile import ViewportProfilingConfig
 
 log = logging.getLogger(__name__)
@@ -92,7 +92,6 @@ def _build_viz_cfg(cfg: DictConfig) -> VizConfig:
         poly_depth_offset_units=float(raw["poly_depth_offset_units"]),
         segmentation_seed=int(raw["segmentation_seed"]),
         camera_focus=_build_camera_focus_cfg(raw["camera_focus"]),
-        points=_build_point_cfg(raw["points"]),
         profiling=_build_viewport_profiling_cfg(raw["profiling"]),
         layers={
             str(attr): _build_viz_layer_cfg(value)
@@ -113,13 +112,6 @@ def _build_camera_focus_cfg(raw: object) -> VizCameraFocusConfig:
     )
 
 
-def _build_point_cfg(raw: object) -> VizPointConfig:
-    if not isinstance(raw, dict):
-        msg = f"viz.points config: expected dict, got {type(raw).__name__}"
-        raise TypeError(msg)
-    return VizPointConfig(render_as_spheres=bool(cast(Any, raw["render_as_spheres"])))
-
-
 def _build_viewport_profiling_cfg(raw: object) -> ViewportProfilingConfig:
     if not isinstance(raw, dict):
         msg = f"viz.profiling config: expected dict, got {type(raw).__name__}"
@@ -138,6 +130,10 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
         sanity=NGIISanityConfig(
             node_match_tolerance_m=float(cfg.ngii.sanity.node_match_tolerance_m),
             direction_parallel_dot_min=float(cfg.ngii.sanity.direction_parallel_dot_min),
+            link_min_length_m=_non_negative_float(
+                cfg.ngii.sanity.link_min_length_m,
+                "ngii.sanity.link_min_length_m",
+            ),
             warnings=NGIISanityWarningConfig(
                 missing_required_layers=bool(warning_cfg.missing_required_layers),
                 missing_sidecars=bool(warning_cfg.missing_sidecars),
@@ -160,10 +156,14 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                 link_topology_direction=_cfg_bool(
                     warning_cfg, "link_topology_direction", legacy_name="a2_topology_direction"
                 ),
+                too_short_links=bool(warning_cfg.too_short_links),
+                dangling_relationships=bool(warning_cfg.dangling_relationships),
+                dangling_nodes=bool(warning_cfg.dangling_nodes),
                 reciprocal_relationships=bool(warning_cfg.reciprocal_relationships),
             ),
             repairs=NGIISanityRepairConfig(
                 duplicate_conflicting_id_drop=bool(repair_cfg.duplicate_conflicting_id_drop),
+                link_too_short_remove=bool(repair_cfg.link_too_short_remove),
                 link_endpoint_direction_swap=_cfg_bool(
                     repair_cfg,
                     "link_endpoint_direction_swap",
@@ -184,6 +184,8 @@ def _build_ngii_cfg(cfg: DictConfig) -> NGIIConfig:
                     "link_topology_direction_swap",
                     legacy_name="a2_topology_direction_swap",
                 ),
+                dangling_relationship_remove=bool(repair_cfg.dangling_relationship_remove),
+                dangling_node_remove=bool(repair_cfg.dangling_node_remove),
                 reciprocal_relationship_fill=bool(repair_cfg.reciprocal_relationship_fill),
             ),
         ),

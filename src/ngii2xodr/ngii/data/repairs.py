@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from ngii2xodr.ngii.data.config import NGIIConfig
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 from ngii2xodr.ngii.data.features import NGIIFeature, same_feature
-from ngii2xodr.ngii.data.geometry import xy_distance
+from ngii2xodr.ngii.data.geometry import xy_distance, xy_line
 from ngii2xodr.ngii.data.sanity import SanityReport
 from ngii2xodr.ngii.data.schema import ReciprocalRelationshipRule
 
@@ -150,6 +150,109 @@ def _warn_unrepaired_replacement_chars(dataset: NGIIDataset, sanity: SanityRepor
                     )
 
 
+def repair_too_short_links(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+    link_store = dataset.store_for_role("link")
+    link_ids_to_remove: list[str] = []
+    threshold_m = cfg.sanity.link_min_length_m
+    for link in link_store.features:
+        length_m = float(xy_line(link.polyline).length)
+        if length_m >= threshold_m:
+            continue
+        if cfg.sanity.repairs.link_too_short_remove:
+            link_ids_to_remove.append(link.id)
+            sanity.action(
+                "link-too-short-removed",
+                f"{link.layer_name} {link.id} geometry length {length_m:.3f} m is shorter "
+                f"than {threshold_m:.3f} m",
+                before={"length_m": length_m, "threshold_m": threshold_m},
+                after={"removed": True},
+                layer_name=link.layer_name,
+                feature_id=link.id,
+                source_path=link.source_path,
+            )
+        elif cfg.sanity.warnings.too_short_links:
+            sanity.warn(
+                "link-too-short-remove-disabled",
+                f"{link.layer_name} {link.id} geometry length {length_m:.3f} m is shorter "
+                f"than {threshold_m:.3f} m, but short-link removal is disabled",
+                layer_name=link.layer_name,
+                feature_id=link.id,
+                source_path=link.source_path,
+            )
+    link_store.remove_feature_ids(link_ids_to_remove)
+
+
+def repair_dangling_relationships(
+    dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
+) -> None:
+    for store in dataset.layer_stores:
+        for feature in store.features:
+            for relationship in store.spec.relationships:
+                value = _optional_text(getattr(feature, relationship.source_attr, None))
+                if not value or _relationship_resolves(dataset, relationship.target_attrs, value):
+                    continue
+                before = {relationship.source_attr: getattr(feature, relationship.source_attr)}
+                if cfg.sanity.repairs.dangling_relationship_remove:
+                    setattr(feature, relationship.source_attr, None)
+                    sanity.action(
+                        "dangling-relationship-removed",
+                        f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
+                        "does not resolve and was removed",
+                        before=before,
+                        after={relationship.source_attr: None},
+                        layer_name=feature.layer_name,
+                        feature_id=feature.id,
+                        source_path=feature.source_path,
+                    )
+                elif cfg.sanity.warnings.dangling_relationships:
+                    target_layer = _relationship_target_label(dataset, relationship.target_attrs)
+                    sanity.warn(
+                        "dangling-relationship-remove-disabled",
+                        f"{feature.layer_name} {feature.id} {relationship.column_name}={value!r} "
+                        f"does not resolve to {target_layer}, but dangling-reference removal "
+                        "is disabled",
+                        layer_name=feature.layer_name,
+                        feature_id=feature.id,
+                        source_path=feature.source_path,
+                    )
+
+
+def repair_dangling_nodes(dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig) -> None:
+    link_store = dataset.store_for_role("link")
+    node_store = dataset.store_for_role("node")
+    used_node_ids = {
+        node_id
+        for link in link_store.features
+        for node_id in (link.from_node_id, link.to_node_id)
+        if node_id
+    }
+    node_ids_to_remove: list[str] = []
+    for node in node_store.features:
+        if node.id in used_node_ids:
+            continue
+        if cfg.sanity.repairs.dangling_node_remove:
+            node_ids_to_remove.append(node.id)
+            sanity.action(
+                "dangling-node-removed",
+                f"{node.layer_name} {node.id} is not referenced by any remaining link endpoint",
+                before={"referenced_by_link_endpoint": False},
+                after={"removed": True},
+                layer_name=node.layer_name,
+                feature_id=node.id,
+                source_path=node.source_path,
+            )
+        elif cfg.sanity.warnings.dangling_nodes:
+            sanity.warn(
+                "dangling-node-remove-disabled",
+                f"{node.layer_name} {node.id} is not referenced by any remaining link endpoint, "
+                "but dangling-node removal is disabled",
+                layer_name=node.layer_name,
+                feature_id=node.id,
+                source_path=node.source_path,
+            )
+    node_store.remove_feature_ids(node_ids_to_remove)
+
+
 def repair_reversed_link_endpoints(
     dataset: NGIIDataset, sanity: SanityReport, cfg: NGIIConfig
 ) -> None:
@@ -284,6 +387,8 @@ def _repair_endpoint(
             feature_id=link.id,
             source_path=link.source_path,
         )
+    if current_id is None:
+        return
     if cfg.sanity.repairs.link_missing_node_ref_remove:
         setattr(link, attr_name, None)
         sanity.action(
@@ -544,9 +649,25 @@ def _optional_text(value: object) -> str:
     return str(value).strip()
 
 
+def _relationship_resolves(
+    dataset: NGIIDataset, target_attrs: tuple[str, ...], feature_id: str
+) -> bool:
+    return any(
+        dataset.store_for_attr(target_attr).get(feature_id) is not None
+        for target_attr in target_attrs
+    )
+
+
+def _relationship_target_label(dataset: NGIIDataset, target_attrs: tuple[str, ...]) -> str:
+    return "/".join(dataset.store_for_attr(target_attr).layer_name for target_attr in target_attrs)
+
+
 DEFAULT_REPAIR_HOOKS: tuple[tuple[str, RepairHook], ...] = (
-    ("link_endpoint_direction", repair_reversed_link_endpoints),
+    ("link_too_short_removal", repair_too_short_links),
+    ("dangling_relationships", repair_dangling_relationships),
     ("link_missing_node_refs", repair_missing_link_node_refs),
+    ("link_endpoint_direction", repair_reversed_link_endpoints),
     ("link_topology_direction", repair_link_topology_direction),
+    ("dangling_nodes", repair_dangling_nodes),
     ("reciprocal_relationships", repair_reciprocal_relationships),
 )

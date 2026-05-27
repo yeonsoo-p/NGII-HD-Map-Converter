@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -60,6 +60,13 @@ class LayerStore[T: NGIIFeature](Mapping[str, T]):
     def rebuild_index(self) -> None:
         self.by_id = {feature.id: feature for feature in self.features}
         self.id_to_index = {feature.id: i for i, feature in enumerate(self.features)}
+
+    def remove_feature_ids(self, feature_ids: Collection[str]) -> None:
+        if not feature_ids:
+            return
+        ids = set(feature_ids)
+        self.features = [feature for feature in self.features if feature.id not in ids]
+        self.rebuild_index()
 
     @property
     def ids(self) -> NDArray[np.str_]:

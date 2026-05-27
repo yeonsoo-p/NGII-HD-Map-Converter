@@ -22,16 +22,22 @@ class NGIISanityWarningConfig:
     link_endpoint_alignment: bool
     link_direction_ambiguous: bool
     link_topology_direction: bool
+    too_short_links: bool
+    dangling_relationships: bool
+    dangling_nodes: bool
     reciprocal_relationships: bool
 
 
 @dataclass(slots=True, frozen=True)
 class NGIISanityRepairConfig:
     duplicate_conflicting_id_drop: bool
+    link_too_short_remove: bool
     link_endpoint_direction_swap: bool
     link_missing_node_ref_nearest: bool
     link_missing_node_ref_remove: bool
     link_topology_direction_swap: bool
+    dangling_relationship_remove: bool
+    dangling_node_remove: bool
     reciprocal_relationship_fill: bool
 
 
@@ -41,6 +47,7 @@ class NGIISanityConfig:
 
     node_match_tolerance_m: float
     direction_parallel_dot_min: float
+    link_min_length_m: float
     warnings: NGIISanityWarningConfig
     repairs: NGIISanityRepairConfig
 

@@ -55,7 +55,7 @@ class A2_LINK(V2023LineFeature):
     l_link_id: str | None
     from_node_id: str | None
     to_node_id: str | None
-    section_id: str
+    section_id: str | None
     length_m: float
     its_link_id: str
 
@@ -73,7 +73,7 @@ def make_feature(record: FeatureRecord) -> A2_LINK:
         l_link_id=record.optional_ref("L_LinkID"),
         from_node_id=record.optional_ref("FromNodeID"),
         to_node_id=record.optional_ref("ToNodeID"),
-        section_id=record.text("SectionID"),
+        section_id=record.optional_ref("SectionID"),
         length_m=record.floating("Length"),
         its_link_id=record.text("ITSLinkID"),
     )

@@ -23,6 +23,8 @@ ngii:
     # Minimum dot product for topology direction comparison against a
     # same-direction lateral neighbor.
     direction_parallel_dot_min: 0.85
+    # Minimum link geometry length (m); shorter links are removed by repair.
+    link_min_length_m: 0.2
     warnings:
       missing_required_layers: true
       missing_sidecars: true
@@ -39,13 +41,19 @@ ngii:
       link_endpoint_alignment: true
       link_direction_ambiguous: true
       link_topology_direction: true
+      too_short_links: true
+      dangling_relationships: true
+      dangling_nodes: true
       reciprocal_relationships: true
     repairs:
       duplicate_conflicting_id_drop: true
+      link_too_short_remove: true
       link_endpoint_direction_swap: true
       link_missing_node_ref_nearest: true
       link_missing_node_ref_remove: true
       link_topology_direction_swap: true
+      dangling_relationship_remove: true
+      dangling_node_remove: true
       reciprocal_relationship_fill: true
   text_repair:
     enabled: true
@@ -89,10 +97,8 @@ viz:
     padding_m: 15.0
     min_scale_m: 20.0
     max_scale_m: 1000.0
-  points:
-    render_as_spheres: false
   profiling:
-    enabled: true
+    enabled: false
     slow_frame_ms: 33.0
     log_every_n_interactions: 1
 

@@ -76,11 +76,6 @@ class VizCameraFocusConfig:
 
 
 @dataclass(slots=True, frozen=True)
-class VizPointConfig:
-    render_as_spheres: bool
-
-
-@dataclass(slots=True, frozen=True)
 class VizConfig:
     background_color: tuple[float, float, float]
     highlight_rgb: tuple[int, int, int]
@@ -95,7 +90,6 @@ class VizConfig:
     poly_depth_offset_units: float
     segmentation_seed: int
     camera_focus: VizCameraFocusConfig
-    points: VizPointConfig
     profiling: ViewportProfilingConfig
     layers: dict[str, VizLayerConfig]
 
@@ -127,7 +121,6 @@ class RenderLayer(ABC):
     selector_tolerance: float
     poly_depth_offset_factor: float
     poly_depth_offset_units: float
-    render_points_as_spheres: bool
     color_fn: Callable[[], NDArray[np.uint8]]
     point_size_fn: PointSizeFn | None = None
     feature_indices: tuple[int, ...] | None = None
@@ -242,10 +235,12 @@ class PointRenderLayer(RenderLayer):
         self.refresh_colors()
         self.actor = plotter.add_mesh(
             self.poly,
+            style="points",
             scalars="rgb",
             rgb=True,
             point_size=self.config.point_size,
-            render_points_as_spheres=self.render_points_as_spheres,
+            point_shape="circle",
+            render_points_as_spheres=False,
             show_scalar_bar=False,
         )
         self.actor.SetVisibility(int(self.config.visible))
@@ -367,10 +362,12 @@ class PointRenderLayer(RenderLayer):
             self.emphasis_poly.point_data["rgb"] = self._emphasis_colors(render_indices)
             self.emphasis_actor = self._plotter.add_mesh(
                 self.emphasis_poly,
+                style="points",
                 scalars="rgb",
                 rgb=True,
                 point_size=point_size,
-                render_points_as_spheres=self.render_points_as_spheres,
+                point_shape="circle",
+                render_points_as_spheres=False,
                 show_scalar_bar=False,
             )
             self.emphasis_actor.SetVisibility(int(self.config.visible))
@@ -535,10 +532,12 @@ class PolygonRenderLayer(RenderLayer):
         if self.fallback_point_poly.n_points > 0:
             self.fallback_actor = plotter.add_mesh(
                 self.fallback_point_poly,
+                style="points",
                 scalars="rgb",
                 rgb=True,
                 point_size=self.config.point_size,
-                render_points_as_spheres=self.render_points_as_spheres,
+                point_shape="circle",
+                render_points_as_spheres=False,
                 show_scalar_bar=False,
             )
             self.fallback_actor.SetVisibility(int(self.config.visible))
@@ -789,7 +788,6 @@ class HdMapViz:
                 selector_tolerance=0.0,
                 poly_depth_offset_factor=self.viz_cfg.poly_depth_offset_factor,
                 poly_depth_offset_units=self.viz_cfg.poly_depth_offset_units,
-                render_points_as_spheres=self.viz_cfg.points.render_as_spheres,
                 color_fn=color_fn,
                 point_size_fn=point_size_fn,
                 sublayers=sublayers,
@@ -822,7 +820,6 @@ class HdMapViz:
             selector_tolerance=self._selector_tolerance(kind),
             poly_depth_offset_factor=self.viz_cfg.poly_depth_offset_factor,
             poly_depth_offset_units=self.viz_cfg.poly_depth_offset_units,
-            render_points_as_spheres=self.viz_cfg.points.render_as_spheres,
             color_fn=color_fn,
             point_size_fn=point_size_fn,
             feature_indices=feature_indices,
