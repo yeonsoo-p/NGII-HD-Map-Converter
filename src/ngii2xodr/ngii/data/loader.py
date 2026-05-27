@@ -168,7 +168,7 @@ def detect_schema(
     found_names = {
         shp_path.name.upper()
         for coordinate_dir in coordinate_dirs
-        for shp_path in coordinate_dir.rglob("*.shp")
+        for shp_path in coordinate_dir.glob("*.shp")
     }
     matches = [schema for schema in schemas if found_names & set(schema.specs_by_filename)]
     if len(matches) > 1:
@@ -185,7 +185,8 @@ def detect_schema(
 
 
 def coordinate_dirs_for(root: Path, coordinate: str) -> list[Path]:
-    if root.name == coordinate or any(root.glob("*.shp")):
+    """Find coordinate product directories; layer files are read one level deep."""
+    if root.name == coordinate:
         return [root]
     return sorted(path for path in root.rglob(coordinate) if path.is_dir())
 
@@ -212,7 +213,7 @@ def discover_layer_files(
     discovered: list[DiscoveredLayerFile] = []
     for coordinate_dir in coordinate_dirs:
         candidates: dict[str, list[DiscoveredLayerFile]] = defaultdict(list)
-        for shp_path in sorted(coordinate_dir.rglob("*.shp")):
+        for shp_path in sorted(coordinate_dir.glob("*.shp")):
             spec = specs_by_filename.get(shp_path.name.upper())
             if spec is None:
                 if report_unknown_layers:
