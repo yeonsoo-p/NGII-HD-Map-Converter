@@ -7,7 +7,6 @@ from ngii2xodr.ngii.segmentation.model import (
     JunctionConnection,
     LateralLinkGroup,
     LateralNodeGroup,
-    NodeLinkRelation,
     SegmentationConfig,
     SegmentationResult,
     SelectedField,
@@ -27,7 +26,6 @@ from ngii2xodr.ngii.segmentation.stages.junction import JunctionStage
 from ngii2xodr.ngii.segmentation.stages.junction_connection import JunctionConnectionStage
 from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGroupStage
 from ngii2xodr.ngii.segmentation.stages.lateral_node_group import LateralNodeGroupStage
-from ngii2xodr.ngii.segmentation.stages.node_link_relations import NodeLinkRelationsStage
 from ngii2xodr.ngii.segmentation.stages.uturn import UTurnStage
 
 __all__ = [
@@ -44,8 +42,6 @@ __all__ = [
     "LateralLinkGroupStage",
     "LateralNodeGroup",
     "LateralNodeGroupStage",
-    "NodeLinkRelation",
-    "NodeLinkRelationsStage",
     "Segmentation",
     "SegmentationConfig",
     "SegmentationResult",

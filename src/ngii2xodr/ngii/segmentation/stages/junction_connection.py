@@ -14,14 +14,12 @@ from ngii2xodr.ngii.segmentation.model import (
     JunctionConnection,
     LateralLinkGroup,
     LateralNodeGroup,
-    NodeLinkRelation,
     StageResult,
 )
 from ngii2xodr.ngii.segmentation.stage import empty_result
 from ngii2xodr.ngii.segmentation.stages.junction import JunctionStage
 from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGroupStage
 from ngii2xodr.ngii.segmentation.stages.lateral_node_group import LateralNodeGroupStage
-from ngii2xodr.ngii.segmentation.stages.node_link_relations import NodeLinkRelationsStage
 
 
 class JunctionConnectionStage:
@@ -30,7 +28,6 @@ class JunctionConnectionStage:
     entity_label: ClassVar[str] = "Junction connection"
     enabled_attr: ClassVar[str] = "enable_junction_connection"
     requires: ClassVar[tuple[str, ...]] = (
-        NodeLinkRelationsStage.id,
         LateralLinkGroupStage.id,
         LateralNodeGroupStage.id,
         JunctionStage.id,
@@ -41,16 +38,10 @@ class JunctionConnectionStage:
         context: SegmentationContext,
         previous_results: Mapping[str, StageResult],
     ) -> StageResult:
-        node_relation_result = previous_results[NodeLinkRelationsStage.id]
         link_group_result = previous_results[LateralLinkGroupStage.id]
         node_group_result = previous_results[LateralNodeGroupStage.id]
         junction_result = previous_results[JunctionStage.id]
 
-        node_relations = {
-            relation.node_ref: relation
-            for relation in node_relation_result.entities
-            if isinstance(relation, NodeLinkRelation)
-        }
         link_groups = {
             link_group.id: link_group
             for link_group in link_group_result.entities
@@ -72,7 +63,7 @@ class JunctionConnectionStage:
             link_group = link_groups.get(node_group.lateral_link_group_id)
             if link_group is None:
                 continue
-            match = _best_junction_match(node_group, junctions, node_relations)
+            match = _best_junction_match(context, node_group, junctions)
             if match is None:
                 continue
             matches.append(
@@ -174,9 +165,9 @@ class _PairCandidate:
 
 
 def _best_junction_match(
+    context: SegmentationContext,
     node_group: LateralNodeGroup,
     junctions: tuple[Junction, ...],
-    node_relations: Mapping[FeatureRef, NodeLinkRelation],
 ) -> _JunctionMatch | None:
     matches: list[_JunctionMatch] = []
     for junction in junctions:
@@ -185,7 +176,7 @@ def _best_junction_match(
             matches.append(_JunctionMatch(0, 0.0, "shared_node", junction, shared))
             continue
 
-        adjacent = _adjacent_node_refs(node_group.node_refs, junction, node_relations)
+        adjacent = _adjacent_node_refs(context, node_group.node_refs, junction)
         if adjacent:
             matches.append(_JunctionMatch(1, 0.0, "graph_adjacency", junction, adjacent))
             continue
@@ -196,18 +187,15 @@ def _best_junction_match(
 
 
 def _adjacent_node_refs(
+    context: SegmentationContext,
     node_refs: tuple[FeatureRef, ...],
     junction: Junction,
-    node_relations: Mapping[FeatureRef, NodeLinkRelation],
 ) -> tuple[FeatureRef, ...]:
     junction_link_refs = set(junction.link_refs)
     adjacent_refs: list[FeatureRef] = []
     for node_ref in node_refs:
-        relation = node_relations.get(node_ref)
-        if relation is None:
-            continue
         if junction_link_refs.intersection(
-            (*relation.incoming_link_refs, *relation.outgoing_link_refs)
+            (*context.incoming_link_refs(node_ref), *context.outgoing_link_refs(node_ref))
         ):
             adjacent_refs.append(node_ref)
     return tuple(adjacent_refs)

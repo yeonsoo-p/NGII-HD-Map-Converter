@@ -23,14 +23,12 @@ from ngii2xodr.ngii.segmentation.stages.junction import JunctionStage
 from ngii2xodr.ngii.segmentation.stages.junction_connection import JunctionConnectionStage
 from ngii2xodr.ngii.segmentation.stages.lateral_link_group import LateralLinkGroupStage
 from ngii2xodr.ngii.segmentation.stages.lateral_node_group import LateralNodeGroupStage
-from ngii2xodr.ngii.segmentation.stages.node_link_relations import NodeLinkRelationsStage
 from ngii2xodr.ngii.segmentation.stages.uturn import UTurnStage
 from ngii2xodr.profile import PerformanceProfile
 
 log = logging.getLogger(__name__)
 
 SEGMENTATION_STAGES: tuple[type[SegmentationStage], ...] = (
-    NodeLinkRelationsStage,
     UTurnStage,
     LateralLinkGroupStage,
     LateralNodeGroupStage,

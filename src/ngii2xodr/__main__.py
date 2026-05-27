@@ -59,7 +59,6 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
         connection_perpendicular_half_length_m=float(
             cfg.segmentation.connection_perpendicular_half_length_m
         ),
-        enable_node_link_relations=bool(cfg.segmentation.enable_node_link_relations),
         enable_uturn=bool(cfg.segmentation.enable_uturn),
         enable_lateral_link_group=bool(cfg.segmentation.enable_lateral_link_group),
         enable_lateral_node_group=bool(cfg.segmentation.enable_lateral_node_group),

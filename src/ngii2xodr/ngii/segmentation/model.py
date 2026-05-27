@@ -17,7 +17,6 @@ class SegmentationConfig:
     junction_connection_node_merge_dist_m: float
     junction_connection_opposite_direction_dot_min: float
     connection_perpendicular_half_length_m: float
-    enable_node_link_relations: bool
     enable_uturn: bool
     enable_lateral_link_group: bool
     enable_lateral_node_group: bool
@@ -75,28 +74,6 @@ class UTurn:
                 "U-turn marker ID",
                 tuple(ref.feature_id for ref in self.marker_refs),
                 self.marker_refs,
-            ),
-        )
-
-
-@dataclass(slots=True, frozen=True)
-class NodeLinkRelation:
-    id: int
-    node_ref: FeatureRef
-    incoming_link_refs: tuple[FeatureRef, ...]
-    outgoing_link_refs: tuple[FeatureRef, ...]
-
-    def selected_fields(self, _selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
-        return (
-            SelectedField.list(
-                "Incoming link ID",
-                tuple(ref.feature_id for ref in self.incoming_link_refs),
-                self.incoming_link_refs,
-            ),
-            SelectedField.list(
-                "Outgoing link ID",
-                tuple(ref.feature_id for ref in self.outgoing_link_refs),
-                self.outgoing_link_refs,
             ),
         )
 
