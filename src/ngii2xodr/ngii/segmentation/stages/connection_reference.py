@@ -63,12 +63,6 @@ class ConnectionReferenceStage:
             if endpoint_geometry is None:
                 continue
             anchor_xyz, native_tangent_xy = endpoint_geometry
-            reversed_from_source = candidate.endpoint_side == "from"
-            tangent_xy = (
-                (-native_tangent_xy[0], -native_tangent_xy[1])
-                if reversed_from_source
-                else native_tangent_xy
-            )
             entity_id = len(entities)
             reference = ConnectionReference(
                 id=entity_id,
@@ -77,8 +71,8 @@ class ConnectionReferenceStage:
                 endpoint_side=candidate.endpoint_side,
                 link_ref=candidate.link_ref,
                 anchor_xyz=anchor_xyz,
-                tangent_xy=tangent_xy,
-                reversed_from_source=reversed_from_source,
+                tangent_xy=native_tangent_xy,
+                reversed_from_source=False,
                 selection_source=candidate.selection_source,
             )
             entities.append(reference)
@@ -121,13 +115,10 @@ def _reference_candidate(
         endpoint_side = _endpoint_side_for_reference_link(
             context, connection, link_group.reference_link_ref
         )
-        if endpoint_side is None:
+        if endpoint_side != "to":
             continue
         source = link_group.ordering_source or "lateral_topology"
-        if endpoint_side == "to":
-            source = f"{source}:toward_junction"
-        else:
-            source = f"{source}:reversed_toward_junction"
+        source = f"{source}:toward_junction"
         candidates.append(
             _ReferenceCandidate(
                 link_ref=link_group.reference_link_ref,
@@ -155,11 +146,9 @@ def _endpoint_side_for_reference_link(
     return None
 
 
-def _reference_candidate_key(candidate: _ReferenceCandidate) -> tuple[int, int, int, str]:
-    direction_priority = 0 if candidate.endpoint_side == "to" else 1
+def _reference_candidate_key(candidate: _ReferenceCandidate) -> tuple[int, int, str]:
     lane_no_priority = candidate.lane_no if candidate.lane_no is not None else 1_000_000
     return (
-        direction_priority,
         lane_no_priority,
         candidate.lateral_link_group_id,
         candidate.link_ref.feature_id,

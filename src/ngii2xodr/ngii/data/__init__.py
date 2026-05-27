@@ -22,6 +22,7 @@ from ngii2xodr.ngii.data.schema import (
     LayerSpec,
     RelationshipRule,
     RoleFilter,
+    RoleKey,
     SchemaDefinition,
 )
 from ngii2xodr.ngii.data.v2023 import SCHEMA as V2023_SCHEMA
@@ -55,6 +56,7 @@ __all__ = [
     "NGIITextCorrectionConfig",
     "RelationshipRule",
     "RoleFilter",
+    "RoleKey",
     "SanityAction",
     "SanityReport",
     "SanityWarning",

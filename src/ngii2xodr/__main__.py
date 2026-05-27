@@ -53,6 +53,10 @@ def _build_seg_cfg(cfg: DictConfig) -> SegmentationConfig:
         junction_connection_node_merge_dist_m=float(
             cfg.segmentation.junction_connection_node_merge_dist_m
         ),
+        junction_connection_opposite_direction_dot_min=_ratio_float(
+            cfg.segmentation.junction_connection_opposite_direction_dot_min,
+            "segmentation.junction_connection_opposite_direction_dot_min",
+        ),
         connection_perpendicular_half_length_m=float(
             cfg.segmentation.connection_perpendicular_half_length_m
         ),

@@ -8,7 +8,6 @@ from typing import ClassVar
 
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.segmentation.context import SegmentationContext
-from ngii2xodr.ngii.segmentation.helpers import connected_components_from_pairs
 from ngii2xodr.ngii.segmentation.model import (
     EndpointSide,
     Junction,
@@ -86,17 +85,12 @@ class JunctionConnectionStage:
         if not matches:
             return empty_result(self)
 
-        merge_pairs = _merge_pairs(context, matches, node_relations)
-        components = connected_components_from_pairs(
-            tuple(range(len(matches))),
-            ((pair.left, pair.right) for pair in merge_pairs),
-        )
-        methods_by_component = _merge_methods_by_component(components, merge_pairs)
+        components = _connection_components(context, matches)
 
         entities: list[JunctionConnection] = []
         entity_ids_by_ref: dict[FeatureRef, list[int]] = {}
-        for component_i, match_indices in enumerate(components):
-            component_matches = tuple(matches[i] for i in match_indices)
+        for component in components:
+            component_matches = tuple(matches[i] for i in component.match_indices)
             entity_id = len(entities)
             junction = component_matches[0].junction_match.junction
             node_refs = _unique_refs(
@@ -115,7 +109,7 @@ class JunctionConnectionStage:
             match_methods = _unique_strings(
                 (
                     *(match.junction_match.method for match in component_matches),
-                    *methods_by_component[component_i],
+                    *component.methods,
                 )
             )
             entities.append(
@@ -165,10 +159,18 @@ class _EndpointMatch:
 
 
 @dataclass(slots=True, frozen=True)
-class _MergePair:
-    left: int
-    right: int
-    method: str
+class _ConnectionComponent:
+    match_indices: tuple[int, ...]
+    methods: tuple[str, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class _PairCandidate:
+    to_index: int
+    from_index: int
+    distance_m: float
+    priority: int
+    methods: tuple[str, ...]
 
 
 def _best_junction_match(
@@ -224,6 +226,8 @@ def _nearby_junction_node_refs(
     best_distance_m = context.cfg.junction_connection_node_merge_dist_m
     best_node_ref: FeatureRef | None = None
     for node_ref in node_refs:
+        if not context.is_junction_node_ref(node_ref):
+            continue
         node_point = context.node_point_for_ref(node_ref)
         if node_point is None:
             continue
@@ -240,102 +244,116 @@ def _nearby_junction_node_refs(
     return _JunctionMatch(2, best_distance_m, "node_proximity", junction, (best_node_ref,))
 
 
-def _merge_pairs(
+def _connection_components(
     context: SegmentationContext,
     matches: list[_EndpointMatch],
-    node_relations: Mapping[FeatureRef, NodeLinkRelation],
-) -> tuple[_MergePair, ...]:
-    pairs: list[_MergePair] = []
-    for left in range(len(matches)):
-        for right in range(left + 1, len(matches)):
-            if (
-                matches[left].junction_match.junction.id
-                != matches[right].junction_match.junction.id
-            ):
+) -> tuple[_ConnectionComponent, ...]:
+    indices_by_junction: dict[int, list[int]] = {}
+    for index, match in enumerate(matches):
+        indices_by_junction.setdefault(match.junction_match.junction.id, []).append(index)
+
+    components: list[_ConnectionComponent] = []
+    for junction_id in sorted(indices_by_junction):
+        indices = tuple(indices_by_junction[junction_id])
+        pair_candidates = sorted(
+            (
+                candidate
+                for left_pos, left in enumerate(indices)
+                for right in indices[left_pos + 1 :]
+                if (candidate := _pair_candidate(context, matches, left, right)) is not None
+            ),
+            key=lambda candidate: (
+                candidate.priority,
+                candidate.distance_m,
+                candidate.to_index,
+                candidate.from_index,
+            ),
+        )
+        used: set[int] = set()
+        for candidate in pair_candidates:
+            if candidate.to_index in used or candidate.from_index in used:
                 continue
-            method = _merge_method(context, matches[left], matches[right], node_relations)
-            if method:
-                pairs.append(_MergePair(left, right, method))
-    return tuple(pairs)
+            used.update((candidate.to_index, candidate.from_index))
+            components.append(
+                _ConnectionComponent(
+                    match_indices=(candidate.to_index, candidate.from_index),
+                    methods=candidate.methods,
+                )
+            )
+        for index in indices:
+            if index not in used:
+                components.append(
+                    _ConnectionComponent(match_indices=(index,), methods=("one_sided",))
+                )
+    return tuple(components)
 
 
-def _merge_method(
+def _pair_candidate(
     context: SegmentationContext,
-    left: _EndpointMatch,
-    right: _EndpointMatch,
-    node_relations: Mapping[FeatureRef, NodeLinkRelation],
-) -> str:
-    left_nodes = {*left.node_group.node_refs, *left.junction_match.node_refs}
-    right_nodes = {*right.node_group.node_refs, *right.junction_match.node_refs}
-    if left_nodes & right_nodes:
-        return "shared_node"
-    if _endpoint_groups_are_graph_adjacent(left, right, node_relations):
-        return "graph_adjacency"
-    if _endpoint_groups_are_nearby(context, left.node_group.node_refs, right.node_group.node_refs):
-        return "node_proximity"
-    return ""
+    matches: list[_EndpointMatch],
+    left_index: int,
+    right_index: int,
+) -> _PairCandidate | None:
+    left = matches[left_index]
+    right = matches[right_index]
+    if left.node_group.side == right.node_group.side:
+        return None
+    to_index = left_index if left.node_group.side == "to" else right_index
+    from_index = left_index if left.node_group.side == "from" else right_index
+    to_match = matches[to_index]
+    from_match = matches[from_index]
 
+    distance_m = context.endpoint_node_distance_m(
+        to_match.node_group.node_refs,
+        from_match.node_group.node_refs,
+    )
+    if distance_m is None or distance_m > context.cfg.junction_connection_node_merge_dist_m:
+        return None
+    dot = _endpoint_tangent_dot(context, to_match, from_match)
+    if dot is None or dot > -context.cfg.junction_connection_opposite_direction_dot_min:
+        return None
 
-def _endpoint_groups_are_graph_adjacent(
-    left: _EndpointMatch,
-    right: _EndpointMatch,
-    node_relations: Mapping[FeatureRef, NodeLinkRelation],
-) -> bool:
-    left_links = set(left.link_group.link_refs)
-    right_links = set(right.link_group.link_refs)
-    return _nodes_touch_links(left.node_group.node_refs, right_links, node_relations) or (
-        _nodes_touch_links(right.node_group.node_refs, left_links, node_relations)
+    shared_keys = set(to_match.node_group.node_group_keys) & set(
+        from_match.node_group.node_group_keys
+    )
+    methods = ("node_group_key", "opposite_direction") if shared_keys else ("opposite_direction",)
+    priority = 0 if shared_keys else 1
+    return _PairCandidate(
+        to_index=to_index,
+        from_index=from_index,
+        distance_m=distance_m,
+        priority=priority,
+        methods=methods,
     )
 
 
-def _nodes_touch_links(
-    node_refs: tuple[FeatureRef, ...],
-    link_refs: set[FeatureRef],
-    node_relations: Mapping[FeatureRef, NodeLinkRelation],
-) -> bool:
-    for node_ref in node_refs:
-        relation = node_relations.get(node_ref)
-        if relation is None:
-            continue
-        if link_refs.intersection((*relation.incoming_link_refs, *relation.outgoing_link_refs)):
-            return True
-    return False
-
-
-def _endpoint_groups_are_nearby(
+def _endpoint_tangent_dot(
     context: SegmentationContext,
-    left_node_refs: tuple[FeatureRef, ...],
-    right_node_refs: tuple[FeatureRef, ...],
-) -> bool:
-    max_distance_m = context.cfg.junction_connection_node_merge_dist_m
-    if max_distance_m <= 0.0:
-        return False
-    for left_ref in left_node_refs:
-        left_point = context.node_point_for_ref(left_ref)
-        if left_point is None:
-            continue
-        for right_ref in right_node_refs:
-            right_point = context.node_point_for_ref(right_ref)
-            if right_point is not None and left_point.distance(right_point) <= max_distance_m:
-                return True
-    return False
+    to_match: _EndpointMatch,
+    from_match: _EndpointMatch,
+) -> float | None:
+    to_tangent = _endpoint_tangent(context, to_match)
+    from_tangent = _endpoint_tangent(context, from_match)
+    if to_tangent is None or from_tangent is None:
+        return None
+    return to_tangent[0] * from_tangent[0] + to_tangent[1] * from_tangent[1]
 
 
-def _merge_methods_by_component(
-    components: tuple[tuple[int, ...], ...],
-    merge_pairs: tuple[_MergePair, ...],
-) -> tuple[tuple[str, ...], ...]:
-    methods_by_component: list[tuple[str, ...]] = []
-    for component in components:
-        component_set = set(component)
-        methods_by_component.append(
-            _unique_strings(
-                pair.method
-                for pair in merge_pairs
-                if pair.left in component_set and pair.right in component_set
-            )
-        )
-    return tuple(methods_by_component)
+def _endpoint_tangent(
+    context: SegmentationContext,
+    match: _EndpointMatch,
+) -> tuple[float, float] | None:
+    link_ref = match.link_group.reference_link_ref or _first_ref(match.link_group.link_refs)
+    if link_ref is None:
+        return None
+    endpoint_geometry = context.endpoint_geometry_for_link_ref(link_ref, match.node_group.side)
+    if endpoint_geometry is None:
+        return None
+    return endpoint_geometry[1]
+
+
+def _first_ref(refs: tuple[FeatureRef, ...]) -> FeatureRef | None:
+    return refs[0] if refs else None
 
 
 def _unique_refs(refs: Iterable[FeatureRef]) -> tuple[FeatureRef, ...]:

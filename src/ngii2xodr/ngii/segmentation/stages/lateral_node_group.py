@@ -46,6 +46,7 @@ class LateralNodeGroupStage:
                         side=side,
                         link_refs=link_group.link_refs,
                         node_refs=node_refs,
+                        node_group_keys=context.semantic_keys_for_refs("node_group", node_refs),
                     )
                 )
                 for ref in (*link_group.link_refs, *node_refs):

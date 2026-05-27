@@ -16,6 +16,7 @@ class SegmentationConfig:
     z_intersection_tol_m: float
     junction_proximity_merge_dist_m: float
     junction_connection_node_merge_dist_m: float
+    junction_connection_opposite_direction_dot_min: float
     connection_perpendicular_half_length_m: float
     enable_node_link_relations: bool
     enable_uturn: bool
@@ -181,6 +182,7 @@ class LateralNodeGroup:
     side: EndpointSide
     link_refs: tuple[FeatureRef, ...]
     node_refs: tuple[FeatureRef, ...]
+    node_group_keys: tuple[str, ...] = ()
 
     def selected_fields(self, selected_ref: FeatureRef | None = None) -> tuple[SelectedField, ...]:
         if selected_ref in self.node_refs:
@@ -214,6 +216,7 @@ class LateralNodeGroup:
                 tuple(ref.feature_id for ref in self.node_refs),
                 self.node_refs,
             ),
+            SelectedField.list("Node group key", self.node_group_keys),
         )
 
 

@@ -45,21 +45,35 @@ requested coordinate product.
 
 Segmentation stages live under
 [src/ngii2xodr/ngii/segmentation](src/ngii2xodr/ngii/segmentation). The pipeline
-currently enables:
+builds road semantics in layers:
 
-- `NodeLinkRelationsStage`: A1 nodes annotated with incoming and outgoing A2
-  link references.
-- `UTurnStage`: Type 6 A2 links intersecting B2 Kind 502 markers within the
-  configured z tolerance.
-- `LateralLinkGroupStage`: ordinary Type 6 A2 links grouped by R/L_LinkID
-  lateral references, excluding links already classified as U-turns.
-- `LateralNodeGroupStage`: separate from/to A1 endpoint groups for each lateral
-  link group.
-- `JunctionStage`: connected components of Type 1 A2 links, joined by
-  R/L_LinkID references or same-plane geometric intersections.
+- `NodeLinkRelationsStage`: turns `FromNodeID` / `ToNodeID` into the directed
+  graph at every node: which lane-center links enter the point and which leave
+  it.
+- `UTurnStage`: marks links whose geometry is a U-turn. Data model 2025 can use
+  the link `Turn` attribute directly; data model 2023 falls back to links
+  crossing U-turn lane-line markers.
+- `LateralLinkGroupStage`: groups ordinary lane-center links that run side by
+  side in the same travel direction using `R/L_LinkID`. Pockets are excluded
+  from reference-lane selection; 2023 uses `LaneNo`, while 2025 uses `Turn`.
+- `LateralNodeGroupStage`: materializes each lateral link group's `from` and
+  `to` endpoint nodes. These are the physical mouths where a lane bundle enters
+  or leaves a junction area.
+- `JunctionStage`: finds the junction interior by grouping junction-type links
+  that touch laterally, graph-wise, or by same-plane geometric intersections.
+- `JunctionConnectionStage`: attaches lateral endpoint mouths to a junction.
+  Opposite-direction `to`/`from` mouths are paired into one bidirectional
+  connection only when their endpoint link tangents face opposite directions;
+  unmatched mouths remain visible as one-sided connections.
+- `ConnectionReferenceStage`: emits reference arrows only from inbound endpoint
+  links whose native source geometry already points toward the junction. Outbound
+  one-sided connections are visible, but they do not get reversed arrows.
 
-Post-junction stages are explicit pipeline stages but default to disabled in
-Hydra until their dataset-native semantics are ready.
+Version shortcuts are declared by the version schema. Data model 2023 uses
+`FromNodeID` / `ToNodeID`, `R/L_LinkID`, `LaneNo`, `NodeType`, and `LinkType`.
+Data model 2025 additionally provides reliable `GroupID`, multi-`NodeType`,
+`Turn`, and expanded `LinkType` semantics. `ITSNodeID` is loaded as source data
+only and is not used for segmentation.
 
 Renderer note: the current PyVista/VTK viewport remains the default. Viewport
 interaction profiling is log-only and configured under `viz.profiling`; use

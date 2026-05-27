@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from ngii2xodr.ngii.app import FeatureRef
 from ngii2xodr.ngii.data.dataset import LayerStore, NGIIDataset
 from ngii2xodr.ngii.data.features import LineFeature
-from ngii2xodr.ngii.data.schema import RoleFilter
+from ngii2xodr.ngii.data.schema import RoleFilter, RoleKey
 from ngii2xodr.ngii.segmentation.model import EndpointSide, SegmentationConfig
 
 
@@ -40,6 +40,7 @@ class SegmentationContext:
     junction_node_indices: tuple[int, ...] = field(init=False)
     junction_node_points: tuple[shapely.Point, ...] = field(init=False)
     junction_node_tree: shapely.STRtree | None = field(init=False)
+    junction_node_refs: frozenset[FeatureRef] = field(init=False)
     incoming_link_refs_by_node_id: dict[str, tuple[FeatureRef, ...]] = field(init=False)
     outgoing_link_refs_by_node_id: dict[str, tuple[FeatureRef, ...]] = field(init=False)
     _link_index_by_ref: dict[FeatureRef, int] = field(init=False)
@@ -49,6 +50,7 @@ class SegmentationContext:
     _inverse_right_refs_by_link_id: dict[str, tuple[FeatureRef, ...]] = field(init=False)
     _inverse_left_refs_by_link_id: dict[str, tuple[FeatureRef, ...]] = field(init=False)
     _rows_by_filter: dict[str, tuple[int, ...]] = field(init=False)
+    _semantic_keys_by_name: dict[str, dict[FeatureRef, tuple[str, ...]]] = field(init=False)
 
     def __post_init__(self) -> None:
         self.node_attr = self.dataset.schema.attr_for_role("node")
@@ -102,6 +104,11 @@ class SegmentationContext:
         self.junction_node_tree = (
             shapely.STRtree(self.junction_node_points) if self.junction_node_points else None
         )
+        self.junction_node_refs = frozenset(
+            FeatureRef(self.node_attr, self.node_store.features[i].id)
+            for i in self.junction_node_indices
+        )
+        self._semantic_keys_by_name = self._build_semantic_keys_by_name()
 
     def _build_link_maps(self) -> None:
         incoming: dict[str, list[FeatureRef]] = {}
@@ -160,6 +167,28 @@ class SegmentationContext:
             )
         return rows_by_filter
 
+    def _build_semantic_keys_by_name(self) -> dict[str, dict[FeatureRef, tuple[str, ...]]]:
+        keys_by_name: dict[str, dict[FeatureRef, tuple[str, ...]]] = {}
+        for role_key in self.dataset.schema.role_keys:
+            keys_by_name[role_key.name] = self._semantic_keys_for_role_key(role_key)
+        return keys_by_name
+
+    def _semantic_keys_for_role_key(self, role_key: RoleKey) -> dict[FeatureRef, tuple[str, ...]]:
+        try:
+            store = self.dataset.store_for_role(role_key.role)
+        except KeyError:
+            return {}
+        keys_by_ref: dict[FeatureRef, tuple[str, ...]] = {}
+        for feature in store.features:
+            values = tuple(
+                f"{role_key.name}:{value}"
+                for attr in role_key.attrs
+                if (value := _optional_text(getattr(feature, attr, "")).strip())
+            )
+            if values:
+                keys_by_ref[FeatureRef(store.spec.python_attr, feature.id)] = values
+        return keys_by_ref
+
     def _line_tree(
         self,
         lines: tuple[shapely.LineString | None, ...],
@@ -216,6 +245,42 @@ class SegmentationContext:
     def node_point_for_ref(self, ref: FeatureRef) -> shapely.Point | None:
         index = self._node_index_by_ref.get(ref)
         return None if index is None else self.node_points[index]
+
+    def is_junction_node_ref(self, ref: FeatureRef) -> bool:
+        return ref in self.junction_node_refs
+
+    def semantic_keys_for_ref(self, name: str, ref: FeatureRef) -> tuple[str, ...]:
+        return self._semantic_keys_by_name.get(name, {}).get(ref, ())
+
+    def semantic_keys_for_refs(self, name: str, refs: tuple[FeatureRef, ...]) -> tuple[str, ...]:
+        keys: list[str] = []
+        seen: set[str] = set()
+        for ref in refs:
+            for key in self.semantic_keys_for_ref(name, ref):
+                if key in seen:
+                    continue
+                seen.add(key)
+                keys.append(key)
+        return tuple(keys)
+
+    def endpoint_node_distance_m(
+        self,
+        left_refs: tuple[FeatureRef, ...],
+        right_refs: tuple[FeatureRef, ...],
+    ) -> float | None:
+        best_distance_m: float | None = None
+        for left_ref in left_refs:
+            left_point = self.node_point_for_ref(left_ref)
+            if left_point is None:
+                continue
+            for right_ref in right_refs:
+                right_point = self.node_point_for_ref(right_ref)
+                if right_point is None:
+                    continue
+                distance_m = float(left_point.distance(right_point))
+                if best_distance_m is None or distance_m < best_distance_m:
+                    best_distance_m = distance_m
+        return best_distance_m
 
     def endpoint_node_id_for_link_index(self, link_index: int, side: EndpointSide) -> str | None:
         link = self.link_store.features[link_index]

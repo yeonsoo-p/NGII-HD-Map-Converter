@@ -6,6 +6,7 @@ from ngii2xodr.ngii.data.schema import (
     LayerSpec,
     RelationshipRule,
     RoleFilter,
+    RoleKey,
     SchemaDefinition,
     text_rule,
 )
@@ -362,6 +363,7 @@ SCHEMA = SchemaDefinition(
             attr_names=("node_type1", "node_type2", "node_type3"),
         ),
     ),
+    role_keys=(RoleKey("node_group", "node", "group_id"),),
 )
 
 SPECS_BY_FILENAME = SCHEMA.specs_by_filename

@@ -70,6 +70,23 @@ class RoleFilter:
 
 
 @dataclass(slots=True, frozen=True)
+class RoleKey:
+    name: str
+    role: LayerRole
+    attr_name: str = ""
+    attr_names: tuple[str, ...] = ()
+
+    @property
+    def attrs(self) -> tuple[str, ...]:
+        if self.attr_names:
+            return self.attr_names
+        if self.attr_name:
+            return (self.attr_name,)
+        msg = f"role key {self.name!r} must define attr_name or attr_names"
+        raise ValueError(msg)
+
+
+@dataclass(slots=True, frozen=True)
 class LayerSpec:
     layer_name: str
     python_attr: str
@@ -110,6 +127,7 @@ class SchemaDefinition:
     version: str
     layer_specs: tuple[LayerSpec, ...]
     role_filters: tuple[RoleFilter, ...] = ()
+    role_keys: tuple[RoleKey, ...] = ()
 
     @property
     def specs_by_filename(self) -> dict[str, LayerSpec]:
