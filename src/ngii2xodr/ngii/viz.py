@@ -28,6 +28,7 @@ from ngii2xodr.ngii.data.features import (
     LineFeature,
     NGIIFeature,
 )
+from ngii2xodr.ngii.data.sanity import SanityReport
 from ngii2xodr.ngii.segmentation import (
     JunctionConnectionStage,
     JunctionEdge,
@@ -997,6 +998,58 @@ class HdMapViz:
     def _stage_is_visible(self, stage_id: str) -> bool:
         visible_level = self._stage_visible_level(stage_id)
         return visible_level is not None and self._segmentation_level >= visible_level
+
+    def recompute_from_memory(self, seg_cfg: SegmentationConfig, viz_cfg: VizConfig) -> None:
+        """Rebuild derived state after session-only feature edits."""
+        selected_ref = self._selected_ref
+        was_attached = self._attached
+        if was_attached:
+            self.detach()
+
+        self.dataset.bind(SanityReport(), warn_global_id_collision=False)
+        self.dataset.rebuild_reference_edges()
+        self.viz_cfg = viz_cfg
+        self.segmentation = Segmentation.from_dataset(self.dataset, seg_cfg)
+        self.viewport_profile = PerformanceProfile()
+        self._viewport_profiler = ViewportInteractionProfiler(
+            profile=self.viewport_profile,
+            config=viz_cfg.profiling,
+            logger=log,
+        )
+        self._segmentation_level = min(
+            self._segmentation_level,
+            len(self.segmentation.stage_results),
+        )
+        self._selected_ref = self._resolvable_ref(selected_ref)
+        self._palette_by_stage = {
+            result.stage_id: _random_palette(len(result.entities), viz_cfg.segmentation_seed + i)
+            for i, result in enumerate(self.segmentation.stage_results)
+        }
+        self.polygon_selector = vtk.vtkCellPicker()
+        self.polygon_selector.SetTolerance(viz_cfg.selector_tol_poly)
+        self.polygon_selector.PickFromListOn()
+        self.registry = self._build_registry()
+        self._junction_reference_overlay = self._build_junction_reference_overlay()
+        self._junction_edge_overlay = self._build_junction_edge_overlay()
+        self.loaded_map = LoadedMap(
+            dataset=self.dataset,
+            sanity=self.sanity,
+            segmentation=self.segmentation,
+            render_registry=self.registry,
+            load_profile=self.dataset.load_profile,
+            segmentation_profile=self.segmentation.profile,
+            viewport_profile=self.viewport_profile,
+        )
+
+        if was_attached:
+            self.attach()
+        if self._selected_ref is not None:
+            self.select_feature(self._selected_ref, emit=False)
+
+    def _resolvable_ref(self, ref: FeatureRef | None) -> FeatureRef | None:
+        if ref is None:
+            return None
+        return ref if self.dataset.store_for_attr(ref.layer_attr).get(ref.feature_id) else None
 
     def attach(self) -> None:
         if self._attached:

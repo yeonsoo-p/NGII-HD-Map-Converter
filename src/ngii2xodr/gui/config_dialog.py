@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QListWidget,
     QMessageBox,
@@ -54,6 +55,169 @@ from ngii2xodr.ngii.viz import VizCameraFocusConfig, VizConfig, VizLayerConfig
 from ngii2xodr.profile import ViewportProfilingConfig
 
 ApplyCallback = Callable[[RuntimeConfig], bool]
+
+_SANITY_HELP: dict[str, tuple[str, str]] = {
+    "layer_required_missing": (
+        "A required layer from the active NGII schema is not discovered.",
+        "Not available. Missing source layers need new input data.",
+    ),
+    "layer_unknown": (
+        "A SHP layer is present but not documented by the active NGII schema.",
+        "Not available. Unknown layers are omitted.",
+    ),
+    "shp_sidecar_missing": (
+        "A discovered SHP file is missing its DBF, SHX, or PRJ sidecar.",
+        "Not available. Sidecar files must be supplied with the dataset.",
+    ),
+    "dbf_column_case_duplicate": (
+        "A DBF has manual columns that differ only by letter case.",
+        "Not available. The loader reports the ambiguous columns.",
+    ),
+    "manual_column_missing": (
+        "A documented manual column is absent from a layer DBF.",
+        "Not available. The feature uses parser defaults when possible.",
+    ),
+    "manual_column_unknown": (
+        "A DBF contains columns outside the active schema manual.",
+        "Not available. Unknown columns are ignored.",
+    ),
+    "manual_field_required_missing": (
+        "A required manual field is empty after loading.",
+        "Not available. The missing source value is reported.",
+    ),
+    "manual_field_length_exceeded": (
+        "A text value is longer than the schema VARCHAR length.",
+        "Not available. The overlong source value is reported.",
+    ),
+    "manual_field_type_invalid": (
+        "A manual integer or float field cannot be parsed as that type.",
+        "Not available. The loader falls back to the existing parser default.",
+    ),
+    "manual_field_code_invalid": (
+        "A value is outside the schema code list for that field.",
+        "Not available. The source value is preserved and reported.",
+    ),
+    "manual_hist_type_invalid": (
+        "A HistType value does not match the schema-specific historical type range.",
+        "Not available. The source value is preserved and reported.",
+    ),
+    "geometry_missing": (
+        "A row has no supported geometry object.",
+        "Not available. The feature is skipped.",
+    ),
+    "geometry_invalid": (
+        "A geometry cannot be converted into the expected point, line, or polygon shape.",
+        "Not available. The feature is skipped.",
+    ),
+    "text_utf8_dbf_row_mismatch": (
+        "A UTF-8 DBF overlay has a different row count from the decoded SHP rows.",
+        "Not available. The overlay is skipped.",
+    ),
+    "text_utf8_decode_replacement": (
+        "UTF-8 DBF decoding produced replacement characters.",
+        "Not available. The decoded text is reported.",
+    ),
+    "text_mojibake": (
+        "Text contains common mojibake patterns after DBF decoding.",
+        "Replace deterministic mojibake sequences with their intended Korean text.",
+    ),
+    "text_replacement_char": (
+        "Text contains the Unicode replacement character.",
+        "Not available. The damaged value is reported.",
+    ),
+    "feature_id_missing": (
+        "A feature has an empty ID field.",
+        "Not available. The feature is reported because stable repair is ambiguous.",
+    ),
+    "feature_id_duplicate_identical": (
+        "Two rows in one layer share an ID and have identical content.",
+        "Not available. The duplicate is reported.",
+    ),
+    "feature_id_duplicate_conflicting": (
+        "Two rows in one layer share an ID but differ in attributes or geometry.",
+        "Drop the later conflicting duplicate and keep the first loaded feature.",
+    ),
+    "global_id_collision": (
+        "The same ID appears in multiple NGII layers, making dataset-wide lookup ambiguous.",
+        "Not available. Layer-scoped references remain usable.",
+    ),
+    "reference_unresolved": (
+        "A reference ID does not resolve to its target layer.",
+        "Clear optional unresolved references when deterministic; "
+        "required references remain warnings.",
+    ),
+    "reciprocal_reference_missing": (
+        "A side-reference exists on one link but the reciprocal link does not point back.",
+        "Fill the missing reciprocal side-reference when the target link resolves.",
+    ),
+    "reciprocal_reference_conflict": (
+        "Two side-reference values disagree with each other.",
+        "Not available. Conflicts are reported for manual inspection.",
+    ),
+    "link_too_short": (
+        "A link geometry length is below the configured minimum.",
+        "Remove the short link and clear references to it.",
+    ),
+    "link_endpoint_isolated": (
+        "A link endpoint node is not used by any other link endpoint.",
+        "Snap the endpoint reference to a nearby node within the configured tolerance.",
+    ),
+    "link_endpoint_unresolved": (
+        "A link FromNodeID or ToNodeID does not resolve to the node layer.",
+        "Replace the endpoint reference with a nearby node within the configured tolerance.",
+    ),
+    "link_endpoint_misaligned": (
+        "A link endpoint node does not match either end of the link geometry.",
+        "Not available. Misaligned geometry is reported.",
+    ),
+    "link_orientation_reversed": (
+        "A link's node IDs or polyline direction disagree with topology-derived traffic flow.",
+        "Swap FromNodeID/ToNodeID, reverse the polyline, or do both when "
+        "evidence is deterministic.",
+    ),
+    "node_unreferenced": (
+        "A node is not referenced by any link endpoint.",
+        "Remove unreferenced nodes from the in-memory dataset.",
+    ),
+    "link_side_reference_longitudinal": (
+        "A lateral side-reference points to a longitudinal neighbor rather than a side neighbor.",
+        "Clear the invalid side-reference.",
+    ),
+    "link_side_reference_nonreciprocal": (
+        "A lateral side-reference cannot be reconciled with reciprocal topology.",
+        "Clear the invalid side-reference.",
+    ),
+}
+
+_SEGMENTATION_HELP: dict[str, str] = {
+    "enable_uturn": (
+        "Builds U-turn entities from direct link filters or matching U-turn marker geometry. "
+        "Uses z_intersection_tol_m when matching marker intersections."
+    ),
+    "enable_lateral_link_group": (
+        "Groups ordinary lane links through valid R_LinkID/L_LinkID topology. "
+        "U-turn and pocket links are tracked separately inside each group."
+    ),
+    "enable_lateral_node_group": (
+        "Groups from/to endpoint nodes for each lateral link group. "
+        "Uses node GroupID when available and falls back to endpoint topology."
+    ),
+    "enable_junction": (
+        "Builds junction entities from junction-like link and endpoint-node candidates."
+    ),
+    "enable_junction_connection": (
+        "Pairs lateral endpoint groups into junction connections. "
+        "Uses junction_connection_node_merge_dist_m and "
+        "junction_connection_opposite_direction_dot_min."
+    ),
+    "enable_junction_reference": (
+        "Selects reference links and endpoint tangents for each junction connection. "
+        "Uses endpoint_tangent_lookback_m."
+    ),
+    "enable_junction_edge": (
+        "Builds junction edge line segments across each connection from the selected reference."
+    ),
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -218,14 +382,19 @@ class ConfigDialog(QDialog):
         table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         for row, name in enumerate(SANITY_CHECK_NAMES):
             allow_repair = name not in WARNING_ONLY_SANITY_CHECKS
-            table.setItem(row, 0, QTableWidgetItem(name))
+            tooltip = _sanity_tooltip(name, allow_repair=allow_repair)
+            name_item = QTableWidgetItem(name)
+            name_item.setToolTip(tooltip)
+            table.setItem(row, 0, name_item)
             max_item = QTableWidgetItem("Repair" if allow_repair else "Warn")
             max_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+            max_item.setToolTip(tooltip)
             table.setItem(row, 1, max_item)
             combo = self._sanity_combo(
                 getattr(sanity_cfg.checks, name),
                 allow_repair=allow_repair,
             )
+            combo.setToolTip(tooltip)
             table.setCellWidget(row, 2, combo)
             self._sanity_modes[name] = combo
         table.resizeRowsToContents()
@@ -240,25 +409,54 @@ class ConfigDialog(QDialog):
         seg = cfg.segmentation
         self._enable_uturn = QCheckBox()
         self._enable_uturn.setChecked(seg.enable_uturn)
-        form.addRow("Enable U-turn", self._enable_uturn)
+        _add_help_row(
+            form, "Enable U-turn", self._enable_uturn, _segmentation_tooltip("enable_uturn")
+        )
         self._enable_lateral_link_group = QCheckBox()
         self._enable_lateral_link_group.setChecked(seg.enable_lateral_link_group)
-        form.addRow("Enable lateral link group", self._enable_lateral_link_group)
+        _add_help_row(
+            form,
+            "Enable lateral link group",
+            self._enable_lateral_link_group,
+            _segmentation_tooltip("enable_lateral_link_group"),
+        )
         self._enable_lateral_node_group = QCheckBox()
         self._enable_lateral_node_group.setChecked(seg.enable_lateral_node_group)
-        form.addRow("Enable lateral node group", self._enable_lateral_node_group)
+        _add_help_row(
+            form,
+            "Enable lateral node group",
+            self._enable_lateral_node_group,
+            _segmentation_tooltip("enable_lateral_node_group"),
+        )
         self._enable_junction = QCheckBox()
         self._enable_junction.setChecked(seg.enable_junction)
-        form.addRow("Enable junction", self._enable_junction)
+        _add_help_row(
+            form, "Enable junction", self._enable_junction, _segmentation_tooltip("enable_junction")
+        )
         self._enable_junction_connection = QCheckBox()
         self._enable_junction_connection.setChecked(seg.enable_junction_connection)
-        form.addRow("Enable junction connection", self._enable_junction_connection)
+        _add_help_row(
+            form,
+            "Enable junction connection",
+            self._enable_junction_connection,
+            _segmentation_tooltip("enable_junction_connection"),
+        )
         self._enable_junction_reference = QCheckBox()
         self._enable_junction_reference.setChecked(seg.enable_junction_reference)
-        form.addRow("Enable junction reference", self._enable_junction_reference)
+        _add_help_row(
+            form,
+            "Enable junction reference",
+            self._enable_junction_reference,
+            _segmentation_tooltip("enable_junction_reference"),
+        )
         self._enable_junction_edge = QCheckBox()
         self._enable_junction_edge.setChecked(seg.enable_junction_edge)
-        form.addRow("Enable junction edge", self._enable_junction_edge)
+        _add_help_row(
+            form,
+            "Enable junction edge",
+            self._enable_junction_edge,
+            _segmentation_tooltip("enable_junction_edge"),
+        )
         self._z_intersection_tol_m = _float_spin(
             seg.z_intersection_tol_m,
             minimum=0.0,
@@ -386,8 +584,10 @@ class ConfigDialog(QDialog):
     def _build_viz_layers_group(self, viz: VizConfig) -> QGroupBox:
         group = QGroupBox("Layers")
         group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        group.setMinimumHeight(420)
         layout = QVBoxLayout(group)
         table = QTableWidget(len(viz.layers), 6)
+        table.setMinimumHeight(340)
         table.setHorizontalHeaderLabels(("Layer", "On", "Color", "Point", "Line", "Opacity"))
         table.verticalHeader().setVisible(False)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -589,6 +789,18 @@ def _checked(value: bool) -> QCheckBox:
     return checkbox
 
 
+def _add_help_row(
+    form: QFormLayout,
+    label_text: str,
+    field: QWidget,
+    tooltip: str,
+) -> None:
+    label = QLabel(label_text)
+    label.setToolTip(tooltip)
+    field.setToolTip(tooltip)
+    form.addRow(label, field)
+
+
 def _centered(widget: QWidget) -> QWidget:
     wrapper = QWidget()
     layout = QHBoxLayout(wrapper)
@@ -610,6 +822,25 @@ def _compact_form(parent: QWidget) -> QFormLayout:
     form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
     return form
+
+
+def _sanity_tooltip(name: str, *, allow_repair: bool) -> str:
+    try:
+        trigger, repair = _SANITY_HELP[name]
+    except KeyError:
+        msg = f"missing GUI sanity help metadata for {name}"
+        raise RuntimeError(msg) from None
+    if not allow_repair:
+        repair = "Not available. This check can only warn."
+    return f"Trigger: {trigger}\nRepair: {repair}"
+
+
+def _segmentation_tooltip(name: str) -> str:
+    try:
+        return _SEGMENTATION_HELP[name]
+    except KeyError:
+        msg = f"missing GUI segmentation help metadata for {name}"
+        raise RuntimeError(msg) from None
 
 
 def _rgb_float_to_int(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
