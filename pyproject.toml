@@ -35,6 +35,7 @@ packages = ["src/ngii2xodr"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
+extend-exclude = ["ref"]
 
 [tool.ruff.lint]
 select = [
